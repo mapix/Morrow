@@ -1,0 +1,302 @@
+{
+  "sourceRepository": "https://github.com/thesysdev/openui",
+  "commit": "7df27bc8eeb6fd15ac318ca7745d225a8e16e9b9",
+  "retrievedAt": "2026-10-30",
+  "files": [
+    {
+      "file": "actions/001-several-actions/expected.json",
+      "sha1": "1401ddc1e15c9de7dc1733c83e01eb26926c5bb5",
+      "bytes": 1226
+    },
+    {
+      "file": "actions/001-several-actions/input.oui",
+      "sha1": "05fdfcb34fb59155b2f7ff45702889fad6dd9fd3",
+      "bytes": 159
+    },
+    {
+      "file": "actions/001-several-actions/interactions.json",
+      "sha1": "7348b4d6f98a123be1ff9ef485a69745f22e0afd",
+      "bytes": 285
+    },
+    {
+      "file": "actions/002-one-action/expected.json",
+      "sha1": "3b848c46a47878b0d176fb120e34d167eade64ce",
+      "bytes": 1376
+    },
+    {
+      "file": "actions/002-one-action/input.oui",
+      "sha1": "25274f6a3dc6a256a41e9a97ceff62e54f2eef2b",
+      "bytes": 201
+    },
+    {
+      "file": "actions/002-one-action/interactions.json",
+      "sha1": "ba01ae23430531e1c8d51b70c378b59d7c39c1e7",
+      "bytes": 466
+    },
+    {
+      "file": "actions/003-event-context-any-value/expected.json",
+      "sha1": "a1021902ea3837186b2cc89c06e616b96b0e26c0",
+      "bytes": 1060
+    },
+    {
+      "file": "actions/003-event-context-any-value/input.oui",
+      "sha1": "b0bc37d5afff521acc1f70ab78cb1891c3d8d7e0",
+      "bytes": 180
+    },
+    {
+      "file": "actions/003-event-context-any-value/interactions.json",
+      "sha1": "82a7ed221fcd02b04181790522ca8195d4ac537a",
+      "bytes": 548
+    },
+    {
+      "file": "actions/004-event-form-state-per-action/expected.json",
+      "sha1": "c9bee8e43da7d7710d68347b747ca61f4fa9a496",
+      "bytes": 723
+    },
+    {
+      "file": "actions/004-event-form-state-per-action/input.oui",
+      "sha1": "d7aa43f04b6d74d14df58f670f30fcb0facf1c67",
+      "bytes": 109
+    },
+    {
+      "file": "actions/004-event-form-state-per-action/interactions.json",
+      "sha1": "9462bdd13b106f633c291a1ea54f59c167854574",
+      "bytes": 303
+    },
+    {
+      "file": "actions/006-query-rerun-on-state/expected.json",
+      "sha1": "bf2e788dc896dd2382388fc7cd22290fe6938a48",
+      "bytes": 563
+    },
+    {
+      "file": "actions/006-query-rerun-on-state/input.oui",
+      "sha1": "c3d710f55c6d58ad2f287991ac74735fa9a340c4",
+      "bytes": 187
+    },
+    {
+      "file": "actions/006-query-rerun-on-state/interactions.json",
+      "sha1": "3a1d62efb226e195911559832d347ff879adf1e6",
+      "bytes": 505
+    },
+    {
+      "file": "actions/007-mutation-run/expected.json",
+      "sha1": "8048b3db0bbf63a8ba04192ce66372f906f99248",
+      "bytes": 706
+    },
+    {
+      "file": "actions/007-mutation-run/input.oui",
+      "sha1": "3fc1cf45fec66acf8c878098ce25aa998f8fcd77",
+      "bytes": 170
+    },
+    {
+      "file": "actions/007-mutation-run/interactions.json",
+      "sha1": "1804e1e32d0bc9458312b7979e8c29a1079e3b8f",
+      "bytes": 418
+    },
+    {
+      "file": "actions/008-tool-not-found-stops-plan/expected.json",
+      "sha1": "8048b3db0bbf63a8ba04192ce66372f906f99248",
+      "bytes": 706
+    },
+    {
+      "file": "actions/008-tool-not-found-stops-plan/input.oui",
+      "sha1": "3fc1cf45fec66acf8c878098ce25aa998f8fcd77",
+      "bytes": 170
+    },
+    {
+      "file": "actions/008-tool-not-found-stops-plan/interactions.json",
+      "sha1": "cb661a3521739021210925f66a4c47f62200f5af",
+      "bytes": 123
+    },
+    {
+      "file": "actions/009-custom-action/expected.json",
+      "sha1": "6b829512bf45b1d8833360342de54d3ea3174242",
+      "bytes": 1372
+    },
+    {
+      "file": "actions/009-custom-action/input.oui",
+      "sha1": "b51b81129999bd6602509fcfaa5512730169e829",
+      "bytes": 226
+    },
+    {
+      "file": "actions/009-custom-action/interactions.json",
+      "sha1": "8bc48cbcb8b0849284ecb129daf3bec1df143b1b",
+      "bytes": 524
+    },
+    {
+      "file": "actions/010-one-action-by-reference/expected.json",
+      "sha1": "d5de669829518e81ac40f3787a6757467bfcc59f",
+      "bytes": 909
+    },
+    {
+      "file": "actions/010-one-action-by-reference/input.oui",
+      "sha1": "b02341943abab43d7ad5c993a241ee01bc8f02d5",
+      "bytes": 183
+    },
+    {
+      "file": "actions/010-one-action-by-reference/interactions.json",
+      "sha1": "20010593f22a84d93998d3ae5e2551faf450b4db",
+      "bytes": 389
+    },
+    {
+      "file": "actions/011-action-list-is-data/expected.json",
+      "sha1": "ff611195d7bb54ce9eb4c7e88c05e3a540441d62",
+      "bytes": 866
+    },
+    {
+      "file": "actions/011-action-list-is-data/input.oui",
+      "sha1": "6bfe48c6676f01807f089ff25eaed7d6436528f1",
+      "bytes": 103
+    },
+    {
+      "file": "actions/README.md",
+      "sha1": "38d27d015ba176e7a3947584500fae38b9bf17f4",
+      "bytes": 3242
+    },
+    {
+      "file": "grammar/003-fence-multiple-joined/expected.json",
+      "sha1": "a91af6d15bc64cfacf2c8dbb2162f824ab209fe6",
+      "bytes": 384
+    },
+    {
+      "file": "grammar/003-fence-multiple-joined/input.oui",
+      "sha1": "611012110afac35b02308260a4fa0fe16ded34a2",
+      "bytes": 143
+    },
+    {
+      "file": "grammar/004-comment-strip/expected.json",
+      "sha1": "c1cc3065853bef68a4de0d2d2e33af3ee5b85ba0",
+      "bytes": 552
+    },
+    {
+      "file": "grammar/004-comment-strip/input.oui",
+      "sha1": "1b5d2e0838aff8f652e1ae58929ef3a4a1b89589",
+      "bytes": 166
+    },
+    {
+      "file": "grammar/005-lex-escapes/expected.json",
+      "sha1": "21c77905ee98579552aea9a18e82a524fe1ca448",
+      "bytes": 493
+    },
+    {
+      "file": "grammar/005-lex-escapes/input.oui",
+      "sha1": "2a5fededc447a657e39a473c546e4b94752ba82b",
+      "bytes": 88
+    },
+    {
+      "file": "grammar/006-lex-minus-and-skip/expected.json",
+      "sha1": "1a0eeb1ded8d250c4e0e4f96af294ab3682181c8",
+      "bytes": 566
+    },
+    {
+      "file": "grammar/006-lex-minus-and-skip/input.oui",
+      "sha1": "fe5f07cb01b20f5d226ae6375c8bc677247afac1",
+      "bytes": 63
+    },
+    {
+      "file": "grammar/008-expr-precedence-and-keys/expected.json",
+      "sha1": "5c2a86b862c58a80bd0c4cc6784044faffbd6ba2",
+      "bytes": 1171
+    },
+    {
+      "file": "grammar/008-expr-precedence-and-keys/input.oui",
+      "sha1": "0daf58f2aad8a13b83513223fa8540473f608e2c",
+      "bytes": 232
+    },
+    {
+      "file": "grammar/009-member-digits-field/expected.json",
+      "sha1": "c99990fcfdfcf595870d725a14532e13bf8f691c",
+      "bytes": 617
+    },
+    {
+      "file": "grammar/009-member-digits-field/input.oui",
+      "sha1": "4f6488d93f909700306c172657a0ae92cdda57eb",
+      "bytes": 98
+    },
+    {
+      "file": "grammar/010-roundtrip-tree/expected.json",
+      "sha1": "de34beaf88d72c55cc424f3529269358dbfa51b7",
+      "bytes": 844
+    },
+    {
+      "file": "grammar/010-roundtrip-tree/input.oui",
+      "sha1": "1a54086c265fc315813951267658a7a88c968282",
+      "bytes": 129
+    },
+    {
+      "file": "grammar/README.md",
+      "sha1": "f1b0dccb94549b3020ace41e7a124934d30506d5",
+      "bytes": 1859
+    },
+    {
+      "file": "library.json",
+      "sha1": "821de25ad8abf0cbcefcbb0a52c1fe2937db012a",
+      "bytes": 9076
+    },
+    {
+      "file": "state/001-store-auto-declare/expected.json",
+      "sha1": "82434e4caea44be6b1b67276c1be003f4336da88",
+      "bytes": 427
+    },
+    {
+      "file": "state/001-store-auto-declare/input.oui",
+      "sha1": "187af7b367d96b63ff73e2fd9a8fd2c3cdd452e3",
+      "bytes": 72
+    },
+    {
+      "file": "state/002-binding-two-way/expected.json",
+      "sha1": "8bf8a0d6d9aa441a661cfdeb0e52e4e35794b2d6",
+      "bytes": 534
+    },
+    {
+      "file": "state/002-binding-two-way/input.oui",
+      "sha1": "205486e06b47fd32db91cf306c5f9fe955e99352",
+      "bytes": 108
+    },
+    {
+      "file": "state/002-binding-two-way/interactions.json",
+      "sha1": "ccee77c23122a307a73a1b6f5481f78a06dffac3",
+      "bytes": 180
+    },
+    {
+      "file": "state/003-form-scope/expected.json",
+      "sha1": "28a34be68333b1d212f7e4535f7f11c868e5f13b",
+      "bytes": 944
+    },
+    {
+      "file": "state/003-form-scope/input.oui",
+      "sha1": "226b91eb80ff494a61f3659d4cada94f03ecb107",
+      "bytes": 133
+    },
+    {
+      "file": "state/003-form-scope/interactions.json",
+      "sha1": "5a45b05c205fcd301445890a3aa7e8e58cea260c",
+      "bytes": 481
+    },
+    {
+      "file": "state/004-form-page-level/expected.json",
+      "sha1": "077b83c88be75831b5c7d0c50bfc66d2898a4b09",
+      "bytes": 654
+    },
+    {
+      "file": "state/004-form-page-level/input.oui",
+      "sha1": "1536d1e76bd6955c8c143488b882c4adfa24716c",
+      "bytes": 110
+    },
+    {
+      "file": "state/004-form-page-level/interactions.json",
+      "sha1": "640566e5c48dc7c628d6a206b55023835a42fab2",
+      "bytes": 427
+    },
+    {
+      "file": "state/005-validation-rules/validation.json",
+      "sha1": "4b8ab78cf8f9f7d920473f15bd7a34ffadf20b4f",
+      "bytes": 2061
+    },
+    {
+      "file": "state/README.md",
+      "sha1": "817e41be770a687d8f04c3faa9ba4a6cb5fa1cb6",
+      "bytes": 1611
+    }
+  ]
+}

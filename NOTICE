@@ -1,0 +1,10 @@
+Morrow
+Copyright 2026 Morrow contributors
+
+This project includes or uses third-party software:
+- MLX Swift and MLX Swift LM: MIT License, ml-explore.
+- Swift Transformers: Apache License 2.0, Hugging Face.
+- OpenUI protocol fixtures: MIT License, Thesys.
+- EmbeddingGemma 2 model weights: distributed separately under their model license.
+
+Third-party license and model notices are bundled with native releases.

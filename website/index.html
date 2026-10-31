@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Morrow 是原生 AI 邮件伙伴：读取来信、串起联系人、管理附件与记忆，并按你的委托准备下一步。">
+  <meta property="og:title" content="Morrow：把邮件里的事，交给伙伴">
+  <meta property="og:description" content="原生 AI 邮件伙伴。自动索引，理解往来，准备回复，持续跟进。">
+  <meta property="og:type" content="website">
+  <title>Morrow：把邮件里的事，交给伙伴</title>
+  <link rel="icon" href="assets/favicon.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main" data-i18n="skip">跳到内容</a>
+  <header class="site-header">
+    <nav class="container nav" aria-label="主导航" data-i18n-aria="navigation">
+      <a class="brand" href="#main" aria-label="Morrow 首页" data-i18n-aria="home"><img src="assets/morrow-icon-128.webp" alt="" width="44" height="44"><span>Morrow</span></a>
+      <div class="nav-links"><a href="#story" data-i18n="navStory">看它如何接下工作</a><a href="https://github.com/mapix/Morrow" data-i18n="source">查看源码</a></div>
+      <div class="language-switch" role="group" aria-label="语言 / Language"><button type="button" data-language="zh" aria-pressed="true">中文</button><button type="button" data-language="en" aria-pressed="false">English</button></div>
+    </nav>
+  </header>
+  <main id="main">
+    <section class="hero desk">
+      <div class="container hero-layout">
+        <div class="hero-copy">
+          <h1 data-i18n="heroTitle">邮件里的事，<br>交给 Morrow。</h1>
+          <p class="lead" data-i18n="heroLead">它读懂来信，串起往来，把下一步带回你面前。</p>
+          <div class="hero-actions"><a class="button button-primary" href="#download" data-i18n="getMac">获取 macOS 版</a><a class="text-link" href="#story" data-i18n="tryStory">试试这件事</a></div>
+        </div>
+        <figure class="hero-art" data-slot="hero-art" data-alt="Morrow 的折叠信件品牌图形">
+          <img src="assets/hero.webp" alt="Morrow 的折叠信件品牌图形" width="1536" height="1024" fetchpriority="high" data-i18n-alt="heroAlt">
+          <div class="art-fallback" aria-hidden="true"><span>Morrow</span></div>
+        </figure>
+      </div>
+    </section>
+    <section class="platforms" aria-label="运行条件" data-i18n-aria="requirements">
+      <div class="container platform-line"><p data-i18n="platformNative">Swift 原生，留在你的工作流里。</p><p>macOS 26+<br><span>Apple Silicon</span></p><a class="text-link" href="https://github.com/mapix/Morrow" data-i18n="platformSource">同一个开源项目，也包含 iPhone 版本。</a></div>
+    </section>
+
+    <section class="section story" id="story">
+      <div class="container">
+        <div class="section-heading"><h2 data-i18n="storyTitle">从一封来信，<br>到一件办好的事。</h2><p class="lead" data-i18n="storyLead">你给目的，Morrow 带着依据准备下一步。</p></div>
+        <div class="story-workbench" data-slot="work-story">
+          <div class="scene-controls" role="tablist" aria-label="交互演示阶段" data-i18n-aria="storyTabs">
+            <button type="button" role="tab" id="tab-read" aria-controls="scene-read" aria-selected="true" data-scene="read" data-i18n="sceneRead">读懂来信</button>
+            <button type="button" role="tab" id="tab-prepare" aria-controls="scene-prepare" aria-selected="false" data-scene="prepare" data-i18n="scenePrepare">准备回复</button>
+            <button type="button" role="tab" id="tab-follow" aria-controls="scene-follow" aria-selected="false" data-scene="follow" data-i18n="sceneFollow">继续跟进</button>
+          </div>
+          <div class="scene" id="scene-read" role="tabpanel" aria-labelledby="tab-read">
+            <article class="correspondence stock"><h3 data-i18n="sampleSubject">周五前，核对交付材料</h3><dl class="mail-meta"><div><dt data-i18n="from">来自</dt><dd data-i18n="sampleSender">林佳，示例项目组</dd></div><div><dt data-i18n="attachment">附件</dt><dd data-i18n="sampleFile">交付清单.pdf</dd></div></dl><p data-i18n="sampleBody">请核对材料清单。缺少的内容，请在周五前告诉我。</p></article>
+            <div class="work-note"><h3 data-i18n="readResultTitle">先把该做的事找出来。</h3><p data-i18n="readResult">需要核对附件，再回复缺项。Morrow 将这封邮件和相关往来放在同一范围。</p><p class="settled" data-i18n="readSettled">依据随手可查</p></div>
+          </div>
+          <div class="scene" id="scene-prepare" role="tabpanel" aria-labelledby="tab-prepare">
+            <div class="work-note"><h3 data-i18n="delegateTitle">“替我核对，准备一封回复。”</h3><p data-i18n="delegateResult">委托包含目的、范围和完成条件。你可以修改工作约定，再让它继续。</p></div>
+            <article class="correspondence stock"><h3 data-i18n="draftTitle">给林佳的回复草稿</h3><p data-i18n="draftBody">我会先核对清单与已收到的材料，再把缺项整理给你。尚未确认的内容会单独标出。</p><p class="settled" data-i18n="draftSettled">可编辑，待你决定</p></article>
+          </div>
+          <div class="scene" id="scene-follow" role="tabpanel" aria-labelledby="tab-follow">
+            <article class="correspondence stock"><h3 data-i18n="followSubject">林佳补充了新版清单</h3><p data-i18n="followBody">Morrow 将新来信归入这件工作，更新缺项说明，并保留上一版依据。</p><p class="settled" data-i18n="followSettled">同一件事，继续推进</p></article>
+            <div class="work-note"><h3 data-i18n="followResultTitle">你不用重新讲一遍。</h3><p data-i18n="followResult">持续委托保留工作状态。邮件变化后，新的分析和回复建议会回到原来的工作里。</p></div>
+          </div>
+        </div>
+        <p class="caption" data-i18n="simulation">交互演示使用虚构邮件与固定示例，不会读取邮箱或发送邮件。</p>
+      </div>
+    </section>
+
+    <section class="section relationships">
+      <div class="container relation-layout">
+        <div class="section-heading"><h2 data-i18n="peopleTitle">往来按人串起，<br>资料不再散落。</h2><p class="lead" data-i18n="peopleLead">历史邮件构建联系人档案；附件有自己的统一入口。</p></div>
+        <div class="relation-index">
+          <dl class="capability-list"><div><dt data-i18n="profileName">联系人 Profile</dt><dd data-i18n="profileText">名字、往来、参与项目和可核验的线索，连接到原邮件。</dd></div><div><dt data-i18n="attachmentName">一个附件视图</dt><dd data-i18n="attachmentText">按文件类型与来源查找，预览、保存，再交给 Morrow 分析。</dd></div><div><dt data-i18n="searchName">用意思查邮件</dt><dd data-i18n="searchText">本机向量索引支持语义查询，也可以选择关键词检索。</dd></div></dl>
+          <div class="relation-record"><span data-i18n="relationPerson">林佳</span><p data-i18n="relationProject">示例项目：交付材料</p><div class="source-links"><span data-i18n="relationMail">往来邮件</span><span data-i18n="relationAttachment">相关附件</span><span data-i18n="relationEvidence">线索依据</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section chat-section">
+      <div class="container">
+        <div class="section-heading"><h2 data-i18n="chatTitle">一个伙伴，<br>不止一段对话。</h2><p class="lead" data-i18n="chatLead">Chat 跟随你正在看的邮件、联系人、附件或草稿。</p></div>
+        <div class="conversation-layout">
+          <div class="session-picker" role="tablist" aria-label="示例对话" data-i18n-aria="sessionTabs"><button type="button" id="session-delivery" data-session="delivery" aria-controls="conversation-panel" aria-selected="true" role="tab" data-i18n="sessionDelivery">交付材料</button><button type="button" id="session-billing" data-session="billing" aria-controls="conversation-panel" aria-selected="false" role="tab" data-i18n="sessionBilling">账单整理</button><button type="button" id="session-planning" data-session="planning" aria-controls="conversation-panel" aria-selected="false" role="tab" data-i18n="sessionPlanning">周计划</button></div>
+          <div class="conversation-detail" id="conversation-panel" role="tabpanel" aria-labelledby="session-delivery" aria-live="polite"><h3 id="session-heading" data-i18n="sessionDelivery">交付材料</h3><p id="session-description" data-i18n="deliveryDescription">这段对话保留它的输入、文件和范围。切换到别的工作，再回来继续。</p><dl class="input-list"><div><dt data-i18n="richInput">带上你手里的内容</dt><dd data-i18n="richInputText">文件、截图、图片和语音，都进入同一个输入框。</dd></div><div><dt data-i18n="structuredInput">需要选择时，给你结构化交互</dt><dd data-i18n="structuredInputText">用表单、选项和表格完善约定，接着在原生界面里工作。</dd></div></dl></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section authority board">
+      <div class="container">
+        <div class="section-heading"><h2 data-i18n="authorityTitle">记得住，<br>也由你决定。</h2><p class="lead" data-i18n="authorityLead">让偏好延续，把自动响应的边界说清楚。</p></div>
+        <div class="authority-layout"><div><h3 data-i18n="memoryName">能管理的长期记忆</h3><p data-i18n="memoryText">查看来源、范围与历史版本。确认、修改、停用或忘记，都有入口。</p><dl class="memory-example"><div><dt data-i18n="memoryExampleName">示例偏好</dt><dd data-i18n="memoryExampleText">回复保持简短中文</dd></div><div><dt data-i18n="memoryExampleScope">作用范围</dt><dd data-i18n="memoryExampleGlobal">由你设置</dd></div></dl></div><div><h3 data-i18n="responderName">按条件响应新邮件</h3><p data-i18n="responderText">设定邮箱、发件人和内容条件。先试跑，再选择准备草稿或自动回复。</p><div class="response-choice" role="group" aria-label="响应方式演示" data-i18n-aria="responseChoices"><button type="button" data-response="draft" aria-pressed="true" data-i18n="draftOption">只准备草稿</button><button type="button" data-response="auto" aria-pressed="false" data-i18n="autoOption">自动响应</button></div><p class="response-status" id="response-status" aria-live="polite" data-i18n="draftNotice">示例选择：准备后由你审阅。</p></div></div>
+        <div class="privacy-line"><p data-i18n="privacyLocal">向量索引留在本机。</p><p data-i18n="privacyModel">邮件内容交给你选择的模型服务。</p><p data-i18n="privacyCloud">iCloud 同步可选，默认关闭。</p></div>
+      </div>
+    </section>
+
+    <section class="section download-section" id="download">
+      <div class="container download-layout"><div class="section-heading"><h2 data-i18n="downloadTitle">把下一步，<br>留给 Morrow。</h2><p class="lead" data-i18n="downloadLead">从你自己的邮箱开始，慢慢建立共同的工作方式。</p></div><div class="download-details"><button class="button button-primary" type="button" id="download-action" disabled aria-describedby="download-status" data-i18n="downloadMac">下载 macOS 版</button><p id="download-status" class="download-status" role="status" data-i18n="downloadPending">下载清单尚未发布。可前往 GitHub 查看版本。</p><p class="download-meta" id="download-meta">macOS 26+ / Apple Silicon</p><a class="text-link" id="release-link" href="https://github.com/mapix/Morrow/releases" data-i18n="releases">查看 GitHub 版本</a><details class="checksum" id="checksum" hidden><summary data-i18n="verifyDownload">验证下载文件</summary><code id="checksum-value"></code></details></div></div>
+    </section>
+  </main>
+  <footer class="site-footer"><div class="container footer-layout"><a class="footer-brand" href="#main" aria-label="Morrow 首页" data-i18n-aria="home">Morrow</a><div><a href="https://github.com/mapix/Morrow" data-i18n="source">查看源码</a><a href="https://github.com/mapix/Morrow/issues" data-i18n="feedback">反馈问题</a></div><p data-i18n="footerDescription">原生 AI 邮件伙伴。<br>网站示例全部虚构。</p></div></footer>
+</body>
+</html>

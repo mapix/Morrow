@@ -1,0 +1,68 @@
+# Configuration template only. Root supplies these values before applying.
+# WEBSITE_IMAGE, NAMESPACE, MORROW_DOMAIN, INGRESS_CLASS, TLS_SECRET.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: morrow-website
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: morrow-website}
+  template:
+    metadata:
+      labels: {app: morrow-website}
+    spec:
+      containers:
+        - name: website
+          image: ${WEBSITE_IMAGE}
+          ports: [{containerPort: 8080, name: http}]
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: runtime, mountPath: /tmp}
+      volumes:
+        - name: runtime
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: morrow-website
+  namespace: ${NAMESPACE}
+spec:
+  selector: {app: morrow-website}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: morrow-website
+  namespace: ${NAMESPACE}
+spec:
+  ingressClassName: ${INGRESS_CLASS}
+  tls:
+    - hosts: [${MORROW_DOMAIN}]
+      secretName: ${TLS_SECRET}
+  rules:
+    - host: ${MORROW_DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: morrow-website
+                port: {name: http}

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": null,
+  "macOS": {
+    "url": null,
+    "fileName": null,
+    "sizeBytes": null,
+    "sha256": null,
+    "minimumVersion": "26.0",
+    "architecture": "Apple Silicon"
+  },
+  "releaseUrl": "https://github.com/mapix/Morrow/releases"
+}

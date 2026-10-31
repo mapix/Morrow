@@ -1,0 +1,28 @@
+name: Publication privacy check
+
+on:
+  pull_request:
+  push:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publication-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the complete proposed repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify the publication gate with synthetic fixtures
+        run: python3 scripts/test-check-publication.py
+      - name: Scan every file in the complete Git index
+        run: python3 scripts/check-publication.py --staged

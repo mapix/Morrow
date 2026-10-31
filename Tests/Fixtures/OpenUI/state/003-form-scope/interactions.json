@@ -1,0 +1,30 @@
+{
+  "interactions": [
+    {
+      "type": [
+        "email",
+        "fixture-person-1@example.invalid"
+      ]
+    },
+    {
+      "click": "send"
+    }
+  ],
+  "expected": {
+    "events": [
+      {
+        "type": "continue_conversation",
+        "humanFriendlyMessage": "Send",
+        "formName": "contact",
+        "formState": {
+          "contact": {
+            "email": {
+              "value": "fixture-person-1@example.invalid",
+              "componentType": "input"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
