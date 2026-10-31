@@ -17,13 +17,23 @@ public actor POP3Client {
         } else {
             guard !email.contains(where: \.isNewline), !password.contains(where: \.isNewline) else { throw MailError.message("邮箱凭据包含控制字符。") }
             do { try await send("USER " + email); _ = try await status(); try await send("PASS " + password); _ = try await status() }
+            catch is CancellationError { throw CancellationError() }
             catch { throw MailError.message("POP3认证失败，请检查邮箱授权码及POP服务是否开启。") }
         }
     }
     public func inventory() async throws -> [String: Int] {
         try await send("UIDL"); _ = try await status()
-        let data = try await multiline(maxBytes: 8 * 1024 * 1024)
-        return Self.parseUIDL(String(decoding: data, as: UTF8.self))
+        var result: [String: Int] = [:], bytes = 0
+        do {
+            while true {
+                try Task.checkCancellation()
+                let line = try await socket.lineData(); if line == Data([46]) { break }
+                guard line.count + 2 <= 8 * 1024 * 1024 - bytes else { throw MailError.message("POP3邮件库存超过 8 MB 缓存限制。") }; bytes += line.count + 2
+                let values = String(decoding: line, as: UTF8.self).split(whereSeparator: \.isWhitespace)
+                if values.count == 2, let number = Int(values[0]), number > 0 { result[String(values[1])] = number }
+            }
+            return result
+        } catch { await socket.close(); throw error }
     }
     public static func parseUIDL(_ text: String) -> [String: Int] {
         var result: [String: Int] = [:]
@@ -42,11 +52,15 @@ public actor POP3Client {
     }
     private func multiline(maxBytes: Int) async throws -> Data {
         var data = Data()
-        while true {
-            var line = try await socket.lineData(); if line == Data([46]) { break }
-            if line.starts(with: [46, 46]) { line.removeFirst() }
-            data.append(line); data.append(contentsOf: [13, 10])
-            guard data.count <= maxBytes else { throw MailError.message("POP3邮件超过128 MB缓存限制。") }
-        }; return data
+        do {
+            while true {
+                try Task.checkCancellation()
+                var line = try await socket.lineData(); if line == Data([46]) { break }
+                if line.starts(with: [46, 46]) { line.removeFirst() }
+                guard line.count + 2 <= maxBytes - data.count else { throw MailError.message("POP3邮件超过\(maxBytes / (1024 * 1024)) MB缓存限制。") }
+                data.append(line); data.append(contentsOf: [13, 10])
+            }
+            return data
+        } catch { await socket.close(); throw error }
     }
 }

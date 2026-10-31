@@ -10,6 +10,7 @@ final class WorkspaceIterationTests: XCTestCase {
         var mail = MailMessage(accountID: account.id, from: .init(name: "客户", email: "client@example.com"), subject: "合同确认", text: "请核对条款")
         mail.attachments = [.init(name: "条款.txt", mimeType: "text/plain", data: Data("验收7天".utf8))]
         try await model.store.upsert(mail); await model.reload()
+        await model.refreshContactProfiles()
         let profiles = try await model.store.load(ContactProfile.self, kind: "contact-profile"); XCTAssertEqual(profiles.count, 1)
         model.selectProfile("client@example.com"); let frozen = model.currentContext; XCTAssertEqual(frozen.contactEmail, "client@example.com")
         model.revealMail(mail); XCTAssertEqual(model.currentContext.mailIDs, [mail.id]); XCTAssertEqual(model.currentContext.page, "mail")

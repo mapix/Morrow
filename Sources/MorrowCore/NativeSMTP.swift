@@ -5,9 +5,12 @@ import CMail
 /// only after TLS succeeds. This transport never accepts a trust override.
 public enum NativeSMTP {
     public static func request(url: String, username: String, password: String, upload: Data?, from: String?, recipients: [String], startTLS: Bool, testOnly: Bool = false, oauth: Bool) async throws -> TransportReply {
-        try await Task.detached(priority: .utility) {
+        try Task.checkCancellation()
+        let operation = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
             guard let endpoint = URLComponents(string: url), ["smtp", "smtps"].contains(endpoint.scheme ?? ""), let host = endpoint.host else { throw MailError.message("移动端仅通过原生 IMAP/POP/SMTP 连接。") }
             let port = endpoint.port ?? (endpoint.scheme == "smtps" ? 465 : 587)
+            guard (1...65535).contains(port) else { throw MailError.message("SMTP 端口无效。") }
             guard endpoint.scheme == "smtps" || startTLS else { throw MailError.message("SMTP 必须使用 TLS 或 STARTTLS。") }
             var error: Int32 = 0
             guard let pointer = sm_native_open(host, Int32(port), &error) else { throw MailError.message("SMTP 服务器连接失败。") }
@@ -46,25 +49,31 @@ public enum NativeSMTP {
                 _ = try session.command("DATA", expected: [354])
                 // Preserve bytes and dot-stuff lines; DATA terminal is distinct
                 // from server acceptance. The caller persists sending/uncertain.
-                var escaped = Data(); var lineStart = true
-                for byte in upload { if lineStart && byte == 46 { escaped.append(46) }; escaped.append(byte); lineStart = byte == 10 }
-                if !escaped.suffix(2).elementsEqual([13, 10]) { escaped.append(contentsOf: [13, 10]) }
+                var escaped = Data(); escaped.reserveCapacity(64 * 1024 + 1); var lineStart = true
+                for byte in upload {
+                    if lineStart && byte == 46 { escaped.append(46) }; escaped.append(byte); lineStart = byte == 10
+                    if escaped.count >= 64 * 1024 { try session.write(escaped); escaped.removeAll(keepingCapacity: true) }
+                }
+                if !upload.suffix(2).elementsEqual([13, 10]) { escaped.append(contentsOf: [13, 10]) }
                 escaped.append(contentsOf: [46, 13, 10]); try session.write(escaped)
                 try session.expect([250])
             }
             _ = try? session.command("QUIT", expected: [221])
             return TransportReply(data: Data(), headers: "SMTP TLS authenticated")
-        }.value
+        }
+        return try await withTaskCancellationHandler { try await operation.value } onCancel: { operation.cancel() }
     }
     private static func clean(_ value: String) throws { guard !value.isEmpty, !value.contains("\r"), !value.contains("\n"), !value.contains("\0"), !value.contains("\u{1}") else { throw MailError.message("SMTP 凭据包含无效控制字符。") } }
     private final class Session {
         let pointer: OpaquePointer; var buffer = Data()
         init(pointer: OpaquePointer) { self.pointer = pointer }
-        func secure(_ host: String) throws { guard sm_native_start_tls(pointer, host) == 0 else { throw MailError.message("SMTP TLS 握手或服务器证书验证失败。") } }
+        func secure(_ host: String) throws { try Task.checkCancellation(); guard sm_native_start_tls(pointer, host) == 0 else { throw MailError.message("SMTP TLS 握手或服务器证书验证失败。") } }
         func write(_ text: String) throws { try write(Data(text.utf8)) }
-        func write(_ data: Data) throws { let status = data.withUnsafeBytes { sm_native_write(pointer, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }; guard status == 0 else { throw MailError.message("SMTP 写入失败；若已经提交正文，请先核对已发送邮件。") } }
+        func write(_ data: Data) throws { try Task.checkCancellation(); let status = data.withUnsafeBytes { sm_native_write(pointer, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }; guard status == 0 else { throw MailError.message("SMTP 写入失败；若已经提交正文，请先核对已发送邮件。") } }
         func line() throws -> String {
+            try Task.checkCancellation()
             while buffer.range(of: Data([13, 10])) == nil {
+                try Task.checkCancellation()
                 var bytes = [UInt8](repeating: 0, count: 8192); var count = 0
                 let status = sm_native_read(pointer, &bytes, bytes.count, &count)
                 guard status == 0, count > 0 else { throw MailError.message("SMTP 响应中断或超时；若已经提交正文，请先核对已发送邮件。") }
@@ -73,9 +82,10 @@ public enum NativeSMTP {
             let range = buffer.range(of: Data([13, 10]))!; let result = String(decoding: buffer[..<range.lowerBound], as: UTF8.self); buffer.removeSubrange(..<range.upperBound); return result
         }
         func reply() throws -> (code: Int, text: String) {
-            var lines: [String] = []; var code: Int?
+            var lines: [String] = []; var code: Int?, bytes = 0
             for _ in 0..<200 {
                 let row = try line(); guard row.utf8.count >= 4, let number = Int(row.prefix(3)), [" ", "-"].contains(String(row.dropFirst(3).prefix(1))), code == nil || code == number else { throw MailError.message("SMTP 响应格式无效。") }
+                guard row.utf8.count + 2 <= 1024 * 1024 - bytes else { throw MailError.message("SMTP 总响应超过限制。") }; bytes += row.utf8.count + 2
                 code = number; lines.append(row); if row.dropFirst(3).first == " " { return (number, lines.joined(separator: "\n")) }
             }
             throw MailError.message("SMTP 多行响应超过限制。")

@@ -31,10 +31,12 @@ public struct WorkContextLimit: Codable, Sendable, Equatable {
     }
     public func constrain(_ value: WorkScope, against inventory: [MailMessage]) -> WorkScope {
         var scope = value
-        let allowed = Set(inventory.filter(containsExisting).flatMap { [$0.id, $0.canonicalID] })
+        let compiled = CompiledWorkContext(self)
+        let allowed = Set(inventory.filter(compiled.containsExisting).flatMap { [$0.id, $0.canonicalID] })
         scope.sourceMailIDs = scope.sourceMailIDs.filter { allowed.contains($0) }
         if !allowsFuture || kind == .selection { scope.subjectTerms = []; scope.senderEmails = [] }
-        let selectedCanonical = Set(inventory.filter { scope.sourceMailIDs.contains($0.id) || scope.sourceMailIDs.contains($0.canonicalID) }.map(\.canonicalID))
+        let sourceIDs = Set(scope.sourceMailIDs)
+        let selectedCanonical = Set(inventory.filter { sourceIDs.contains($0.id) || sourceIDs.contains($0.canonicalID) }.map(\.canonicalID))
         scope.excludedExistingIDs = Array(Set(inventory.map(\.canonicalID)).subtracting(selectedCanonical)).sorted()
         return scope
     }

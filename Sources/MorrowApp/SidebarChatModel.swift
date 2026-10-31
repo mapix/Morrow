@@ -134,11 +134,10 @@ extension AppModel {
         guard !partnerBusy else { return }; partnerBusy = true; defer { partnerBusy = false }
         var human = PartnerChat(role: "user", text: instruction); human.context = context; try? await recordChat(human)
         do {
-            var evidence: [MailMessage] = []
-            for mail in primaryMails where context.mailIDs.contains(mail.id) { try Task.checkCancellation(); evidence.append(await MailEvidence.forAnalysis(mail, store: store)) }
+            let evidenceIDs = mails(withIDs: context.mailIDs).map(\.id)
             let recalled = await memoryPrompt(instruction, context: context)
-            let result = try await partner.report(instruction: recalled + "\n" + instruction + "；指定联系人：" + (context.contactEmail ?? "") + "；用户邮箱：" + accounts.map(\.email).joined(separator: ",") + "；本轮实际包含" + String(evidence.count) + "封该联系人的本机往来。不能猜测其他邮箱或未同步邮件。", mails: evidence, settings: settings)
-            let response = PartnerChat(role: "partner", text: result.text, messageIDs: evidence.map(\.id)); try await recordChat(response)
+            let result = try await partner.report(instruction: recalled + "\n" + instruction + "；指定联系人：" + (context.contactEmail ?? "") + "；用户邮箱：" + accounts.map(\.email).joined(separator: ",") + "；本轮实际包含" + String(evidenceIDs.count) + "封该联系人的本机往来。不能猜测其他邮箱或未同步邮件。", mailIDs: evidenceIDs, store: store, settings: settings)
+            let response = PartnerChat(role: "partner", text: result.text, messageIDs: evidenceIDs); try await recordChat(response)
         } catch { let response = PartnerChat(role: "partner", text: "联系人分析未完成：" + error.localizedDescription); try? await recordChat(response) }
     }
     func analyzeAttachmentHistory(_ instruction: String, context: WorkspaceContext) async {

@@ -5,6 +5,7 @@ import Security
 public enum ChatGPTNetwork {
     public static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForResource = 260
         configuration.urlCache = nil; configuration.httpCookieStorage = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration, delegate: ChatGPTNoRedirects(), delegateQueue: nil)

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public struct ProfileClaim: Codable, Identifiable, Sendable {
     public var id: String = UUID().uuidString
@@ -25,6 +26,8 @@ public struct ContactProfile: Codable, Identifiable, Sendable {
     public var analysisFingerprint: String = ""
     public var analysisStatus: String = "等待整理邮件线索"
     public var analyzedAt: Date?
+    public var analyzedMailVersions: [String: String]?
+    public var analysisRetryAt: Date?
     public var correction: String = ""
     public var display: String { name.isEmpty ? email : name }
     public var domain: String { email.components(separatedBy: "@").last ?? "" }
@@ -54,10 +57,19 @@ public enum ContactProfileBuilder {
             let aliases = (names[email] ?? [:]).sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.map(\.key)
             let manualName = manual.first { $0.email.lowercased() == email }?.name ?? ""
             let name = manualName.isEmpty ? aliases.first ?? "" : manualName
-            let material = mails.sorted { $0.canonicalID < $1.canonicalID }.map { m in m.canonicalID + m.subject + m.text + participants(m).map { $0.name + $0.email }.joined() }.joined()
-            let fingerprint = MailStore.hash(Data((material + name).utf8))
+            var digest = SHA256()
+            func append(_ value: String) {
+                let bytes = value.utf8; var start = bytes.startIndex
+                while start < bytes.endIndex { let end = bytes.index(start, offsetBy: 64 * 1024, limitedBy: bytes.endIndex) ?? bytes.endIndex; digest.update(data: Data(bytes[start..<end])); start = end }
+            }
+            for mail in mails.sorted(by: { $0.canonicalID < $1.canonicalID }) {
+                append(mail.canonicalID); append(mail.subject); append(mail.text)
+                for participant in participants(mail) { append(participant.name); append(participant.email) }
+            }
+            append(name)
+            let fingerprint = digest.finalize().map { String(format: "%02x", $0) }.joined()
             var p = ContactProfile(email: email, name: name, aliases: aliases, mailIDs: mails.map(\.id), accountIDs: Array(Set(mails.map(\.accountID))).sorted(), received: mails.filter { $0.from.email.lowercased() == email }.count, sent: mails.filter { own.contains($0.from.email.lowercased()) && ($0.to + $0.cc + ($0.bcc ?? [])).contains { $0.email.lowercased() == email } }.count, copied: mails.filter { $0.cc.contains { $0.email.lowercased() == email } }.count, firstSeen: mails.map(\.date).min(), lastSeen: mails.map(\.date).max(), topics: Array(Set(mails.map(\.normalizedSubject))).sorted(), fingerprint: fingerprint)
-            if let old = prior[email] { p.claims = old.claims; p.analysisFingerprint = old.analysisFingerprint; p.analysisStatus = old.analysisStatus; p.analyzedAt = old.analyzedAt; p.correction = old.correction; if p.fingerprint != old.fingerprint { p.analysisStatus = "历史往来已更新，等待重新整理线索" } }
+            if let old = prior[email] { p.claims = old.claims; p.analysisFingerprint = old.analysisFingerprint; p.analysisStatus = old.analysisStatus; p.analyzedAt = old.analyzedAt; p.analyzedMailVersions = old.analyzedMailVersions; p.analysisRetryAt = old.analysisRetryAt; p.correction = old.correction; if p.fingerprint != old.fingerprint { p.analysisStatus = "历史往来已更新，等待重新整理线索" } }
             return p
         }.sorted { ($0.lastSeen ?? .distantPast) > ($1.lastSeen ?? .distantPast) }
     }

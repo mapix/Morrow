@@ -16,7 +16,11 @@ extension AppModel {
         var entry = value; entry.content = entry.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !entry.content.isEmpty, entry.content.count <= 6000 else { throw MailError.message("记忆内容需为1至6000个字符。") }
         if entry.scope != .global, entry.scopeID?.isEmpty ?? true { throw MailError.message("请选择记忆的作用范围。") }
-        if entry.scope == .contact, !contactProfiles.contains(where: { $0.email == entry.scopeID }) { throw MailError.message("联系人范围不存在。") }
+        if entry.scope == .contact, !contactProfiles.contains(where: { $0.email == entry.scopeID }) {
+            await refreshContactProfiles()
+            for _ in 0..<20 where profileBuildBusy { try await Task.sleep(for: .milliseconds(100)) }
+            guard contactProfiles.contains(where: { $0.email == entry.scopeID }) else { throw MailError.message("联系人范围不存在。") }
+        }
         if entry.scope == .session, !chatSessions.contains(where: { $0.id == entry.scopeID }) { throw MailError.message("会话范围不存在。") }
         entry.updatedAt = Date()
         var changed: [AgentMemory] = []

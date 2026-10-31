@@ -33,12 +33,13 @@ final class ChatEvidenceTests: XCTestCase {
         XCTAssertFalse(prompt.contains("UNRELATED_BODY_SENTINEL"))
         XCTAssertEqual(model.sidebarEvidenceMailIDs, [selected.id])
     }
-    @MainActor func testLegacyListIDsAndHostRoleMetadataNeverBecomeModelEvidence() throws {
+    @MainActor func testLegacyListIDsAndHostRoleMetadataNeverBecomeModelEvidence() async throws {
         let model = makeModel(); defer { try? FileManager.default.removeItem(at: model.store.root) }
         let mail = MailMessage(accountID: "fixture", from: .init(email: "fixture@example.invalid"), subject: "A", text: "Body")
         model.mails = [mail]
         var legacy = WorkspaceContext(page: "mail-list", label: "Old inbox", mailIDs: [mail.id])
-        XCTAssertTrue(model.initialChatEvidence(legacy).isEmpty)
+        let initial = try await model.initialChatEvidence(legacy)
+        XCTAssertTrue(initial.isEmpty)
         XCTAssertTrue(model.chatContextForModel(legacy).mailIDs.isEmpty)
         legacy.mailList = .init(accountIDs: ["fixture"], destination: "inbox", folderRoles: ["HOST_DIRECTORY_SENTINEL": "inbox"])
         let encoded = try JSONEncoder().encode(model.chatContextForModel(legacy))
@@ -46,7 +47,8 @@ final class ChatEvidenceTests: XCTestCase {
         XCTAssertEqual(legacy.mailList?.folderRoles.count, 1)
     }
     @MainActor private func makeModel() -> AppModel {
-        let model = AppModel(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), notifications: EvidenceNotifications())
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ContextFixtureProtocol.self]
+        let model = AppModel(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), notifications: EvidenceNotifications(), partner: PartnerEngine(ai: AIEngine(httpConfiguration: configuration)))
         model.workspacePreferences.memoryEnabled = false; model.settings.autoAnalyze = false
         model.settings.provider = "openai"; model.settings.openAIURL = "https://morrow-context-fixture.invalid/v1"; model.settings.openAIModel = "fixture"
         var account = MailAccount(); account.id = "fixture"; account.email = "owner@example.invalid"; account.isDemo = true

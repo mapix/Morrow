@@ -117,7 +117,7 @@ import UniformTypeIdentifiers
         guard old.count == new.count else { return false }
         return zip(old, new).allSatisfy { a, b in
             guard a.id == b.id, a.accountID == b.accountID, a.folder == b.folder, a.messageID == b.messageID else { return false }
-            guard a.subject == b.subject, a.text == b.text, a.date == b.date else { return false }
+            guard a.subject == b.subject, a.bodyVersion == b.bodyVersion, a.date == b.date else { return false }
             return a.from == b.from && a.to == b.to && a.cc == b.cc && a.bcc == b.bcc && a.replyTo == b.replyTo
         }
     }
@@ -130,7 +130,9 @@ import UniformTypeIdentifiers
             defer { self.profileSnapshotTask = nil }
             while !Task.isCancelled {
                 let revision = self.profileRevision
-                let mailSnapshot = self.mails, accountSnapshot = self.accounts
+                let accountSnapshot = self.accounts
+                let mailSnapshot: [MailMessage]
+                do { mailSnapshot = try await self.store.contactMessages() } catch { self.error = error.localizedDescription; return }
                 let manual = self.contacts, previous = self.previousProfiles
                 let updated = await Task.detached(priority: .utility) {
                     ContactProfileBuilder.build(mails: mailSnapshot, accounts: accountSnapshot, manual: manual, previous: previous)
@@ -171,8 +173,9 @@ import UniformTypeIdentifiers
             if ProcessInfo.processInfo.arguments.contains("--semantic-qa") { await semanticQA() }
         } catch { self.error = error.localizedDescription }
     }
-    func reload() async { do { mails = try await store.messages(); drafts = try await store.load(ComposeDraft.self, kind: "draft"); runs = try await store.load(AgentRun.self, kind: "agent-run"); folders = try await store.load(MailFolder.self, kind: "folder"); if !syncing { await profileSnapshotTask?.value } } catch { self.error = error.localizedDescription } }
-    private func publishMail(_ value: MailMessage) {
+    func reload() async { do { mails = try await store.messageSummaries().map(\.displayMessage); drafts = try await store.load(ComposeDraft.self, kind: "draft"); runs = try await store.load(AgentRun.self, kind: "agent-run"); folders = try await store.load(MailFolder.self, kind: "folder"); if !syncing { await profileSnapshotTask?.value } } catch { self.error = error.localizedDescription } }
+    private func publishMail(_ original: MailMessage) {
+        let value = MailMessageSummary(message: original).displayMessage
         var snapshot = mails
         if let position = mailProjection.positions[value.id] { snapshot[position] = value }
         else { snapshot.append(value); snapshot.sort { $0.date > $1.date } }
@@ -308,7 +311,7 @@ import UniformTypeIdentifiers
                 for folder in folders { try await store.save(folder, kind: "folder", id: folder.id) }
                 if account.usesPOP {
                     let inventory = try await transport.popInventory(account, password: secret)
-                    let existing = Set(try await store.messages(account: account.id).compactMap(\.popUID))
+                    let existing = Set(try await store.syncRecords(account: account.id).compactMap(\.popUID))
                     for (uid, number) in inventory where !existing.contains(uid) {
                         try Task.checkCancellation()
                         var mail = try await transport.popFetch(account, uid: uid, number: number, password: secret)
@@ -323,7 +326,7 @@ import UniformTypeIdentifiers
                 for folder in folders {
                     let inventoryStarted = Date()
                     let (validity, flags) = try await transport.inventory(account, folder: folder.path, password: secret)
-                    let local = try await store.messages(account: account.id, folder: folder.path)
+                    let local = try await store.syncRecords(account: account.id, folder: folder.path)
                     let existing = Dictionary(uniqueKeysWithValues: local.filter { $0.uidValidity == validity }.map { ($0.uid, $0) })
                     for (uid, flag) in flags.sorted(by: { $0.key > $1.key }) {
                         try Task.checkCancellation()
@@ -355,7 +358,7 @@ import UniformTypeIdentifiers
         var failures: [String] = []
         if settings.autoAnalyze, mail.analysis == nil || mail.analysis?.source == "规则分析" {
             do {
-                let analysis = try await partner.analyze(await MailEvidence.forAnalysis(mail, store: store), settings: settings)
+                let analysis = try await partner.analyze(try await MailEvidence.forAnalysis(mail, store: store), settings: settings)
                 if var current = try await store.message(mail.id) { current.analysis = analysis; mail = try await store.upsert(current) }
             } catch { failures.append(error.localizedDescription) }
         }
@@ -373,7 +376,7 @@ import UniformTypeIdentifiers
                     receipt = previous; receipt.state = "preparing"
                 }
                 claimed = receipt
-                var draft = reply(mail); draft.body = rule.useAI ? try await partner.draft(instruction: rule.response, mails: [mail], settings: settings).text : rule.body(for: mail, account: account)
+                var draft = try await reply(mail); draft.body = rule.useAI ? try await partner.draft(instruction: rule.response, mails: [try await store.message(mail.id) ?? mail], settings: settings).text : rule.body(for: mail, account: account)
                 // The phone creates drafts. Existing desktop automatic-send rules
                 // remain drafts here, avoiding dual-device execution ownership.
                 draft.automaticResponse = true; receipt.draftID = draft.id; receipt.state = "draft"; receipt.detail = "移动端已生成草稿，自动发送由指定执行设备处理。"
@@ -427,7 +430,16 @@ import UniformTypeIdentifiers
     func mark(_ mail: MailMessage, read: Bool? = nil, star: Bool? = nil) async {
         do { try await applyMark(mail, read: read, star: star) } catch { self.error = error.localizedDescription }
     }
-    func reply(_ mail: MailMessage) -> ComposeDraft { var draft = ComposeDraft(); draft.accountID = mail.accountID; draft.to = (mail.replyTo.isEmpty ? [mail.from] : mail.replyTo).map(\.email).joined(separator: ", "); draft.subject = "Re: " + mail.normalizedSubject; draft.inReplyTo = mail.messageID; draft.references = mail.references + " " + mail.messageID; draft.body = mail.analysis?.replySuggestion ?? ""; return draft }
+    func reply(_ original: MailMessage) async throws -> ComposeDraft {
+        let mail: MailMessage
+        if original.contentAvailability == nil || original.contentAvailability == .complete { mail = original }
+        else { guard let full = try await store.message(original.id) else { throw MailError.message("邮件完整正文未在本机，请同步后重试。") }; mail = full }
+        var draft = ComposeDraft(); draft.accountID = mail.accountID; draft.to = (mail.replyTo.isEmpty ? [mail.from] : mail.replyTo).map(\.email).joined(separator: ", "); draft.subject = "Re: " + mail.normalizedSubject; draft.inReplyTo = mail.messageID; draft.references = mail.references + " " + mail.messageID
+        draft.body = mail.analysis?.replySuggestion ?? ""
+        draft.body += "\n\n" + mail.from.display + " 写道：\n" + String(mail.text.prefix(200_000)).components(separatedBy: .newlines).map { "> " + $0 }.joined(separator: "\n")
+        if mail.text.count > 200_000 { draft.body += "\n（引用原文达到上限，可打开原邮件查看完整内容。）" }
+        return draft
+    }
     func saveDraft(_ draft: ComposeDraft) async throws { guard !["sending", "sent", "uncertain", "queued"].contains(draft.state) else { throw MailError.message("这个草稿已进入发送流程。") }; var value = draft; value.updatedAt = Date(); var artifact = try await store.load(AgentArtifact.self, kind: "agent-artifact").first { $0.linkedDraftID == value.id }; artifact?.content = value.body; artifact?.title = value.subject; artifact?.updatedAt = value.updatedAt; try await store.commitWorkingDraft(value, artifact: artifact); await reload() }
     func send(_ value: ComposeDraft) async throws {
         try value.validate(); guard let account = accounts.first(where: { $0.id == value.accountID }) else { throw MailError.message("请选择发件邮箱。") }
@@ -465,7 +477,8 @@ import UniformTypeIdentifiers
         var config = settings; config.replyLanguage = MobileL10n.responseLanguage
         let mailbox = captured.mailbox, searchMode = strategy
         let accountMails = captured.mails, allowed = captured.allowedIDs
-        let initialCandidates = captured.initialCandidates
+        var initialCandidates: [MailMessage] = []
+        do { for mail in captured.initialCandidates { if mail.contentAvailability == nil || mail.contentAvailability == .complete { initialCandidates.append(mail) } else if let full = try await store.message(mail.id) { initialCandidates.append(full) } } } catch { self.error = error.localizedDescription; return }
         let live = captureDraft()
         var archivedScope = scope; archivedScope.mailIDs = initialCandidates.map(\.id)
         var user = PartnerChat(role: "user", text: input); user.sessionID = sessionID; user.context = archivedScope; user.materials = session.materials
@@ -573,11 +586,14 @@ import UniformTypeIdentifiers
             guard let mail else { throw MailError.message("邮件引用不存在或不属于本轮邮箱范围。") }
             try requireSource(mail.id)
             if op.type == "select" { try await openNativeMail(mail) }
-            return ToolReceipt(text: "ID:\(mail.id)\nSubject:\(mail.subject)\n" + String(mail.text.prefix(18000)), mailIDs: [mail.id], mails: [mail])
+            guard let full = try await store.message(mail.id) else { throw MailError.message("邮件完整正文未在本机，请同步后重试。") }
+            return ToolReceipt(text: "ID:\(full.id)\nSubject:\(full.subject)\n" + String(full.text.prefix(18000)), mailIDs: [full.id], mails: [full])
         case "markRead", "markUnread": guard let mail else { throw MailError.message("邮件引用不存在。") }; try await applyMark(mail, read: op.type == "markRead"); return ToolReceipt(text: "邮件已更新为" + (op.type == "markRead" ? "已读" : "未读") + ": " + mail.id)
         case "star", "unstar": guard let mail else { throw MailError.message("邮件引用不存在。") }; try await applyMark(mail, star: op.type == "star"); return ToolReceipt(text: "星标已更新: " + mail.id)
         case "draft", "compose", "reply":
-            var draft = mail.map(reply) ?? ComposeDraft(); draft.accountID = mail?.accountID ?? (mailbox.isEmpty ? capturedAccounts.first?.id ?? "" : mailbox)
+            var draft: ComposeDraft
+            if let mail { draft = try await reply(mail) } else { draft = ComposeDraft() }
+            draft.accountID = mail?.accountID ?? (mailbox.isEmpty ? capturedAccounts.first?.id ?? "" : mailbox)
             if let recipient = op.recipient { draft.to = recipient }; if let subject = op.subject { draft.subject = subject }; if let body = op.text { draft.body = body }
             try await saveDraft(draft); compose = draft; return ToolReceipt(text: "草稿已保存，未发送。Draft ID: " + draft.id)
         case "updateDraft": guard let snapshot = draftSnapshot, op.kind == snapshot.draft.id else { throw MailError.message("AI 未引用本轮真实草稿 ID。") }; return ToolReceipt(text: try await applyDraftUpdate(snapshot, body: op.text, subject: op.subject))

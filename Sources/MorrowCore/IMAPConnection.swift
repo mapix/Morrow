@@ -5,15 +5,18 @@ import Network
 public actor IMAPConnection {
     private var connection: NWConnection?
     private var buffer = Data()
+    private var bufferOffset = 0
     private var sequence = 0
     private var selected: String?
     private var validity: UInt64 = 0
-    public init() {}
+    private let maximumResponseBytes: Int
+    public init() { maximumResponseBytes = 96 * 1024 * 1024 }
+    init(maximumResponseBytes: Int) { self.maximumResponseBytes = max(1, maximumResponseBytes) }
     public var connected: Bool { connection != nil }
 
     public func connect(host: String, port: Int, email: String, password: String, tls: Bool = true, oauth: Bool = false) async throws {
-        close()
-        guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else { throw MailError.message("IMAP 端口无效。") }
+        close(); try Task.checkCancellation()
+        guard (1...65535).contains(port), let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else { throw MailError.message("IMAP 端口无效。") }
         let parameters: NWParameters
         if tls {
             let options = NWProtocolTLS.Options()
@@ -24,14 +27,7 @@ public actor IMAPConnection {
             parameters = .tcp
         }
         let c = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: parameters); connection = c
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let gate = ConnectionGate(continuation)
-            c.stateUpdateHandler = { state in
-                switch state { case .ready: gate.finish(nil); case .failed(let error): gate.finish(error); case .cancelled: gate.finish(MailError.message("邮件连接已关闭。")); default: break }
-            }
-            c.start(queue: DispatchQueue.global(qos: .utility))
-            DispatchQueue.global().asyncAfter(deadline: .now() + 20) { if gate.finish(MailError.message("连接邮件服务器超时。")) { c.cancel() } }
-        }
+        do { try await MailNetworkIO.connect(c) } catch { close(); throw error }
         let greeting = try await line()
         guard greeting.uppercased().hasPrefix("* OK") else { throw MailError.message("IMAP 服务器未接受连接。") }
         let capability = try await command("CAPABILITY").lines.joined(separator: " ")
@@ -52,7 +48,7 @@ public actor IMAPConnection {
             }
         } else { _ = try await command("LOGIN \(try Self.quote(email)) \(try Self.quote(password))", sensitive: true) }
     }
-    public func close() { connection?.cancel(); connection = nil; buffer = Data(); selected = nil; validity = 0 }
+    public func close() { connection?.cancel(); connection = nil; buffer = Data(); bufferOffset = 0; selected = nil; validity = 0 }
     public func select(_ folder: String) async throws -> UInt64 {
         if selected == folder { return validity }
         let result = try await command("SELECT \(try Self.quote(folder))")
@@ -63,8 +59,14 @@ public actor IMAPConnection {
     public func inventory(_ folder: String) async throws -> (UInt64, [UInt64: (read: Bool, starred: Bool)]) {
         selected = nil
         let v = try await select(folder)
-        let result = try await command("UID FETCH 1:* (UID FLAGS)")
-        return (v, MailTransport.parseFlags(result.lines.joined(separator: "\n")))
+        let tag = nextTag(); try await write(Data("\(tag) UID FETCH 1:* (UID FLAGS)\r\n".utf8))
+        var flags: [UInt64: (read: Bool, starred: Bool)] = [:]
+        do {
+            _ = try await readResponse(tag, retainLines: false, allowLiterals: false) { line in
+                if let row = IMAPFlagRow.parse(line) { flags[row.uid] = (row.read, row.starred) }
+            }
+            return (v, flags)
+        } catch { close(); throw error }
     }
     public func fetch(folder: String, uid: UInt64, expectedValidity: UInt64) async throws -> Data {
         let v = try await select(folder)
@@ -193,59 +195,75 @@ public actor IMAPConnection {
     }
     public struct Reply { var lines: [String]; var literals: [Data]; var completion: String = "" }
     public func command(_ text: String, sensitive: Bool = false) async throws -> Reply {
+        try Task.checkCancellation()
         let tag = nextTag(); try await write(Data("\(tag) \(text)\r\n".utf8))
-        do { return try await readResponse(tag) } catch { if sensitive { throw MailError.message("邮箱认证失败，请确认已开启 IMAP 并使用客户端授权码。") }; throw error }
+        do { return try await readResponse(tag) }
+        catch is CancellationError { close(); throw CancellationError() }
+        catch { close(); if sensitive { throw MailError.message("邮箱认证失败，请确认已开启 IMAP 并使用客户端授权码。") }; throw error }
     }
-    private func readResponse(_ tag: String) async throws -> Reply {
-        var lines: [String] = []; var literals: [Data] = []
+    private func readResponse(_ tag: String, retainLines: Bool = true, allowLiterals: Bool = true, onLine: ((String) -> Void)? = nil) async throws -> Reply {
+        var lines: [String] = [], literals: [Data] = [], bytes = 0
         for _ in 0..<100000 {
+            try Task.checkCancellation()
             let l = try await line()
+            let lineBytes = l.utf8.count + 2
+            guard lineBytes <= maximumResponseBytes - bytes else { throw MailError.message("邮件服务器的总响应超过缓存限制，读取已停止。") }; bytes += lineBytes
             if l.hasPrefix(tag + " ") {
                 guard l.uppercased().hasPrefix(tag + " OK") else { throw MailError.message(String(l.dropFirst(tag.count + 1))) }; return Reply(lines: lines, literals: literals, completion: l)
             }
             if l.uppercased().hasPrefix("* BYE") { close(); throw MailError.message("服务器断开了邮件连接，请重新同步。") }
-            lines.append(l)
-            if let size = Int(MIMEParser.capture(#"\{(\d+)\+?\}$"#, l) ?? "") { guard size <= 64 * 1024 * 1024 else { throw MailError.message("此邮件超过 64 MB，请在网页邮箱下载。") }; literals.append(try await read(size)) }
+            if retainLines { lines.append(l) }; onLine?(l)
+            if l.hasSuffix("}"), let opening = l.lastIndex(of: "{") {
+                var rawSize = l[l.index(after: opening)..<l.index(before: l.endIndex)]
+                if rawSize.last == "+" { rawSize = rawSize.dropLast() }
+                guard let size = Int(rawSize), size >= 0 else { throw MailError.message("邮件服务器返回了无效正文长度。") }
+                guard allowLiterals else { throw MailError.message("邮件库存响应包含了非预期正文，读取已停止。") }
+                guard size <= 64 * 1024 * 1024 else { throw MailError.message("此邮件超过 64 MB，请在网页邮箱下载。") }
+                guard size <= maximumResponseBytes - bytes else { throw MailError.message("邮件服务器的总响应超过缓存限制，读取已停止。") }; bytes += size
+                literals.append(try await read(size))
+            }
         }; throw MailError.message("邮件服务器响应超出限制。")
     }
     private func nextTag() -> String { sequence += 1; return String(format: "S%05d", sequence) }
     private func line() async throws -> String {
-        while buffer.range(of: Data([13, 10])) == nil { try await receive(); guard buffer.count < 4 * 1024 * 1024 else { throw MailError.message("邮件服务器响应行过长。") } }
-        let range = buffer.range(of: Data([13, 10]))!; let result = buffer[..<range.lowerBound]; buffer.removeSubrange(..<range.upperBound)
-        return String(data: result, encoding: .utf8) ?? String(data: result, encoding: .isoLatin1) ?? ""
+        try Task.checkCancellation()
+        var searchOffset = bufferOffset
+        while true {
+            if let range = buffer.range(of: Data([13, 10]), in: searchOffset..<buffer.count) {
+                guard range.lowerBound - bufferOffset <= 4 * 1024 * 1024 else { throw MailError.message("邮件服务器响应行过长。") }
+                let result = String(data: buffer[bufferOffset..<range.lowerBound], encoding: .utf8) ?? String(data: buffer[bufferOffset..<range.lowerBound], encoding: .isoLatin1) ?? ""
+                consume(range.upperBound - bufferOffset); return result
+            }
+            guard buffer.count - bufferOffset <= 4 * 1024 * 1024 else { throw MailError.message("邮件服务器响应行过长。") }
+            searchOffset = max(bufferOffset, buffer.count - 1); try await receive()
+        }
     }
     private func read(_ count: Int) async throws -> Data {
-        while buffer.count < count { try await receive() }; let d = Data(buffer.prefix(count)); buffer.removeFirst(count); return d
+        var result = Data(); result.reserveCapacity(min(count, 1024 * 1024))
+        while result.count < count {
+            try Task.checkCancellation()
+            if bufferOffset == buffer.count { try await receive() }
+            let length = min(count - result.count, buffer.count - bufferOffset)
+            result.append(buffer[bufferOffset..<bufferOffset + length]); consume(length)
+        }
+        return result
+    }
+    private func consume(_ count: Int) {
+        bufferOffset += count
+        if bufferOffset == buffer.count { buffer = Data(); bufferOffset = 0 }
+        else if bufferOffset >= 256 * 1024 { buffer = Data(buffer[bufferOffset...]); bufferOffset = 0 }
     }
     private func receive() async throws {
         guard let c = connection else { throw MailError.message("邮件连接未建立。") }
-        let data: Data = try await withCheckedThrowingContinuation { cont in
-            let gate = DataGate(cont)
-            c.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { data, _, done, error in
-                if let error { gate.finish(.failure(error)) }
-                else if let data, !data.isEmpty { gate.finish(.success(data)) }
-                else { gate.finish(.failure(MailError.message(done ? "邮件服务器已关闭连接。" : "邮件服务器返回了空响应。"))) }
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 90) { if gate.finish(.failure(MailError.message("读取邮件服务器超时。"))) { c.cancel() } }
-        }; buffer.append(data)
+        let data = try await MailNetworkIO.receive(c)
+        guard connection === c else { throw CancellationError() }; buffer.append(data)
     }
     private func write(_ data: Data) async throws {
         guard let c = connection else { throw MailError.message("邮件连接未建立。") }
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in c.send(content: data, completion: .contentProcessed { error in if let error { cont.resume(throwing: error) } else { cont.resume() } }) }
+        try await MailNetworkIO.write(data, to: c)
     }
     public static func quote(_ value: String) throws -> String {
         guard !value.contains(where: { $0.isNewline || $0 == "\0" }) else { throw MailError.message("邮箱字段包含无效控制字符。") }
         return "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
-}
-
-private final class ConnectionGate: @unchecked Sendable {
-    private let lock = NSLock(); private var continuation: CheckedContinuation<Void, Error>?
-    init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
-    @discardableResult func finish(_ error: Error?) -> Bool { lock.lock(); let c = continuation; continuation = nil; lock.unlock(); guard let c else { return false }; if let error { c.resume(throwing: error) } else { c.resume() }; return true }
-}
-private final class DataGate: @unchecked Sendable {
-    private let lock = NSLock(); private var continuation: CheckedContinuation<Data, Error>?
-    init(_ continuation: CheckedContinuation<Data, Error>) { self.continuation = continuation }
-    @discardableResult func finish(_ result: Result<Data, Error>) -> Bool { lock.lock(); let c = continuation; continuation = nil; lock.unlock(); guard let c else { return false }; c.resume(with: result); return true }
 }

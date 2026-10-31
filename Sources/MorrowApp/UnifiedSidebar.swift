@@ -68,6 +68,7 @@ struct UnifiedSidebar: View {
             }.padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 12)
                 .popover(isPresented: $showingStatus) { VStack(alignment: .leading, spacing: 14) { Text(L10n.t("同步与索引")).font(Theme.heading); Text(L10n.status(model.syncStatus)); Text(L10n.status(model.indexStatus)); Text(L10n.status(model.partnerStatus)); Text(L10n.status(model.memoryStatus)) }.font(Theme.label).foregroundStyle(Theme.secondary).padding(22).frame(width: 320) }
         }.frame(width: Theme.sidebarWidth).background(Theme.sidebar)
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MorrowSearchSessions"))) { _ in showArchived = false; showSessionSearch = true; sessionQuery = "" }
         .sheet(item: $renaming) { session in VStack(alignment: .leading, spacing: 18) { Text(L10n.t("重命名对话")).font(Theme.heading); TextField(L10n.t("对话名称"), text: $title).textFieldStyle(PaperFieldStyle()); HStack { Button(L10n.t("取消")) { renaming = nil }.buttonStyle(QuietButtonStyle()); Spacer(); Button(L10n.t("保存")) { Task { await model.renameChatSession(session.id, title: title); renaming = nil } }.buttonStyle(PrimaryButtonStyle()) } }.padding(28).frame(width: 460).background(Theme.paper) }
     }
     private func sectionHeader<Content: View>(_ title: String, @ViewBuilder controls: () -> Content) -> some View {

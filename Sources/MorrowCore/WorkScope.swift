@@ -23,8 +23,9 @@ public struct WorkScope: Codable, Sendable, Equatable {
         return senderMatches && subjectMatches
     }
     public func validated(against mails: [MailMessage]) -> WorkScope {
+        let requested = Set(sourceMailIDs)
         let known = Set(mails.flatMap { [$0.id, $0.canonicalID] })
-        let sources = mails.filter { sourceMailIDs.contains($0.id) || sourceMailIDs.contains($0.canonicalID) }.map(\.canonicalID)
+        let sources = mails.filter { requested.contains($0.id) || requested.contains($0.canonicalID) }.map(\.canonicalID)
         var scope = WorkScope(sourceMailIDs: Array(Set(sources + sourceMailIDs.filter { known.contains($0) })), subjectTerms: Array(Set(subjectTerms.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted(), senderEmails: Array(Set(senderEmails.filter(MailAddress.isValid).map { $0.lowercased() })).sorted())
         scope.excludedExistingIDs = Array(Set(mails.map(\.canonicalID)).subtracting(Set(sources))).sorted()
         return scope

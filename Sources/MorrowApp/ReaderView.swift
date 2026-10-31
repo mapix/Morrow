@@ -13,6 +13,9 @@ struct ReaderView: View {
     @State private var label = ""
     @State private var note = ""
     @State private var document: ReaderDocument?
+    @State private var bodySource: ReaderBodySource?
+    @State private var bodySelection = ReaderBodySelection()
+    @State private var bodyRetry = 0
     @State private var loading = true
     @State private var failure: String?
     @State private var related: [RelatedMail] = []
@@ -23,9 +26,10 @@ struct ReaderView: View {
     }
     private struct RelatedMail: Identifiable { var id: String; var sender: String; var date: Date }
     private struct Preparation: Equatable {
-        var id: String; var revision: Int; var plain: Bool; var remote: Bool; var theme: String; var language: String
+        var id: String; var version: String; var ready: Bool; var plain: Bool; var remote: Bool; var theme: String; var language: String
     }
-    private var preparation: Preparation { .init(id: mail.id, revision: model.mailRevision, plain: plainText, remote: remoteImages, theme: Theme.current.rawValue, language: L10n.languageCode) }
+    private var bodyRequest: ReaderBodyRequest { .init(id: mail.id, version: mail.bodyVersion, retry: bodyRetry) }
+    private var preparation: Preparation { .init(id: mail.id, version: bodySource?.version ?? mail.bodyVersion, ready: bodySource != nil, plain: plainText, remote: remoteImages, theme: Theme.current.rawValue, language: L10n.languageCode) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,7 +51,7 @@ struct ReaderView: View {
                     MailReadState(read: mail.isRead)
                     if !mail.attachments.isEmpty { Button { showingDetails = true } label: { Label("\(mail.attachments.count)", systemImage: "paperclip") }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.muted) }
                     Spacer()
-                    if !mail.html.isEmpty {
+                    if bodySource?.html.isEmpty == false {
                         Picker(L10n.t("正文显示方式"), selection: $plainText) {
                             Text(L10n.t("原始排版")).tag(false)
                             Text(L10n.t("纯文本")).tag(true)
@@ -72,7 +76,7 @@ struct ReaderView: View {
                 if failure != nil {
                     VStack(spacing: 12) {
                         Text(L10n.t("正文暂时无法显示，请切换纯文本重试。")).font(Theme.label)
-                        Button(L10n.t("显示纯文本")) { plainText = true; failure = nil }.buttonStyle(QuietButtonStyle())
+                        Button(L10n.t("显示纯文本")) { plainText = true; failure = nil; document = nil; bodySource = nil; bodyRetry += 1 }.buttonStyle(QuietButtonStyle())
                     }.padding(24).background(Theme.sheet)
                 }
             }
@@ -99,22 +103,36 @@ struct ReaderView: View {
         .onAppear { note = mail.note }
         .onChange(of: mail.note) { if !showingDetails { note = mail.note } }
         .onChange(of: presentationState.loadExternalImagesByDefault) { remoteImages = presentationState.loadExternalImagesByDefault }
+        .task(id: bodyRequest) {
+            let request = bodyRequest, ticket = bodySelection.begin(bodyRequest)
+            if bodySource?.id != request.id { bodySource = nil; document = nil }
+            loading = true
+            do {
+                let source = try await ReaderBodySource.load(id: request.id, store: model.store)
+                guard !Task.isCancelled, bodySelection.accepts(ticket), source.id == request.id else { return }
+                bodySource = source; failure = nil
+            } catch { if !Task.isCancelled, bodySelection.accepts(ticket) { bodySource = nil; loading = false; failure = "body_unavailable" } }
+        }
+        .task(id: model.mailRevision) {
+            related = model.relatedMails(to: mail).map { RelatedMail(id: $0.id, sender: $0.from.display, date: $0.date) }
+        }
         .task(id: preparation) {
+            guard let source = bodySource else { return }
             let preparationStarted = ProcessInfo.processInfo.systemUptime
-            let current = mail
-            related = model.relatedMails(to: current).map { RelatedMail(id: $0.id, sender: $0.from.display, date: $0.date) }
-            let input = ReaderDocumentInput(mailID: current.id, body: plainText || current.html.isEmpty ? current.text : current.html,
-                usesHTML: !plainText && !current.html.isEmpty, allowsRemoteImages: remoteImages,
-                themeCSS: Theme.htmlTokens, emptyMessage: L10n.t("此邮件没有可显示的纯文本正文。"), blockedImageLabel: L10n.t("外部图片已阻止"), attachments: current.attachments)
+            let input = ReaderDocumentInput(mailID: source.id, body: plainText || source.html.isEmpty ? source.text : source.html,
+                usesHTML: !plainText && !source.html.isEmpty, allowsRemoteImages: remoteImages,
+                themeCSS: Theme.htmlTokens, emptyMessage: L10n.t("此邮件没有可显示的纯文本正文。"), blockedImageLabel: L10n.t("外部图片已阻止"), attachments: source.attachments)
             loading = true
             do {
                 let result = try await ReaderDocumentCache.shared.prepare(input)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, bodySource?.id == source.id, bodySource?.version == source.version else { return }
                 if document?.id != result.id { document = result; failure = nil }
                 loading = false
                 MailReaderMetrics.record("document_prepared", since: preparationStarted)
             } catch { if !Task.isCancelled { loading = false; failure = "preparation" } }
         }
+        .onDisappear { bodySelection.cancel(); bodySource = nil; document = nil }
+
     }
     private var toolbar: some View {
         HStack(spacing: 6) {
@@ -207,7 +225,8 @@ struct SecureHTMLView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
-        configuration.websiteDataStore = .nonPersistent()
+        configuration.websiteDataStore = ReaderWebKitContext.dataStore
+        configuration.processPool = ReaderWebKitContext.processPool
         configuration.setURLSchemeHandler(context.coordinator.assets, forURLScheme: "morrow-cid")
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator; view.uiDelegate = context.coordinator
@@ -215,23 +234,29 @@ struct SecureHTMLView: NSViewRepresentable {
         context.coordinator.view = view
         // CSP is installed before original head content; this extra WebKit rule
         // blocks remote resources even if an email contains malformed markup.
-        Task { @MainActor in
-            context.coordinator.rules = await ReaderNetworkPolicy.compiledLists()
-            context.coordinator.ready = true; context.coordinator.loadPending()
+        context.coordinator.policyTask = Task { @MainActor [weak coordinator = context.coordinator] in
+            let rules = await ReaderNetworkPolicy.compiledLists()
+            guard !Task.isCancelled, let coordinator, !coordinator.disposed else { return }
+            coordinator.rules = rules; coordinator.ready = true; coordinator.loadPending()
         }
         return view
     }
     func updateNSView(_ view: WKWebView, context: Context) {
+        guard !context.coordinator.disposed else { return }
         context.coordinator.failure = $failure
         context.coordinator.pending = document
         context.coordinator.loadPending()
     }
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
-        view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil; coordinator.assets.cancelAll()
+        coordinator.dispose()
+        view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil
+        view.loadHTMLString("", baseURL: nil)
     }
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         weak var view: WKWebView?
         var loaded = ""
+        var disposed = false
+        var policyTask: Task<Void, Never>?
         private var navigationStarted = ProcessInfo.processInfo.systemUptime
         var ready = false
         fileprivate var rules = ReaderNetworkLists()
@@ -239,8 +264,13 @@ struct SecureHTMLView: NSViewRepresentable {
         var failure: Binding<String?>
         let assets = ReaderInlineAssetHandler()
         init(failure: Binding<String?>) { self.failure = failure }
+        func dispose() {
+            disposed = true; policyTask?.cancel(); policyTask = nil; pending = nil; view = nil; failure = .constant(nil); assets.releaseAssets()
+        }
         func loadPending() {
-            guard ready, let view, let document = pending, loaded != document.id else { return }
+            guard !disposed, ready, let view, let document = pending else { return }
+            pending = nil
+            guard loaded != document.id else { return }
             loaded = document.id
             assets.replace(host: document.host, assets: document.assets)
             view.configuration.userContentController.removeAllContentRuleLists()
@@ -257,7 +287,7 @@ struct SecureHTMLView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { MailReaderMetrics.record("navigation_finished", since: navigationStarted) }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { report(error) }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { report(error) }
-        private func report(_ error: Error) { if (error as NSError).code != NSURLErrorCancelled { failure.wrappedValue = "navigation" } }
+        private func report(_ error: Error) { if !disposed, (error as NSError).code != NSURLErrorCancelled { failure.wrappedValue = "navigation" } }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
     }
 }
@@ -269,6 +299,7 @@ final class ReaderInlineAssetHandler: NSObject, WKURLSchemeHandler {
     private let queue: OperationQueue = { let q = OperationQueue(); q.maxConcurrentOperationCount = 2; q.qualityOfService = .utility; return q }()
     func replace(host: String, assets: [String: ReaderInlineAsset]) { cancelAll(); self.host = host; self.assets = assets }
     func cancelAll() { pending.removeAll(); queue.cancelAllOperations() }
+    func releaseAssets() { cancelAll(); host = ""; assets.removeAll() }
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         guard let url = urlSchemeTask.request.url, url.host == host,
               let id = String(url.path.dropFirst()).removingPercentEncoding, let asset = assets[id] else {
@@ -289,6 +320,11 @@ final class ReaderInlineAssetHandler: NSObject, WKURLSchemeHandler {
         }
     }
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) { pending.removeValue(forKey: ObjectIdentifier(urlSchemeTask)) }
+}
+
+@MainActor private enum ReaderWebKitContext {
+    static let processPool = WKProcessPool()
+    static let dataStore = WKWebsiteDataStore.nonPersistent()
 }
 
 private struct ReaderNetworkLists: @unchecked Sendable {

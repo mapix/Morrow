@@ -16,8 +16,8 @@ extension AppModel {
                 guard context == nil || context?.page == "global" else { throw MailError.message("当前固定范围不会自动变成响应器条件。请到“响应器”独立设置，或先选择“使用整个邮箱”再明确设置邮箱、发件人和条件；本次没有启用规则。") }
                 partnerBusy = false; await proposeResponderInteraction(text); return
             }
-            let inventory = limit.map { ceiling in primaryMails.filter { ceiling.containsExisting($0) } } ?? primaryMails
-            let related: [MailMessage]
+            let inventory = limit.map { ceiling in primaryMails.filter(CompiledWorkContext(ceiling).containsExisting) } ?? primaryMails
+            var related: [MailMessage]
             if let source { related = inventory.filter { $0.canonicalID == source.canonicalID } }
             else if context?.page != "global", limit != nil { related = Array(inventory.prefix(8)) }
             else {
@@ -25,6 +25,9 @@ extension AppModel {
                 do { try await index.load(directory: settings.embeddingDirectory); hits = try await index.search(text, store: store) } catch { hits = (try? await store.keywordSearch(text)) ?? [] }
                 let eligible = hits.filter { hit in limit?.containsExisting(hit.message) ?? true }
                 related = eligible.isEmpty ? Array(inventory.prefix(8)) : Array(eligible.prefix(8).map(\.message))
+            }
+            for i in related.indices where related[i].contentAvailability != nil && related[i].contentAvailability != .complete {
+                guard let full = try await store.message(related[i].id) else { throw MailError.message("工作所需邮件正文未在本机，请同步后重试。") }; related[i] = full
             }
             let request = text + (limit.map { "\n本次指定资料对象：" + $0.label + ($0.contactEmail.map { "；联系人邮箱：" + $0 } ?? "") + "。只有这一范围的资料可用；当前实际有" + String(inventory.count) + "封已同步邮件。" } ?? "")
             var agreement = try await partner.proposeAgreement(request, mails: related, settings: settings)
@@ -44,7 +47,7 @@ extension AppModel {
         // The editor and model may narrow the submitted scope; neither replaces its host ceiling.
         agreement.hostScope = run.agreement?.hostScope
         if agreement.resolvedScope == nil { agreement.resolvedScope = run.agreement?.resolvedScope }
-        let inventory = agreement.hostScope.map { ceiling in primaryMails.filter { ceiling.containsExisting($0) } } ?? primaryMails
+        let inventory = agreement.hostScope.map { ceiling in primaryMails.filter(CompiledWorkContext(ceiling).containsExisting) } ?? primaryMails
         if settings.enabled && (agreement.resolvedScope?.excludedExistingIDs == nil || agreement.scope != run.agreement?.scope) {
             do { agreement.resolvedScope = try await partner.resolveScope(agreement.scope, mails: inventory, settings: settings) }
             catch { self.error = error.localizedDescription; return }

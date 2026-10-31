@@ -42,6 +42,7 @@ public struct EmbeddingMemoryDiagnostics: Codable, Sendable {
     public var cacheBudgetBytes: Int
     public var workingBudgetBytes: Int
     public var processFootprintBytes: UInt64
+    public var systemMemoryPressure: IndexSystemMemoryPressure?
 }
 
 public actor EmbeddingIndex {
@@ -82,7 +83,15 @@ public actor EmbeddingIndex {
         }
         return status == KERN_SUCCESS ? info.phys_footprint : 0
     }
-    public init() { if let shader = Bundle.main.url(forResource: "mlx", withExtension: "metallib") { GPU.metallib = shader } }
+    public init() { _ = IndexMemoryPressureMonitor.shared; if let shader = Bundle.main.url(forResource: "mlx", withExtension: "metallib") { GPU.metallib = shader } }
+    private static func hasMemoryPressure() -> Bool {
+        #if os(iOS)
+        let processLimit: UInt64? = processBudget
+        #else
+        let processLimit: UInt64? = nil
+        #endif
+        return IndexMemoryPolicy.shouldPause(pressure: IndexMemoryPressureMonitor.shared.current, activeGPUBytes: Memory.activeMemory, workingBudget: workingBudget, processFootprint: processFootprint(), processBudget: processLimit)
+    }
     public func load(directory: String) async throws {
         // Actor methods can reenter while the factory awaits model/tokenizer
         // loading. The mail and memory index must share one loaded model.
@@ -128,7 +137,7 @@ public actor EmbeddingIndex {
     private func embed(_ text: String, query: Bool = false, using container: EmbedderModelContainer) async throws -> [Float] {
         let prefixed = query ? "task: search result | query: " + text : "title: none | text: " + text
         try Task.checkCancellation()
-        guard Memory.activeMemory <= Self.workingBudget else {
+        guard !Self.hasMemoryPressure() else {
             Memory.clearCache()
             throw MailError.message("本地向量引擎超过内存预算，已暂停索引。请稍后重试。")
         }
@@ -144,7 +153,7 @@ public actor EmbeddingIndex {
             // constructing an 8192-token attention graph or truncating content.
             for start in stride(from: 0, to: tokens.count, by: windowSize) {
                 try Task.checkCancellation()
-                guard Self.processFootprint() < Self.processBudget else {
+                guard !Self.hasMemoryPressure() else {
                     Memory.clearCache()
                     throw MailError.message("本地索引已因内存压力暂停；邮件同步和浏览仍可使用。")
                 }
@@ -174,7 +183,7 @@ public actor EmbeddingIndex {
     public func memoryDiagnostics() -> EmbeddingMemoryDiagnostics {
         EmbeddingMemoryDiagnostics(completedEmbeddings: completedEmbeddings, maximumWindowTokens: maximumTokenCount,
             activeBytes: container == nil ? 0 : Memory.activeMemory, cachedBytes: container == nil ? 0 : Memory.cacheMemory, peakActiveBytes: container == nil ? 0 : Memory.peakMemory,
-            cacheBudgetBytes: Self.cacheBudget, workingBudgetBytes: Self.workingBudget, processFootprintBytes: Self.processFootprint())
+            cacheBudgetBytes: Self.cacheBudget, workingBudgetBytes: Self.workingBudget, processFootprintBytes: Self.processFootprint(), systemMemoryPressure: IndexMemoryPressureMonitor.shared.current)
     }
     private func writeMemoryDiagnostics(to root: URL) {
         guard container != nil else { return }
@@ -187,23 +196,34 @@ public actor EmbeddingIndex {
         lastDiagnosticsWrite = now; lastDiagnosticEmbeddingCount = completedEmbeddings
     }
     public static func chunks(_ text: String, size: Int = 1200, overlap: Int = 150) -> [String] {
-        guard !text.isEmpty, size > overlap else { return [] }
-        let chars = Array(text); var out: [String] = []; var start = 0
-        while start < chars.count { let end = min(chars.count, start + size); out.append(String(chars[start..<end])); if end == chars.count { break }; start = end - overlap }; return out
+        guard !text.isEmpty, size > 0, overlap >= 0, size > overlap else { return [] }
+        var out: [String] = [], start = text.startIndex
+        // Walk grapheme boundaries without expanding the entire string into
+        // an Array<Character>, which greatly amplifies large-body memory.
+        while start < text.endIndex {
+            let end = text.index(start, offsetBy: size, limitedBy: text.endIndex) ?? text.endIndex
+            out.append(String(text[start..<end]))
+            if end == text.endIndex { break }
+            start = text.index(end, offsetBy: -overlap)
+        }
+        return out
     }
     public func index(_ message: MailMessage, store: MailStore, attachments: Bool) async throws -> Bool {
+        guard message.contentAvailability == nil || message.contentAvailability == .complete else { throw MailError.message("索引需要完整邮件正文，请先读取邮件。") }
         defer { writeMemoryDiagnostics(to: store.root) }
         var text = "主题：\(message.subject)\n发件人：\(message.from.display) <\(message.from.email)>\n日期：\(message.date.ISO8601Format())\n\(message.text)"
         if !message.note.isEmpty { text += "\n用户笔记：\n" + message.note }
         if !message.labels.isEmpty { text += "\n用户标签：" + message.labels.joined(separator: ", ") }
         var descriptor = MailEvidence.version + ":windows-v1-1024:" + text + ":attachments=" + String(attachments)
         if attachments { descriptor += ":extractor=" + AttachmentTextExtractor.version }
-        var payloads: [(MailAttachment, Data?)] = []
         if attachments {
             for a in message.attachments {
-                let data = max(a.byteCount, a.data.count) <= 32 * 1024 * 1024 ? try? await store.attachmentData(a) : nil
-                descriptor += "\n" + a.name + ":" + a.mimeType + ":" + (data.map(MailStore.hash) ?? "unavailable:\(a.byteCount)")
-                payloads.append((a, data))
+                // Retain the digest, never every attachment's bytes at once.
+                let digest: String?
+                if max(a.byteCount, a.data.count) > 32 * 1024 * 1024 { digest = nil }
+                else if let revision = a.contentRevision { digest = revision }
+                else { digest = (try? await store.attachmentData(a, maximumBytes: 32 * 1024 * 1024)).map(MailStore.hash) }
+                descriptor += "\n" + a.name + ":" + a.mimeType + ":" + (digest ?? "unavailable:\(a.byteCount)")
             }
         }
         let hash = MailStore.hash(descriptor)
@@ -211,7 +231,9 @@ public actor EmbeddingIndex {
         let identity = modelIdentity
         if try await store.isIndexed(message.id, hash: hash, model: identity) { return false }
         if try await store.reuseVectors(canonical: message.canonicalID, targetID: message.id, model: identity, hash: hash) { return true }
-        for (attachment, data) in payloads {
+        for attachment in (attachments ? message.attachments : []) {
+            try Task.checkCancellation()
+            let data = try? await store.attachmentData(attachment, maximumBytes: 32 * 1024 * 1024)
             text += "\n附件 \(attachment.name)：\n"
             if let data {
                 let result = try await AttachmentTextExtractor.shared.extract(attachment, store: store, bytes: data)
@@ -237,7 +259,7 @@ public actor EmbeddingIndex {
         let identity = modelIdentity
         let scopedIDs: Set<String>?
         if parsed.hasFilters {
-            scopedIDs = Set(try await store.messages().filter { (allowedIDs?.contains($0.id) ?? true) && parsed.matches($0) }.map(\.id))
+            scopedIDs = Set(try await store.messageSummaries().filter { (allowedIDs?.contains($0.id) ?? true) && parsed.matches($0.displayMessage) }.map(\.id))
         } else { scopedIDs = allowedIDs }
         let coverage = try await store.searchIndexCoverage(model: identity, allowedIDs: scopedIDs)
         guard coverage.eligibleCount > 0 else { return [] }

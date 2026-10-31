@@ -2,12 +2,17 @@ import Foundation
 
 public enum MailEvidence {
     public static let version = "mail-evidence-v1:" + AttachmentTextExtractor.version
-    public static func forAnalysis(_ mail: MailMessage, store: MailStore) async -> MailMessage {
-        var evidence = mail
-        var text = mail.text
-        for attachment in mail.attachments {
+    public static func forAnalysis(_ mail: MailMessage, store: MailStore) async throws -> MailMessage {
+        let source: MailMessage
+        if mail.contentAvailability != nil && mail.contentAvailability != .complete {
+            guard let full = try await store.message(mail.id) else { throw MailError.message("邮件完整正文已不在本机，请同步后重试。") }; source = full
+        } else { source = mail }
+        var evidence = source
+        var text = source.text
+        for attachment in source.attachments {
             let result: AttachmentText
             do { result = try await AttachmentTextExtractor.shared.extract(attachment, store: store) }
+            catch is CancellationError { throw CancellationError() }
             catch { result = .init(text: "", source: "未提取", failure: "本机附件不可读，请重新同步或导入。") }
             text += "\n\n<attachment-data name=\"\(attachment.name)\">\n"
             text += result.text.isEmpty ? (result.failure ?? "没有可提取文字。") : result.text

@@ -17,15 +17,19 @@ public struct MailBulkFlagReceipt: Sendable {
 }
 
 public actor MailTransport {
-    private var sessions: [String: (IMAPConnection, AsyncMutex)] = [:]
-    private var popSessions: [String: (POP3Client, AsyncMutex)] = [:]
+    private struct IMAPSession { var fingerprint: String; let connection: IMAPConnection; let gate: NetworkOperationGate }
+    private struct POPSession { var fingerprint: String; let connection: POP3Client; let gate: NetworkOperationGate }
+    private var sessions: [String: IMAPSession] = [:]
+    private var popSessions: [String: POPSession] = [:]
     public init() {}
     // Test fixtures may use loopback plaintext. Production account URLs are always TLS.
     public func request(url: String, username: String, password: String, command: String = "", upload: Data? = nil, from: String? = nil, recipients: [String] = [], startTLS: Bool = false, testOnly: Bool = false, oauth: Bool = false) async throws -> TransportReply {
+        try Task.checkCancellation()
         #if os(iOS)
         return try await NativeSMTP.request(url: url, username: username, password: password, upload: upload, from: from, recipients: recipients, startTLS: startTLS, testOnly: testOnly, oauth: oauth)
         #else
-        return try await Task.detached(priority: .utility) {
+        let operation = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
             let strings = recipients.map { strdup($0) }; defer { strings.forEach { free($0) } }
             let pointers = strings.map { UnsafePointer<CChar>($0) }
             var response = pointers.withUnsafeBufferPointer { p in
@@ -37,7 +41,8 @@ public actor MailTransport {
             let body = response.data.map { Data(bytes: $0, count: response.length) } ?? Data()
             let head = response.headers.map { String(cString: $0) } ?? ""
             return TransportReply(data: body, headers: head)
-        }.value
+        }
+        return try await withTaskCancellationHandler { try await operation.value } onCancel: { operation.cancel() }
         #endif
     }
 
@@ -79,13 +84,9 @@ public actor MailTransport {
         try await withSession(account, password: password) { try await $0.inventory(folder) }
     }
     public static func parseFlags(_ text: String) -> [UInt64: (read: Bool, starred: Bool)] {
-        let re = try! NSRegularExpression(pattern: #"(?im)^\* \d+ FETCH \(([^\r\n]+)\)"#); var out: [UInt64: (Bool, Bool)] = [:]
-        for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-            let row = (text as NSString).substring(with: m.range(at: 1))
-            guard let uid = UInt64(MIMEParser.capture(#"UID\s+(\d+)"#, row) ?? "") else { continue }
-            let flags = MIMEParser.capture(#"FLAGS\s*\(([^)]*)\)"#, row)?.lowercased() ?? ""
-            out[uid] = (flags.contains("\\seen"), flags.contains("\\flagged"))
-        }; return out
+        var out: [UInt64: (read: Bool, starred: Bool)] = [:]
+        text.enumerateLines { line, _ in if let row = IMAPFlagRow.parse(line) { out[row.uid] = (row.read, row.starred) } }
+        return out
     }
     public func fetch(_ account: MailAccount, folder: String, uid: UInt64, validity: UInt64, password: String) async throws -> MailMessage {
         // BODY.PEEK keeps fetching/indexing from marking the message as read.
@@ -132,45 +133,64 @@ public actor MailTransport {
         var value = "imaps://\(account.imapHost):\(account.imapPort)"
         if let folder { value += "/" + (folder.addingPercentEncoding(withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? "INBOX") }; return value
     }
+    private func sessionFingerprint(_ account: MailAccount, password: String) -> String {
+        MailStore.hash(account.imapHost + ":" + String(account.imapPort) + ":" + account.email + ":" + account.authMethod + ":" + MailStore.hash(password))
+    }
     private func withSession<T>(_ account: MailAccount, password: String, operation: (IMAPConnection) async throws -> T) async throws -> T {
-        let key = account.id + ":" + MailStore.hash(account.imapHost + String(account.imapPort) + password)
-        if sessions[key] == nil { sessions[key] = (IMAPConnection(), AsyncMutex()) }
-        let (session, lock) = sessions[key]!
-        await lock.acquire()
+        try Task.checkCancellation()
+        let fingerprint = sessionFingerprint(account, password: password)
+        if sessions[account.id] == nil { sessions[account.id] = IMAPSession(fingerprint: fingerprint, connection: IMAPConnection(), gate: NetworkOperationGate()) }
+        var entry = sessions[account.id]!
+        let permit = try await entry.gate.acquire()
         do {
-            if !(await session.connected) { try await session.connect(host: account.imapHost, port: account.imapPort, email: account.email, password: password, oauth: account.authMethod == "oauth") }
-            let result = try await operation(session); await lock.release(); return result
-        } catch { await session.close(); await lock.release(); throw error }
+            try Task.checkCancellation()
+            // One credential generation per account. Expired OAuth sockets do
+            // not remain in a dictionary keyed by every historic token hash.
+            guard let registered = sessions[account.id], registered.gate === entry.gate else { throw CancellationError() }
+            entry = registered
+            if entry.fingerprint != fingerprint { await entry.connection.close(); entry.fingerprint = fingerprint; sessions[account.id] = entry }
+            if !(await entry.connection.connected) { try await entry.connection.connect(host: account.imapHost, port: account.imapPort, email: account.email, password: password, oauth: account.authMethod == "oauth") }
+            try Task.checkCancellation()
+            let result = try await operation(entry.connection); await entry.gate.release(permit); return result
+        } catch { await entry.connection.close(); await entry.gate.release(permit); throw error }
+    }
+    public func closeAccount(_ accountID: String) async {
+        let imap = sessions.removeValue(forKey: accountID), pop = popSessions.removeValue(forKey: accountID)
+        if let imap { await imap.gate.invalidate(); await imap.connection.close() }
+        if let pop { await pop.gate.invalidate(); await pop.connection.close() }
     }
     public func popInventory(_ account: MailAccount, password: String) async throws -> [String: Int] {
         try await withPOP(account, password: password) { try await $0.inventory() }
     }
     public func closePOP(_ account: MailAccount) async {
-        for (key, value) in popSessions where key.hasPrefix(account.id + ":") { await value.1.acquire(); await value.0.quit(); await value.1.release(); popSessions[key] = nil }
+        guard let entry = popSessions[account.id], let permit = try? await entry.gate.acquire() else { return }
+        if let registered = popSessions[account.id], registered.gate === entry.gate {
+            popSessions[account.id] = nil; await entry.gate.invalidate(); await entry.connection.quit()
+        }
+        await entry.gate.release(permit)
     }
     public func popFetch(_ account: MailAccount, uid: String, number: Int, password: String) async throws -> MailMessage {
         let raw = try await withPOP(account, password: password) { try await $0.fetch(number: number, expectedUID: uid) }
         var mail = MIMEParser.parse(raw, accountID: account.id); mail.id = account.id + ":pop:" + MailStore.hash(uid); mail.popUID = uid; return mail
     }
     private func withPOP<T>(_ account: MailAccount, password: String, operation: (POP3Client) async throws -> T) async throws -> T {
-        let key = account.id + ":" + MailStore.hash(account.imapHost + String(account.imapPort) + password)
-        if popSessions[key] == nil { popSessions[key] = (POP3Client(), AsyncMutex()) }
-        let (session, lock) = popSessions[key]!
-        await lock.acquire()
+        try Task.checkCancellation()
+        let fingerprint = sessionFingerprint(account, password: password)
+        if popSessions[account.id] == nil { popSessions[account.id] = POPSession(fingerprint: fingerprint, connection: POP3Client(), gate: NetworkOperationGate()) }
+        var entry = popSessions[account.id]!
+        let permit = try await entry.gate.acquire()
         do {
-            if !(await session.connected) { try await session.connect(host: account.imapHost, port: account.imapPort, email: account.email, password: password, oauth: account.authMethod == "oauth") }
-            let result = try await operation(session); await lock.release(); return result
-        } catch { await session.close(); await lock.release(); throw error }
+            try Task.checkCancellation()
+            guard let registered = popSessions[account.id], registered.gate === entry.gate else { throw CancellationError() }
+            entry = registered
+            if entry.fingerprint != fingerprint { await entry.connection.close(); entry.fingerprint = fingerprint; popSessions[account.id] = entry }
+            if !(await entry.connection.connected) { try await entry.connection.connect(host: account.imapHost, port: account.imapPort, email: account.email, password: password, oauth: account.authMethod == "oauth") }
+            try Task.checkCancellation()
+            let result = try await operation(entry.connection); await entry.gate.release(permit); return result
+        } catch { await entry.connection.close(); await entry.gate.release(permit); throw error }
     }
     private func quoted(_ value: String) throws -> String {
         guard !value.contains("\r"), !value.contains("\n"), !value.contains("\0") else { throw MailError.message("文件夹名称不能包含控制字符。") }
         return "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
-}
-
-private actor AsyncMutex {
-    var held = false
-    var waiters: [CheckedContinuation<Void, Never>] = []
-    func acquire() async { if !held { held = true; return }; await withCheckedContinuation { waiters.append($0) } }
-    func release() { if waiters.isEmpty { held = false } else { waiters.removeFirst().resume() } }
 }

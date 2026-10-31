@@ -32,7 +32,7 @@ extension AppModel {
     func responderDraft(_ rule: MailResponder, mail: MailMessage) async throws -> ComposeDraft {
         guard let account = accounts.first(where: { $0.id == mail.accountID && $0.enabled }) else { throw MailError.message("这个邮箱暂不可用。") }
         var draft = ComposeDraft(); draft.accountID = account.id; draft.to = mail.replyTo.first?.email ?? mail.from.email; draft.subject = "Re: " + mail.normalizedSubject; draft.inReplyTo = mail.messageID; draft.references = mail.references + " " + mail.messageID; draft.automaticResponse = true
-        if rule.useAI { let readable = await MailEvidence.forAnalysis(mail, store: store); draft.body = try await partner.draft(instruction: rule.response, mails: [readable], settings: settings).text }
+        if rule.useAI { let readable = try await MailEvidence.forAnalysis(mail, store: store); draft.body = try await partner.draft(instruction: rule.response, mails: [readable], settings: settings).text }
         else { draft.body = rule.body(for: mail, account: account) }
         return draft
     }

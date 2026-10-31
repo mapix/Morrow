@@ -57,6 +57,7 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}"]
     static let catalog: [String: (String, String)] = [
+        "搜索全部对话": ("Search all chats", "すべてのチャットを検索"),
         "全部已读": ("Mark all read", "すべて既読にする"),
         "全选本页": ("Select this page", "このページを選択"),
         "每页 {0} 封": ("{0} messages per page", "1ページ{0}通"),

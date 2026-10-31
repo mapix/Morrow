@@ -30,6 +30,8 @@ final class MailPaginationTests: XCTestCase {
         let model = try await fixture(count: 123)
         defer { try? FileManager.default.removeItem(at: model.store.root) }
         let existing = model.mails[0]
+        let loadedOriginal = try await model.store.message(existing.id)
+        let original = try XCTUnwrap(loadedOriginal)
         await model.markRead(existing, true)
         model.turnMailPage(2)
         await model.markAllReadInCurrentList()
@@ -38,7 +40,7 @@ final class MailPaginationTests: XCTestCase {
         await model.undo()
         XCTAssertEqual(model.mails.filter(\.isRead).map(\.id), [existing.id])
         let stored = try await model.store.message(existing.id)
-        XCTAssertEqual(stored?.text, existing.text); XCTAssertEqual(stored?.html, existing.html)
+        XCTAssertEqual(stored?.text, original.text); XCTAssertEqual(stored?.html, original.html)
     }
     @MainActor func testBulkSeenOverridesProtectNewlyFetchedMailFromOlderInventory() {
         let model = AppModel(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))

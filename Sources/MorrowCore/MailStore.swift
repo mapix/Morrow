@@ -22,9 +22,13 @@ public actor MailStore {
         CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, account TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL, validity INTEGER NOT NULL, date REAL NOT NULL, search TEXT NOT NULL, json BLOB NOT NULL,canonical TEXT NOT NULL DEFAULT '');
         CREATE INDEX IF NOT EXISTS folder_uid ON messages(account,folder,validity,uid);
         CREATE INDEX IF NOT EXISTS message_date ON messages(date DESC);
+        CREATE TABLE IF NOT EXISTS message_projections(message TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,account TEXT NOT NULL,folder TEXT NOT NULL,date REAL NOT NULL,json BLOB NOT NULL,content_revision TEXT NOT NULL,profile_signature TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS projection_scope_date ON message_projections(account,folder,date DESC);
+        CREATE INDEX IF NOT EXISTS projection_date ON message_projections(date DESC,message);
         CREATE VIRTUAL TABLE IF NOT EXISTS mail_fts USING fts5(id UNINDEXED,body,tokenize='unicode61');
         CREATE TABLE IF NOT EXISTS vectors(id TEXT PRIMARY KEY,message TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,chunk TEXT NOT NULL,vector BLOB NOT NULL,model TEXT NOT NULL,hash TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS vector_message ON vectors(message);
+        CREATE INDEX IF NOT EXISTS vector_model_message ON vectors(model,message);
         CREATE TABLE IF NOT EXISTS index_state(message TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,hash TEXT NOT NULL,model TEXT NOT NULL);
         """
         guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK else { throw MailError.message("本地邮件库初始化失败。") }
@@ -146,18 +150,176 @@ public actor MailStore {
         } catch { try? execute("ROLLBACK"); throw error }
     }
 
+    private nonisolated static func feed(_ digest: inout SHA256, _ text: String) {
+        var length = UInt64(text.utf8.count).bigEndian
+        withUnsafeBytes(of: &length) { digest.update(bufferPointer: $0) }
+        let fed = text.utf8.withContiguousStorageIfAvailable { storage -> Bool in
+            let raw = UnsafeRawBufferPointer(storage)
+            for start in stride(from: 0, to: raw.count, by: 64 * 1024) {
+                digest.update(bufferPointer: UnsafeRawBufferPointer(rebasing: raw[start..<min(start + 64 * 1024, raw.count)]))
+            }
+            return true
+        }
+        if fed != true {
+            var buffer = Data(); buffer.reserveCapacity(64 * 1024)
+            for byte in text.utf8 { buffer.append(byte); if buffer.count == 64 * 1024 { digest.update(data: buffer); buffer.removeAll(keepingCapacity: true) } }
+            if !buffer.isEmpty { digest.update(data: buffer) }
+        }
+    }
+    private nonisolated static func digestString(_ digest: SHA256) -> String { digest.finalize().map { String(format: "%02x", $0) }.joined() }
+    private nonisolated static func fileDigest(_ url: URL) throws -> String {
+        let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
+        var digest = SHA256()
+        while let chunk = try file.read(upToCount: 1024 * 1024), !chunk.isEmpty { digest.update(data: chunk) }
+        return digestString(digest)
+    }
+    private nonisolated static func bodyDigest(_ m: MailMessage) -> String {
+        var digest = SHA256(); feed(&digest, "mail-body-v1"); feed(&digest, m.text); feed(&digest, m.html)
+        for attachment in m.attachments where attachment.contentID != nil {
+            for field in [attachment.contentID ?? "", attachment.mimeType, attachment.name, attachment.contentRevision ?? "unavailable:\(attachment.byteCount)"] { feed(&digest, field) }
+        }
+        return digestString(digest)
+    }
+    private nonisolated static func profileSignature(_ m: MailMessage) -> String {
+        var digest = SHA256()
+        for field in [m.accountID, m.subject, String(m.date.timeIntervalSince1970)] { feed(&digest, field) }
+        for addresses in [[m.from], m.to, m.cc, m.bcc ?? [], m.replyTo] {
+            feed(&digest, String(addresses.count))
+            for address in addresses { feed(&digest, address.name); feed(&digest, address.email.lowercased()) }
+        }
+        return digestString(digest)
+    }
+    private func writeProjection(_ value: MailMessage) throws {
+        var message = value
+        if message.contentRevision == nil {
+            for i in message.attachments.indices where message.attachments[i].contentID != nil && message.attachments[i].contentRevision == nil {
+                if let path = message.attachments[i].storedPath { message.attachments[i].contentRevision = try? Self.fileDigest(URL(fileURLWithPath: path)) }
+            }
+            message.contentRevision = Self.bodyDigest(message)
+        }
+        try execute("INSERT INTO message_projections(message,account,folder,date,json,content_revision,profile_signature) VALUES(?,?,?,?,?,?,?) ON CONFLICT(message) DO UPDATE SET account=excluded.account,folder=excluded.folder,date=excluded.date,json=excluded.json,content_revision=excluded.content_revision,profile_signature=excluded.profile_signature", [.text(message.id), .text(message.accountID), .text(message.folder), .real(message.date.timeIntervalSince1970), .blob(try encoder.encode(MailMessageSummary(message: message))), .text(message.contentRevision!), .text(Self.profileSignature(message))])
+    }
+    /// Legacy bodies are read one bounded batch at a time. This table is a
+    /// rebuildable cache, containing a short preview and metadata only.
+    private func backfillProjections(account: String? = nil, folder: String? = nil) async throws {
+        while true {
+            try Task.checkCancellation()
+            var sql = "SELECT m.json FROM messages m LEFT JOIN message_projections p ON p.message=m.id WHERE p.message IS NULL"
+            var params: [Value] = []
+            if let account { sql += " AND m.account=?"; params.append(.text(account)) }
+            if let folder { sql += " AND m.folder=?"; params.append(.text(folder)) }
+            sql += " ORDER BY m.id LIMIT 64"
+            let statement = try statement(sql, params)
+            var batch: [MailMessage] = []
+            do {
+                while true {
+                    let code = sqlite3_step(statement); if code == SQLITE_DONE { break }
+                    guard code == SQLITE_ROW else { throw databaseError() }
+                    batch.append(try decoder.decode(MailMessage.self, from: bytes(statement, 0)))
+                }
+                sqlite3_finalize(statement)
+            } catch { sqlite3_finalize(statement); throw error }
+            if batch.isEmpty { return }
+            try execute("BEGIN IMMEDIATE")
+            do { for message in batch { try writeProjection(message) }; try execute("COMMIT") }
+            catch { try? execute("ROLLBACK"); throw error }
+            // No SQLite cursor or transaction crosses the suspension point.
+            batch.removeAll(); await Task.yield()
+        }
+    }
+    private func scanProjections(_ sql: String, _ params: [Value]) throws -> (values: [MailMessageSummary], invalidIDs: [String]) {
+        let statement = try statement(sql, params); defer { sqlite3_finalize(statement) }
+        var values: [MailMessageSummary] = [], invalidIDs: [String] = [], scanned = 0
+        while true {
+            let code = sqlite3_step(statement); if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else { throw databaseError() }
+            if scanned.isMultiple(of: 128) { try Task.checkCancellation() }; scanned += 1
+            let id = string(statement, 0)
+            if let value = try? decoder.decode(MailMessageSummary.self, from: bytes(statement, 1)), value.id == id, value.displayMessage.contentAvailability == .preview, value.displayMessage.text.count <= 300, value.displayMessage.html.isEmpty, value.displayMessage.raw.isEmpty, value.displayMessage.analysis?.evidenceText == nil, value.displayMessage.attachments.allSatisfy({ $0.data.isEmpty }) { values.append(value) }
+            else { invalidIDs.append(id) }
+        }
+        return (values, invalidIDs)
+    }
+    public func messageSummaries(account: String? = nil, folder: String? = nil, limit: Int? = nil, offset: Int = 0) async throws -> [MailMessageSummary] {
+        if let limit, limit <= 0 { return [] }
+        try await backfillProjections(account: account, folder: folder)
+        var sql = "SELECT message,json FROM message_projections"; var clauses: [String] = []; var params: [Value] = []
+        if let account { clauses.append("account=?"); params.append(.text(account)) }
+        if let folder { clauses.append("folder=?"); params.append(.text(folder)) }
+        if !clauses.isEmpty { sql += " WHERE " + clauses.joined(separator: " AND ") }
+        sql += " ORDER BY date DESC,message LIMIT ? OFFSET ?"
+        params += [.int(Int64(limit ?? -1)), .int(Int64(max(0, offset)))]
+        var first = try scanProjections(sql, params)
+        if first.invalidIDs.isEmpty { return first.values }
+        // Discard every first-generation value before reading any full body
+        // or suspending. Retain only small IDs; there is no recursive retry.
+        first.values.removeAll(keepingCapacity: false)
+        for start in stride(from: 0, to: first.invalidIDs.count, by: 64) {
+            try Task.checkCancellation()
+            try execute("BEGIN IMMEDIATE")
+            do {
+                for index in start..<min(start + 64, first.invalidIDs.count) {
+                    if var value = try message(first.invalidIDs[index]) { value.contentRevision = nil; try writeProjection(value) }
+                }
+                try execute("COMMIT")
+            } catch { try? execute("ROLLBACK"); throw error }
+            // One complete message at a time, never an array of full bodies.
+            await Task.yield()
+        }
+        first.invalidIDs.removeAll(keepingCapacity: false)
+        let verified = try scanProjections(sql, params)
+        guard verified.invalidIDs.isEmpty else { throw MailError.message("邮件摘要缓存修复失败，仍有\(verified.invalidIDs.count)封摘要无效；已停止重试。") }
+        return verified.values
+    }
+    /// Contact claims need complete text, but never HTML, MIME, file data, or
+    /// duplicated analysis evidence. SQLite removes those fields per row.
+    public func contactMessages(account: String? = nil, folder: String? = nil) async throws -> [MailMessage] {
+        try await backfillProjections(account: account, folder: folder)
+        var sql = "SELECT json_set(json_remove(CAST(m.json AS TEXT),'$.analysis.evidenceText'),'$.html','','$.raw','','$.contentAvailability','textOnly'),p.content_revision FROM messages m JOIN message_projections p ON p.message=m.id"
+        var clauses: [String] = [], params: [Value] = []
+        if let account { clauses.append("m.account=?"); params.append(.text(account)) }
+        if let folder { clauses.append("m.folder=?"); params.append(.text(folder)) }
+        if !clauses.isEmpty { sql += " WHERE " + clauses.joined(separator: " AND ") }; sql += " ORDER BY m.date DESC,m.id"
+        let statement = try statement(sql, params); defer { sqlite3_finalize(statement) }
+        var out: [MailMessage] = []
+        while true {
+            let code = sqlite3_step(statement); if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else { throw databaseError() }
+            var message = try decoder.decode(MailMessage.self, from: bytes(statement, 0)); message.contentRevision = string(statement, 1)
+            for i in message.attachments.indices { message.attachments[i].data = Data() }; out.append(message)
+        }
+        return out
+    }
+    public func profileInventoryFingerprint() async throws -> String {
+        try await backfillProjections()
+        let statement = try statement("SELECT message,content_revision,profile_signature FROM message_projections ORDER BY message"); defer { sqlite3_finalize(statement) }
+        var digest = SHA256(); Self.feed(&digest, "profile-inventory-v1")
+        while true {
+            let code = sqlite3_step(statement); if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else { throw databaseError() }
+            for column: Int32 in 0..<3 { Self.feed(&digest, string(statement, column)) }
+        }
+        return Self.digestString(digest)
+    }
+
     @discardableResult public func upsert(_ value: MailMessage) throws -> MailMessage {
+        guard value.contentAvailability == nil || value.contentAvailability == .complete else { throw MailError.message("邮件摘要不能覆盖完整邮件，请先读取正文。") }
         var m = value
         if !m.raw.isEmpty { try privateWrite(m.raw, to: rawURL(m.id)); m.raw = Data() }
         for i in m.attachments.indices where !m.attachments[i].data.isEmpty {
             let a = m.attachments[i]; let url = root.appendingPathComponent("attachments/" + a.id)
-            try privateWrite(a.data, to: url); m.attachments[i].storedPath = url.path; m.attachments[i].byteCount = a.data.count; m.attachments[i].data = Data()
+            try privateWrite(a.data, to: url); m.attachments[i].storedPath = url.path; m.attachments[i].byteCount = a.data.count; m.attachments[i].contentRevision = Self.hash(a.data); m.attachments[i].data = Data()
         }
+        for i in m.attachments.indices where m.attachments[i].contentID != nil && m.attachments[i].contentRevision == nil {
+            if let path = m.attachments[i].storedPath { m.attachments[i].contentRevision = try? Self.fileDigest(URL(fileURLWithPath: path)) }
+        }
+        m.contentRevision = Self.bodyDigest(m)
         let search = [m.subject, m.from.name, m.from.email, m.to.map(\.email).joined(separator: " "), m.text, m.note, m.analysis?.summary ?? "", m.labels.joined(separator: " ")].joined(separator: "\n")
         let ownsTransaction = sqlite3_get_autocommit(db) != 0
         if ownsTransaction { try execute("BEGIN IMMEDIATE") }
         do {
             try execute("INSERT INTO messages(id,account,folder,uid,validity,date,search,json,canonical) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET account=excluded.account,folder=excluded.folder,uid=excluded.uid,validity=excluded.validity,date=excluded.date,search=excluded.search,json=excluded.json,canonical=excluded.canonical", [.text(m.id), .text(m.accountID), .text(m.folder), .int(Int64(m.uid)), .int(Int64(m.uidValidity)), .real(m.date.timeIntervalSince1970), .text(search), .blob(try encoder.encode(m)), .text(m.canonicalID)])
+            try writeProjection(m)
             try execute("DELETE FROM mail_fts WHERE id=?", [.text(m.id)])
             try execute("INSERT INTO mail_fts(id,body) VALUES(?,?)", [.text(m.id), .text(search)])
             if ownsTransaction { try execute("COMMIT") }
@@ -199,96 +361,161 @@ public actor MailStore {
         }
         return result
     }
-    private func readStates(ids: Set<String>, includeCanonicalCopies: Bool) throws -> [String: Bool] {
+    private enum StoredMailFlag: String { case read = "isRead", star = "isStarred" }
+    private func flagStates(ids: Set<String>, flag: StoredMailFlag, includeCanonicalCopies: Bool) throws -> [String: Bool] {
         let ordered = ids.sorted(); var states: [String: Bool] = [:]
+        let path = "$." + flag.rawValue
         for start in stride(from: 0, to: ordered.count, by: 400) {
             let chunk = Array(ordered[start..<min(start + 400, ordered.count)])
             let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
             let parameters = chunk.map(Value.text)
-            var queries = ["SELECT id,json_extract(CAST(json AS TEXT),'$.isRead'),json_type(CAST(json AS TEXT)),json_type(CAST(json AS TEXT),'$.isRead') FROM messages WHERE id IN (" + placeholders + ")"]
+            var queries = ["SELECT id,json_extract(CAST(json AS TEXT),'" + path + "'),json_type(CAST(json AS TEXT)),json_type(CAST(json AS TEXT),'" + path + "') FROM messages WHERE id IN (" + placeholders + ")"]
             if includeCanonicalCopies {
-                queries.append("SELECT DISTINCT m.id,json_extract(CAST(m.json AS TEXT),'$.isRead'),json_type(CAST(m.json AS TEXT)),json_type(CAST(m.json AS TEXT),'$.isRead') FROM messages anchor JOIN messages m ON m.account=anchor.account AND m.canonical=anchor.canonical WHERE anchor.id IN (" + placeholders + ") AND anchor.canonical<>''")
+                queries.append("SELECT DISTINCT m.id,json_extract(CAST(m.json AS TEXT),'" + path + "'),json_type(CAST(m.json AS TEXT)),json_type(CAST(m.json AS TEXT),'" + path + "') FROM messages anchor JOIN messages m ON m.account=anchor.account AND m.canonical=anchor.canonical WHERE anchor.id IN (" + placeholders + ") AND anchor.canonical<>''")
             }
             for query in queries {
                 let s = try statement(query, parameters); defer { sqlite3_finalize(s) }
                 while true {
-                    let code = sqlite3_step(s)
-                    if code == SQLITE_DONE { break }
+                    let code = sqlite3_step(s); if code == SQLITE_DONE { break }
                     guard code == SQLITE_ROW else { throw databaseError() }
-                    guard string(s, 2) == "object", ["true", "false"].contains(string(s, 3)) else { throw MailError.message("邮件已读状态数据损坏。") }
+                    guard string(s, 2) == "object", ["true", "false"].contains(string(s, 3)) else { throw MailError.message("邮件标记状态数据损坏。") }
                     states[string(s, 0)] = sqlite3_column_int(s, 1) != 0
                 }
             }
         }
         return states
     }
-    private func writeReadState(ids: Set<String>, read: Bool, modifiedAt: Date) throws {
-        let ordered = ids.sorted(), boolean = read ? "true" : "false"
-        // The timestamp adds one parameter, keeping each statement <=400.
+    private func writeFlagState(ids: Set<String>, flag: StoredMailFlag, enabled: Bool, modifiedAt: Date) throws {
+        let ordered = ids.sorted(), boolean = enabled ? "true" : "false", path = "$." + flag.rawValue
         for start in stride(from: 0, to: ordered.count, by: 399) {
             let chunk = Array(ordered[start..<min(start + 399, ordered.count)])
             let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
-            let sql = "UPDATE messages SET json=json_set(CAST(json AS TEXT),'$.isRead',json('" + boolean + "'),'$.localFlagModifiedAt',?) WHERE id IN (" + placeholders + ")"
-            try execute(sql, [.real(modifiedAt.timeIntervalSinceReferenceDate)] + chunk.map(Value.text))
+            try execute("UPDATE messages SET json=json_set(CAST(json AS TEXT),'" + path + "',json('" + boolean + "'),'$.localFlagModifiedAt',?) WHERE id IN (" + placeholders + ")", [.real(modifiedAt.timeIntervalSinceReferenceDate)] + chunk.map(Value.text))
+            try execute("DELETE FROM message_projections WHERE NOT json_valid(json) AND message IN (" + placeholders + ")", chunk.map(Value.text))
+            try execute("UPDATE message_projections SET json=json_set(CAST(json AS TEXT),'$.projectedMessage." + flag.rawValue + "',json('" + boolean + "'),'$.projectedMessage.localFlagModifiedAt',?) WHERE message IN (" + placeholders + ")", [.real(modifiedAt.timeIntervalSinceReferenceDate)] + chunk.map(Value.text))
         }
     }
-    /// Change only read metadata. Neither payload decoding, FTS rebuilding nor
-    /// vector invalidation belongs to a flag mutation.
-    public func setReadState(ids: Set<String>, read: Bool, modifiedAt: Date = Date(), includeCanonicalCopies: Bool = false) throws -> [MailReadStateChange] {
+    private func setFlagState(ids: Set<String>, flag: StoredMailFlag, enabled: Bool, modifiedAt: Date, includeCanonicalCopies: Bool) throws -> [MailFlagStateChange] {
         guard !ids.isEmpty else { return [] }
         guard modifiedAt.timeIntervalSinceReferenceDate.isFinite else { throw MailError.message("本地修改时间无效。") }
         try execute("BEGIN IMMEDIATE")
         do {
-            let states = try readStates(ids: ids, includeCanonicalCopies: includeCanonicalCopies)
-            let changes = states.filter { $0.value != read }.map { MailReadStateChange(id: $0.key, wasRead: $0.value) }.sorted { $0.id < $1.id }
-            try writeReadState(ids: Set(changes.map(\.id)), read: read, modifiedAt: modifiedAt)
+            let states = try flagStates(ids: ids, flag: flag, includeCanonicalCopies: includeCanonicalCopies)
+            let changes = states.filter { $0.value != enabled }.map { MailFlagStateChange(id: $0.key, wasEnabled: $0.value) }.sorted { $0.id < $1.id }
+            try writeFlagState(ids: Set(changes.map(\.id)), flag: flag, enabled: enabled, modifiedAt: modifiedAt)
             try execute("COMMIT"); return changes
         } catch { try? execute("ROLLBACK"); throw error }
     }
-    /// Restore exactly the rows changed by the original operation, using their
-    /// captured state. Rows that were already read never enter that undo list.
-    public func restoreReadState(changes: [MailReadStateChange], modifiedAt: Date = Date()) throws -> Set<String> {
+    private func restoreFlagState(changes: [MailFlagStateChange], flag: StoredMailFlag, modifiedAt: Date) throws -> Set<String> {
         guard !changes.isEmpty else { return [] }
         guard modifiedAt.timeIntervalSinceReferenceDate.isFinite else { throw MailError.message("本地修改时间无效。") }
         var desired: [String: Bool] = [:]
         for change in changes {
-            if let previous = desired[change.id], previous != change.wasRead { throw MailError.message("邮件恢复状态冲突。") }
-            desired[change.id] = change.wasRead
+            if let previous = desired[change.id], previous != change.wasEnabled { throw MailError.message("邮件恢复状态冲突。") }
+            desired[change.id] = change.wasEnabled
         }
         try execute("BEGIN IMMEDIATE")
         do {
-            let current = try readStates(ids: Set(desired.keys), includeCanonicalCopies: false)
+            let current = try flagStates(ids: Set(desired.keys), flag: flag, includeCanonicalCopies: false)
             var restored = Set<String>()
-            for read in [false, true] {
-                let ids = Set(desired.compactMap { id, value in value == read && current[id] != nil && current[id] != read ? id : nil })
-                try writeReadState(ids: ids, read: read, modifiedAt: modifiedAt); restored.formUnion(ids)
+            for enabled in [false, true] {
+                let ids = Set(desired.compactMap { id, value in value == enabled && current[id] != nil && current[id] != enabled ? id : nil })
+                try writeFlagState(ids: ids, flag: flag, enabled: enabled, modifiedAt: modifiedAt); restored.formUnion(ids)
             }
             try execute("COMMIT"); return restored
         } catch { try? execute("ROLLBACK"); throw error }
     }
+    public func setReadState(ids: Set<String>, read: Bool, modifiedAt: Date = Date(), includeCanonicalCopies: Bool = false) throws -> [MailReadStateChange] {
+        try setFlagState(ids: ids, flag: .read, enabled: read, modifiedAt: modifiedAt, includeCanonicalCopies: includeCanonicalCopies).map { MailReadStateChange(id: $0.id, wasRead: $0.wasEnabled) }
+    }
+    public func restoreReadState(changes: [MailReadStateChange], modifiedAt: Date = Date()) throws -> Set<String> {
+        try restoreFlagState(changes: changes.map { MailFlagStateChange(id: $0.id, wasEnabled: $0.wasRead) }, flag: .read, modifiedAt: modifiedAt)
+    }
+    public func setStarState(ids: Set<String>, starred: Bool, modifiedAt: Date = Date(), includeCanonicalCopies: Bool = false) throws -> [MailFlagStateChange] {
+        try setFlagState(ids: ids, flag: .star, enabled: starred, modifiedAt: modifiedAt, includeCanonicalCopies: includeCanonicalCopies)
+    }
+    public func restoreStarState(changes: [MailFlagStateChange], modifiedAt: Date = Date()) throws -> Set<String> {
+        try restoreFlagState(changes: changes, flag: .star, modifiedAt: modifiedAt)
+    }
+    private func labelStates(ids: Set<String>, includeCanonicalCopies: Bool) throws -> [String: [String]] {
+        let ordered = ids.sorted(); var states: [String: [String]] = [:]
+        for start in stride(from: 0, to: ordered.count, by: 400) {
+            let chunk = Array(ordered[start..<min(start + 400, ordered.count)])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            var queries = ["SELECT id,json_extract(CAST(json AS TEXT),'$.labels'),json_type(CAST(json AS TEXT)),json_type(CAST(json AS TEXT),'$.labels') FROM messages WHERE id IN (" + placeholders + ")"]
+            if includeCanonicalCopies { queries.append("SELECT DISTINCT m.id,json_extract(CAST(m.json AS TEXT),'$.labels'),json_type(CAST(m.json AS TEXT)),json_type(CAST(m.json AS TEXT),'$.labels') FROM messages anchor JOIN messages m ON m.account=anchor.account AND m.canonical=anchor.canonical WHERE anchor.id IN (" + placeholders + ") AND anchor.canonical<>''") }
+            for query in queries {
+                let statement = try statement(query, chunk.map(Value.text)); defer { sqlite3_finalize(statement) }
+                while true {
+                    let code = sqlite3_step(statement); if code == SQLITE_DONE { break }
+                    guard code == SQLITE_ROW else { throw databaseError() }
+                    guard string(statement, 2) == "object", string(statement, 3) == "array" else { throw MailError.message("邮件标签数据损坏。") }
+                    states[string(statement, 0)] = try decoder.decode([String].self, from: Data(string(statement, 1).utf8))
+                }
+            }
+        }
+        return states
+    }
+    /// Appending labels updates only metadata. SQLite owns the original body
+    /// throughout; Swift retains previous tag arrays for the bounded undo UI.
+    public func addLabel(ids: Set<String>, label: String, includeCanonicalCopies: Bool = true) throws -> [MailLabelStateChange] {
+        guard !ids.isEmpty else { return [] }
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { throw MailError.message("标签不能为空。") }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let states = try labelStates(ids: ids, includeCanonicalCopies: includeCanonicalCopies)
+            let changes = states.filter { !$0.value.contains(label) }.map { MailLabelStateChange(id: $0.key, labels: $0.value) }.sorted { $0.id < $1.id }
+            let ordered = changes.map(\.id)
+            for start in stride(from: 0, to: ordered.count, by: 398) {
+                let chunk = Array(ordered[start..<min(start + 398, ordered.count)])
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                try execute("UPDATE messages SET json=json_insert(CAST(json AS TEXT),'$.labels[#]',?),search=search || char(10) || ? WHERE id IN (" + placeholders + ")", [.text(label), .text(label)] + chunk.map(Value.text))
+                try execute("DELETE FROM message_projections WHERE NOT json_valid(json) AND message IN (" + placeholders + ")", chunk.map(Value.text))
+                try execute("UPDATE message_projections SET json=json_insert(CAST(json AS TEXT),'$.projectedMessage.labels[#]',?) WHERE message IN (" + placeholders + ")", [.text(label)] + chunk.map(Value.text))
+            }
+            if !ordered.isEmpty {
+                // FTS5's id is UNINDEXED. A single set operation avoids a whole
+                // virtual-table scan for every small batch of message IDs.
+                let selected = Value.blob(try encoder.encode(ordered))
+                try execute("DELETE FROM mail_fts WHERE id IN (SELECT value FROM json_each(CAST(? AS TEXT)))", [selected])
+                try execute("INSERT INTO mail_fts(id,body) SELECT m.id,m.search FROM messages m JOIN json_each(CAST(? AS TEXT)) selected ON selected.value=m.id", [selected])
+            }
+            try execute("COMMIT"); return changes
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
     public func messages(account: String? = nil, folder: String? = nil) throws -> [MailMessage] {
-        var sql = "SELECT json FROM messages"; var clauses: [String] = []; var params: [Value] = []
-        if let account { clauses.append("account=?"); params.append(.text(account)) }
-        if let folder { clauses.append("folder=?"); params.append(.text(folder)) }
-        if !clauses.isEmpty { sql += " WHERE " + clauses.joined(separator: " AND ") }; sql += " ORDER BY date DESC"
+        var sql = "SELECT m.json,p.content_revision FROM messages m LEFT JOIN message_projections p ON p.message=m.id"; var clauses: [String] = []; var params: [Value] = []
+        if let account { clauses.append("m.account=?"); params.append(.text(account)) }
+        if let folder { clauses.append("m.folder=?"); params.append(.text(folder)) }
+        if !clauses.isEmpty { sql += " WHERE " + clauses.joined(separator: " AND ") }; sql += " ORDER BY m.date DESC"
         let s = try statement(sql, params); defer { sqlite3_finalize(s) }; var out: [MailMessage] = []
-        while sqlite3_step(s) == SQLITE_ROW { out.append(try decoder.decode(MailMessage.self, from: bytes(s, 0))) }; return out
+        while sqlite3_step(s) == SQLITE_ROW { var m = try decoder.decode(MailMessage.self, from: bytes(s, 0)); if sqlite3_column_type(s, 1) != SQLITE_NULL { m.contentRevision = string(s, 1) }; out.append(m) }; return out
     }
     public func message(_ id: String) throws -> MailMessage? {
-        let s = try statement("SELECT json FROM messages WHERE id=?", [.text(id)]); defer { sqlite3_finalize(s) }
-        return sqlite3_step(s) == SQLITE_ROW ? try decoder.decode(MailMessage.self, from: bytes(s, 0)) : nil
+        let s = try statement("SELECT m.json,p.content_revision FROM messages m LEFT JOIN message_projections p ON p.message=m.id WHERE m.id=?", [.text(id)]); defer { sqlite3_finalize(s) }
+        guard sqlite3_step(s) == SQLITE_ROW else { return nil }
+        var m = try decoder.decode(MailMessage.self, from: bytes(s, 0))
+        if sqlite3_column_type(s, 1) != SQLITE_NULL { m.contentRevision = string(s, 1) }; return m
     }
     public func deleteMessage(_ id: String) throws {
         if let m = try message(id) { for a in m.attachments { if let path = a.storedPath { try? FileManager.default.removeItem(atPath: path) }; try remove(kind: "attachment-text", id: a.id) }; try? FileManager.default.removeItem(at: rawURL(id)) }
         try execute("DELETE FROM messages WHERE id=?", [.text(id)]); try execute("DELETE FROM mail_fts WHERE id=?", [.text(id)])
     }
     public func deleteAccount(_ id: String) throws {
-        for m in try messages(account: id) { try deleteMessage(m.id) }
+        for record in try syncRecords(account: id, folder: nil) { try deleteMessage(record.id) }
         try remove(kind: "account", id: id)
         for f in try load(MailFolder.self, kind: "folder") where f.accountID == id { try remove(kind: "folder", id: f.id) }
     }
     public func rawData(_ message: MailMessage) throws -> Data { message.raw.isEmpty ? try Data(contentsOf: rawURL(message.id)) : message.raw }
-    public func attachmentData(_ attachment: MailAttachment) throws -> Data { if !attachment.data.isEmpty { return attachment.data }; guard let path = attachment.storedPath else { return Data() }; return try Data(contentsOf: URL(fileURLWithPath: path)) }
+    public func attachmentData(_ attachment: MailAttachment, maximumBytes: Int? = nil) throws -> Data {
+        if let maximumBytes, max(attachment.byteCount, attachment.data.count) > maximumBytes { throw MailError.message("附件超过读取大小限制。") }
+        if !attachment.data.isEmpty { return attachment.data }
+        guard let path = attachment.storedPath else { return Data() }
+        let url = URL(fileURLWithPath: path)
+        if let maximumBytes { return try BoundedFileReader.read(url, maximumBytes: maximumBytes) }
+        return try Data(contentsOf: url)
+    }
     public func hydrate(_ message: MailMessage) throws -> MailMessage {
         var m = message; m.raw = (try? rawData(m)) ?? Data(); for i in m.attachments.indices { m.attachments[i].data = try attachmentData(m.attachments[i]) }; return m
     }
@@ -297,25 +524,46 @@ public actor MailStore {
     public nonisolated static func hash(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
     public nonisolated static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
-    public func keywordSearch(_ query: String, limit: Int = 60, allowedIDs: Set<String>? = nil) throws -> [SearchHit] {
+    public func keywordSearch(_ query: String, limit: Int = 60, allowedIDs: Set<String>? = nil) async throws -> [SearchHit] {
         if allowedIDs?.isEmpty == true { return [] }
+        guard limit > 0 else { return [] }
         let parsed = MailQuery(query)
+        var scope = allowedIDs
         if parsed.hasFilters {
-            let tokens = parsed.text.split(whereSeparator: \.isWhitespace).map { $0.lowercased() }
-            let values = try messages().filter { m in (allowedIDs?.contains(m.id) ?? true) && parsed.matches(m) && (tokens.isEmpty || tokens.contains(where: { (m.subject + " " + m.text + " " + m.from.email).lowercased().contains($0) })) }.map { SearchHit(message: $0, score: 1, method: "条件检索") }
-            return deduplicate(values, limit: limit)
+            scope = Set(try await messageSummaries().filter { (allowedIDs?.contains($0.id) ?? true) && parsed.matches($0.displayMessage) }.map(\.id))
+            if scope?.isEmpty == true { return [] }
         }
-        let tokens = query.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard !tokens.isEmpty else { return [] }
-        let clauses = tokens.map { _ in "instr(lower(search),lower(?))>0" }.joined(separator: " OR ")
-        let sqlLimit = allowedIDs == nil ? " LIMIT ?" : ""
-        let bindings = tokens.map(Value.text) + (allowedIDs == nil ? [.int(Int64(limit * 4))] : [])
-        let s = try statement("SELECT json,search FROM messages WHERE \(clauses) ORDER BY date DESC" + sqlLimit, bindings); defer { sqlite3_finalize(s) }
-        var out: [SearchHit] = []
-        while sqlite3_step(s) == SQLITE_ROW {
-            let m = try decoder.decode(MailMessage.self, from: bytes(s, 0)); guard allowedIDs?.contains(m.id) ?? true else { continue }; let body = string(s, 1).lowercased(); let score = Float(tokens.filter { body.contains($0.lowercased()) }.count) / Float(tokens.count)
-            out.append(.init(message: m, score: score, method: "关键词"))
-        }; return deduplicate(out.sorted { $0.score > $1.score }, limit: limit)
+        let tokens = parsed.text.split(whereSeparator: \.isWhitespace).map(String.init)
+        if tokens.isEmpty && !parsed.hasFilters { return [] }
+        struct Candidate { var id: String; var canonical: String; var folder: String; var score: Float }
+        let clauses = tokens.isEmpty ? "1" : tokens.map { _ in "instr(lower(search),lower(?))>0" }.joined(separator: " OR ")
+        let sqlLimit = scope == nil ? " LIMIT ?" : ""
+        let bindings = tokens.map(Value.text) + (scope == nil ? [.int(Int64(limit * 4))] : [])
+        let s = try statement("SELECT id,search,canonical,folder FROM messages WHERE \(clauses) ORDER BY date DESC" + sqlLimit, bindings)
+        var candidates: [Candidate] = []
+        do {
+            while true {
+                let code = sqlite3_step(s); if code == SQLITE_DONE { break }
+                guard code == SQLITE_ROW else { throw databaseError() }
+                let id = string(s, 0); guard scope?.contains(id) ?? true else { continue }
+                let body = string(s, 1).lowercased()
+                let score = tokens.isEmpty ? 1 : Float(tokens.filter { body.contains($0.lowercased()) }.count) / Float(tokens.count)
+                let canonical = string(s, 2)
+                candidates.append(Candidate(id: id, canonical: canonical.isEmpty ? id : canonical, folder: string(s, 3), score: score))
+            }
+            sqlite3_finalize(s)
+        } catch { sqlite3_finalize(s); throw error }
+        // Rank and deduplicate small metadata before reading any body. Preserve
+        // the inbox representative used by the previous search implementation.
+        var order: [String] = [], best: [String: Candidate] = [:]
+        for candidate in candidates.sorted(by: { $0.score > $1.score }) {
+            if best[candidate.canonical] == nil { order.append(candidate.canonical); best[candidate.canonical] = candidate }
+            else if candidate.folder == "INBOX" { best[candidate.canonical] = candidate }
+        }
+        return try order.prefix(limit).compactMap { key in
+            guard let candidate = best[key], let mail = try message(candidate.id) else { return nil }
+            return SearchHit(message: mail, score: candidate.score, method: parsed.hasFilters ? "条件检索" : "关键词")
+        }
     }
     private func deduplicate(_ values: [SearchHit], limit: Int) -> [SearchHit] {
         var ordered: [String] = []; var best: [String: SearchHit] = [:]
@@ -363,45 +611,21 @@ public actor MailStore {
         while sqlite3_step(s) == SQLITE_ROW { if let canonical = canonicalByID[string(s, 0)] { indexed.insert(canonical) } }
         return (Set(canonicalByID.values).count, indexed.count)
     }
-    public func vectorSearch(_ query: [Float], model: String, limit: Int = 30, allowedIDs: Set<String>? = nil, minimumScore: Float? = nil) throws -> [SearchHit] {
+    public func vectorSearch(_ query: [Float], model: String, limit: Int = 30, allowedIDs: Set<String>? = nil, minimumScore: Float? = nil) async throws -> [SearchHit] {
         if allowedIDs?.isEmpty == true { return [] }
         guard !query.isEmpty, query.allSatisfy(\.isFinite) else { throw MailError.message("检索向量无效。") }
         guard limit > 0 else { return [] }
-        struct Candidate {
-            var id: String; var canonical: String; var folder: String; var date: Double; var score: Float; var snippet: String
+        let database = root.appendingPathComponent("mail.sqlite")
+        let scanner = Task.detached(priority: .userInitiated) {
+            try MailVectorRanking.rank(database: database, query: query, model: model, limit: limit, allowedIDs: allowedIDs, minimumScore: minimumScore)
         }
-        let s = try statement("SELECT v.message,m.canonical,m.folder,m.date,v.vector,v.chunk FROM vectors v JOIN messages m ON m.id=v.message WHERE v.model=?", [.text(model)]); defer { sqlite3_finalize(s) }
-        var best: [String: Candidate] = [:]
-        while sqlite3_step(s) == SQLITE_ROW {
-            let id = string(s, 0); guard allowedIDs?.contains(id) ?? true else { continue }
-            let count = Int(sqlite3_column_bytes(s, 4))
-            guard count == query.count * MemoryLayout<Float>.size, let pointer = sqlite3_column_blob(s, 4) else { continue }
-            // SQLite owns this blob until step/finalize. Score it in place;
-            // allocating a Data and Float array for every chunk is unnecessary.
-            let raw = UnsafeRawBufferPointer(start: pointer, count: count)
-            var score: Float = 0
-            for i in query.indices { score += query[i] * raw.loadUnaligned(fromByteOffset: i * MemoryLayout<Float>.size, as: Float.self) }
-            guard score.isFinite, minimumScore.map({ score >= $0 }) ?? true else { continue }
-            if score > (best[id]?.score ?? -.infinity) {
-                let canonical = string(s, 1)
-                best[id] = Candidate(id: id, canonical: canonical.isEmpty ? id : canonical, folder: string(s, 2), date: sqlite3_column_double(s, 3), score: score, snippet: string(s, 5))
-            }
+        let ranked = try await withTaskCancellationHandler(operation: { try await scanner.value }, onCancel: { scanner.cancel() })
+        var results: [SearchHit] = []
+        for candidate in ranked {
+            try Task.checkCancellation()
+            if let mail = try message(candidate.id) { results.append(SearchHit(message: mail, score: candidate.score, method: "语义（EmbeddingGemma 2）", snippet: candidate.snippet)) }
         }
-        var canonicalHits: [String: Candidate] = [:]
-        for candidate in best.values {
-            if let prior = canonicalHits[candidate.canonical] {
-                if candidate.score > prior.score || (candidate.score == prior.score && candidate.folder.uppercased() == "INBOX" && prior.folder.uppercased() != "INBOX") || (candidate.score == prior.score && candidate.folder.uppercased() == prior.folder.uppercased() && candidate.id < prior.id) { canonicalHits[candidate.canonical] = candidate }
-            } else { canonicalHits[candidate.canonical] = candidate }
-        }
-        let ranked = canonicalHits.values.sorted { first, second in
-            if first.score != second.score { return first.score > second.score }
-            return first.date == second.date ? first.id < second.id : first.date > second.date
-        }.prefix(limit)
-        // Decode only the final Top-K bodies after ranking and deduplication.
-        return try ranked.compactMap { candidate -> SearchHit? in
-            guard let mail = try message(candidate.id) else { return nil }
-            return SearchHit(message: mail, score: candidate.score, method: "语义（EmbeddingGemma 2）", snippet: candidate.snippet)
-        }
+        return results
     }
     public func indexCount() throws -> Int {
         let s = try statement("SELECT count(DISTINCT m.canonical) FROM index_state i JOIN messages m ON m.id=i.message"); defer { sqlite3_finalize(s) }; return sqlite3_step(s) == SQLITE_ROW ? Int(sqlite3_column_int(s, 0)) : 0

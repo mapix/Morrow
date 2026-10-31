@@ -2,6 +2,7 @@ import SwiftUI
 import MorrowCore
 import AppKit
 import UniformTypeIdentifiers
+import CoreGraphics
 
 struct SidebarChatView: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
@@ -14,7 +15,8 @@ struct SidebarChatView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 Menu {
-                    ForEach(model.chatSessions.filter { !$0.archived }) { session in Button(session.title) { model.switchChatSession(session.id) } }
+                    ForEach(model.orderedChatSessions(archived: false).prefix(20)) { session in Button(session.title) { model.switchChatSession(session.id) } }
+                    if model.orderedChatSessions(archived: false).count > 20 { Button(L10n.t("搜索全部对话")) { NotificationCenter.default.post(name: Notification.Name("MorrowSearchSessions"), object: nil) } }
                     Divider(); Button(L10n.t("新建对话")) { Task { _ = await model.createChatSession() } }
                 } label: { HStack(spacing: 8) { Text(model.activeSession?.title ?? L10n.t("新对话")).font(Theme.body.weight(.semibold)).lineLimit(1); Image(systemName: "chevron.down").font(Theme.small) } }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.horizontal, 20).padding(.top, 56).padding(.bottom, 20)
@@ -241,11 +243,15 @@ private struct ChatMaterialPreview: View {
     let material: ChatMaterial
     var compact = false
     @EnvironmentObject var model: AppModel
-    @State private var image: NSImage?
+    @State private var image: CGImage?
     var body: some View {
         Group {
-            if let image { Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: compact ? 64 : 270, maxHeight: compact ? 48 : 160).accessibilityLabel(material.name) }
+            if let image { Image(decorative: image, scale: 2, orientation: .up).resizable().scaledToFit().frame(maxWidth: compact ? 64 : 270, maxHeight: compact ? 48 : 160).accessibilityLabel(material.name) }
             else { Label(compact ? "" : material.name, systemImage: material.mimeType.hasPrefix("audio/") ? "waveform" : "paperclip").font(Theme.label).foregroundStyle(Theme.secondary) }
-        }.task { if material.mimeType.hasPrefix("image/"), let bytes = try? model.chatMaterialData(material) { image = NSImage(data: bytes) } }
+        }.task(id: material.id + ":" + material.path + ":" + String(material.byteCount) + ":" + String(compact)) {
+            guard material.mimeType.hasPrefix("image/") else { image = nil; return }
+            let result = try? await MaterialThumbnailCache.shared.image(path: material.path, workspace: model.store.root, maximumPixels: compact ? 128 : 540)
+            guard !Task.isCancelled else { return }; image = result?.image
+        }.onDisappear { image = nil }
     }
 }

@@ -4,12 +4,14 @@ import MorrowCore
 extension AppModel {
     /// A list supplies a search boundary. Selected content is the only mail
     /// evidence supplied before the agent requests a reading tool.
-    func initialChatEvidence(_ context: WorkspaceContext?) -> [MailMessage] {
+    func initialChatEvidence(_ context: WorkspaceContext?) async throws -> [MailMessage] {
         guard let context, context.hasExplicitMailSelection else { return [] }
         var seen = Set<String>(), result: [MailMessage] = []
         for id in context.mailIDs {
             guard let mail = mailByID(id), seen.insert(mail.canonicalID).inserted else { continue }
-            result.append(mail); if result.count == 18 { break }
+            if mail.contentAvailability == nil || mail.contentAvailability == .complete { result.append(mail) }
+            else { guard let full = try await store.message(mail.id) else { throw MailError.message("所选邮件完整正文未在本机，请同步后重试。") }; result.append(full) }
+            if result.count == 18 { break }
         }
         return result
     }

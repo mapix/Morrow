@@ -78,6 +78,8 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var profileStatus = "正在建立联系人索引"
     @Published var materialBusy = false
     var profileTask: Task<Void, Never>?
+    var contactRefreshTask: Task<Void, Never>?
+    var contactRefreshNeeded = false
     var profileBuildBusy = false
     var profileInventory = ""
     @Published var agentRuns: [AgentRun] = []
@@ -156,13 +158,14 @@ enum Destination: String, CaseIterable, Identifiable {
     let store: MailStore
     let transport = MailTransport()
     let index = EmbeddingIndex()
-    let partner = PartnerEngine()
+    let partner: PartnerEngine
     let ai = AIEngine()
     let credentials = AccountCredentials()
     lazy var cloudWorkspace = CloudWorkspaceModel(store: store)
     private let notifications: any MailNotificationManaging
 
-    init(root: URL? = nil, notifications: (any MailNotificationManaging)? = nil) {
+    init(root: URL? = nil, notifications: (any MailNotificationManaging)? = nil, partner: PartnerEngine? = nil) {
+        self.partner = partner ?? PartnerEngine()
         self.notifications = notifications ?? NativeMailNotifications()
         let args = ProcessInfo.processInfo.arguments
         let customRoot = args.firstIndex(of: "--data-dir").flatMap { i in i + 1 < args.count ? URL(fileURLWithPath: args[i + 1]) : nil }
@@ -262,6 +265,7 @@ enum Destination: String, CaseIterable, Identifiable {
             await restoreChatSessions()
             contacts = try await store.load(ContactEntry.self, kind: "contact")
             contactProfiles = try await store.load(ContactProfile.self, kind: "contact-profile")
+            profileInventory = try await store.object(String.self, kind: "profile-inventory", id: "current") ?? ""
             agentRuns = try await store.load(AgentRun.self, kind: "agent-run")
             agentArtifacts = try await store.load(AgentArtifact.self, kind: "agent-artifact")
             agentDecisions = try await store.load(AgentDecision.self, kind: "agent-decision")
@@ -302,7 +306,7 @@ enum Destination: String, CaseIterable, Identifiable {
     func reload() async {
         reloadEpoch += 1; let request = reloadEpoch, mutationAtStart = localMutationEpoch
         do {
-            var loaded = try await store.messages()
+            var loaded = try await store.messageSummaries().map(\.displayMessage)
             guard request == reloadEpoch else { return }
             for i in loaded.indices {
                 if (localMutationVersions[loaded[i].id] ?? 0) > mutationAtStart, let current = mailProjection.byID[loaded[i].id] { loaded[i] = current }
@@ -311,20 +315,21 @@ enum Destination: String, CaseIterable, Identifiable {
             // Mutating a @Published array element republishes and copies the
             // entire array. Prepare locally, then publish one validated snapshot.
             mails = loaded; indexCount = try await store.indexCount(); isDemo = !accounts.isEmpty && accounts.allSatisfy(\.isDemo)
-            await refreshContactProfiles()
+            scheduleContactRefresh()
             if isDemo { syncStatus = "示例工作区，未连接真实邮箱" }
             if processingTask == nil && indexCount > 0 && indexFailure == nil { indexStatus = "\(indexCount) 封邮件已建立向量索引" }
             if analysisTask == nil && !mails.isEmpty && primaryMails.allSatisfy({ $0.analysis != nil && $0.analysis?.source != "规则分析" }) { partnerStatus = "已整理，等待新邮件或你的委托" }
         } catch { self.error = error.localizedDescription }
     }
     private static func validatedMail(_ original: MailMessage) -> MailMessage {
+        if original.contentAvailability == .preview { return original }
         var mail = original
         if var analysis = mail.analysis {
             if analysis.deadline != nil { analysis.deadline = DeadlineEvidence.validated(analysis.deadline, quote: analysis.deadlineEvidence, original: mail.text + "\n" + (analysis.evidenceText ?? "")) }
             if ReplySuggestionPolicy.containsUnverifiedConfirmation(analysis.replySuggestion) { analysis.replySuggestion = ReplySuggestionPolicy.neutralReply(subject: mail.normalizedSubject, original: mail.text) }
             mail.analysis = analysis
         }
-        return mail
+        return MailMessageSummary(message: mail).displayMessage
     }
     func navigate(_ destination: Destination) { searchGeneration += 1; searchTask?.cancel(); searchRefreshTask?.cancel(); searchRefreshTask = nil; searchNeedsRefresh = false; searchMode = false; searchBusy = false; self.destination = destination; workspacePage = destination == .partner ? .desk : .mail; selectedAccount = nil; selectedFolder = nil; searchText = ""; searchScope = destination == .inbox ? .mailbox : .currentView; selectedID = nil; category = nil; unreadOnly = false }
     func select(_ mail: MailMessage) { selectedID = mail.id; if !mail.isRead { Task { await markRead(mail, true) } } }
@@ -541,7 +546,17 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     func star(_ mail: MailMessage) async { await updateFlag(mail, flag: "\\Flagged", value: !mail.isStarred) }
     private func updateFlag(_ mail: MailMessage, flag: String, value: Bool) async {
-        do { replaceCachedMails([try await performFlag(mail, flag: flag, value: value)]) } catch { self.error = error.localizedDescription }
+        do {
+            if flag == "\\Seen" {
+                if let account = accounts.first(where: { $0.id == mail.accountID && !$0.isDemo && !$0.usesPOP }), mail.uid > 0 { try await transport.setFlag(account, message: mail, flag: flag, enabled: value, password: credentials.credential(account)) }
+                let date = Date(), changed = try await store.setReadState(ids: [mail.id], read: value, modifiedAt: Date(), includeCanonicalCopies: true)
+                cacheReadStates(Dictionary(changed.map { ($0.id, value) }, uniquingKeysWith: { _, last in last }), modifiedAt: date)
+            } else if flag == "\\Flagged" {
+                if let account = accounts.first(where: { $0.id == mail.accountID && !$0.isDemo && !$0.usesPOP }), mail.uid > 0 { try await transport.setFlag(account, message: mail, flag: flag, enabled: value, password: credentials.credential(account)) }
+                let date = Date(), changed = try await store.setStarState(ids: [mail.id], starred: value, modifiedAt: Date(), includeCanonicalCopies: true)
+                cacheStarStates(Dictionary(changed.map { ($0.id, value) }, uniquingKeysWith: { _, last in last }), modifiedAt: date)
+            } else { replaceCachedMails([try await performFlag(mail, flag: flag, value: value)]) }
+        } catch { self.error = error.localizedDescription }
     }
     private func replaceCachedMails(_ updates: [MailMessage]) {
         guard !updates.isEmpty else { return }
@@ -556,6 +571,14 @@ enum Destination: String, CaseIterable, Identifiable {
         for (id, value) in states { if let position = mailProjection.positions[id], updated.indices.contains(position) { updated[position].isRead = value; updated[position].localFlagModifiedAt = modifiedAt; localMutationVersions[id] = localMutationEpoch } }
         mails = updated
     }
+    func cacheStarStates(_ states: [String: Bool], modifiedAt: Date) {
+        guard !states.isEmpty else { return }; var updated = mails; localMutationEpoch += 1
+        for (id, value) in states { if let position = mailProjection.positions[id], updated.indices.contains(position) { updated[position].isStarred = value; updated[position].localFlagModifiedAt = modifiedAt; localMutationVersions[id] = localMutationEpoch } }; mails = updated
+    }
+    func cacheLabelAddition(_ ids: Set<String>, label: String) {
+        guard !ids.isEmpty else { return }; var updated = mails; localMutationEpoch += 1
+        for id in ids { if let position = mailProjection.positions[id], updated.indices.contains(position) { if !updated[position].labels.contains(label) { updated[position].labels.append(label) }; localMutationVersions[id] = localMutationEpoch } }; mails = updated
+    }
     func noteBulkSeen(account: String, folder: String, validity: UInt64, uids: [UInt64], value: Bool, modifiedAt: Date) {
         for uid in uids { bulkSeenOverrides[.init(account: account, folder: folder, validity: validity, uid: uid)] = (value, modifiedAt) }
     }
@@ -568,6 +591,8 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     func batch(_ ids: Set<String>, action: BatchMailAction) async {
         if case .read(let value) = action { await bulkRead(ids, value: value); return }
+        if case .star(let value) = action { await bulkStar(ids, value: value); return }
+        if case .label(let label) = action { await bulkLabel(ids, label: label); return }
         guard !batchBusy, !ids.isEmpty else { return }; batchBusy = true; defer { batchBusy = false }
         let selected = mails.filter { ids.contains($0.id) }; var completed: [MailMessage] = []; var failures: [String] = []
         for (i, mail) in selected.enumerated() {
@@ -657,7 +682,12 @@ enum Destination: String, CaseIterable, Identifiable {
     func offerUndo(_ label: String, action: @escaping () async -> Void) { guard !undoing else { return }; undoLabel = label; undoAction = action }
     func undo() async { guard !batchBusy else { return }; let action = undoAction; undoAction = nil; undoLabel = nil; undoing = true; await action?(); undoing = false }
 
-    func compose(replyTo mail: MailMessage? = nil, replyAll: Bool = false, forward: Bool = false, suggested: Bool = false) async {
+    func compose(replyTo originalMail: MailMessage? = nil, replyAll: Bool = false, forward: Bool = false, suggested: Bool = false) async {
+        let mail: MailMessage?
+        if let candidate = originalMail, candidate.contentAvailability != nil && candidate.contentAvailability != .complete {
+            do { guard let full = try await store.message(candidate.id) else { throw MailError.message("邮件正文未在本机，请同步后重试。") }; mail = full }
+            catch { self.error = error.localizedDescription; return }
+        } else { mail = originalMail }
         var draft = ComposeDraft(); draft.accountID = mail?.accountID ?? selectedAccount.flatMap { id in accounts.first { $0.id == id }?.id } ?? realAccounts.first?.id ?? accounts.first?.id ?? ""
         if let mail {
             draft.subject = (forward ? "Fwd: " : "Re: ") + mail.normalizedSubject
@@ -831,7 +861,7 @@ enum Destination: String, CaseIterable, Identifiable {
             let composeData = composeSnapshot.map { "当前草稿ID：\($0.id)\n收件人：\($0.to)\n主题：\($0.subject)\n正文：\($0.body)" } ?? ""
             let effectiveInstruction = [workContext, "<workspace-data>", uiData, profileData, uploadEvidence, composeData, attachmentEvidence.joined(separator: "\n\n"), "</workspace-data>", "用户本轮要求：" + instruction].joined(separator: "\n")
 
-            var relevant = initialChatEvidence(uiContext)
+            var relevant = try await initialChatEvidence(uiContext)
             var snippets: [String: String] = [:]
             sidebarEvidenceMailIDs.formUnion(relevant.map(\.id))
             var toolHistory: [PartnerChat] = work == nil ? Array(taskChatHistory.dropLast()) : []
@@ -866,7 +896,7 @@ enum Destination: String, CaseIterable, Identifiable {
                         receipts.append("查询 \(text)：\(retrieval)，返回 \(allowed.count) 个范围内候选（上限60，不是全局总数），本轮实际提供 \(relevant.count) 封邮件与相关原文片段。")
                     } else if query.type == "read", let id = query.messageID, let message = try await store.message(id) {
                         guard (work?.agreement?.contains(message) ?? true) && (!scopeIsExplicit || selectedSources.contains(message.id)) else { receipts.append("该邮件不在已确认的工作范围内，未读取。"); continue }
-                        let evidence = await MailEvidence.forAnalysis(message, store: store)
+                        let evidence = try await MailEvidence.forAnalysis(message, store: store)
                         sidebarToolStatus = L10n.t("正在读取所选邮件…")
                         relevant.removeAll { $0.id == id }; relevant.insert(message, at: 0); snippets[id] = try await partner.readEvidence(evidence, settings: settings); receipts.append("已读取 \(message.subject) 的本机可提取正文和附件，长内容已分块合并；保留未读状态。")
                         sidebarEvidenceMailIDs.insert(id)
@@ -945,10 +975,18 @@ enum Destination: String, CaseIterable, Identifiable {
                 guard agentRuns.first(where: { $0.id == run.id })?.agreement?.resolvedScope?.excludedExistingIDs != nil else { await updateRun(run.id, phase: .failed, summary: "资料范围尚未确认，请在工作约定中检查范围后重试。"); continue }
                 d = delegations.first(where: { $0.id == d.id }) ?? d
             }
+            let activeRun = agentRuns.first(where: { $0.delegationID == d.id })
+            let activeAgreement = activeRun?.agreement
+            let compiled = activeAgreement.map(CompiledWorkAgreement.init)
+            let legacyIDs: Set<String>?
+            do { legacyIDs = activeAgreement == nil ? try await MailInventorySearch.matchingIDs(root: store.root, text: d.match) : nil }
+            catch { self.error = error.localizedDescription; continue }
             let matches = primaryMails.filter { m in
                 let role = folders.first { $0.accountID == m.accountID && $0.path == m.folder }?.role
                 guard role != "trash", role != "junk", (["briefing", "followUp"].contains(d.kind) || (role != "sent" && !isOutbound(m))) else { return false }
-                return workMatches(m, delegation: d)
+                if activeRun?.isDemo == true && accounts.first(where: { $0.id == m.accountID })?.isDemo != true { return false }
+                if let compiled { return compiled.contains(m) }
+                return legacyIDs.map { $0.contains(m.id) || $0.contains(m.canonicalID) } ?? true
             }
             let processed = Set(d.processedMessageIDs)
             let pending = matches.filter { !processed.contains($0.canonicalID) }
@@ -982,15 +1020,15 @@ enum Destination: String, CaseIterable, Identifiable {
                 await updateRun(workspaceRun, phase: .reading, summary: "正在核对\(evidence.count)封相关邮件。")
                 await addStep(workspaceRun, title: "读取相关邮件", tool: "邮件", detail: "已找到\(evidence.count)封与委托匹配的邮件。", sourceIDs: evidence.map(\.id))
                 if d.kind == "organize" {
-                    for mail in evidence { await update(mail) { m in if !m.labels.contains(d.title) { m.labels.append(d.title) } } }
+                    let changed = try await store.addLabel(ids: Set(evidence.map(\.id)), label: d.title, includeCanonicalCopies: true)
+                    cacheLabelAddition(Set(changed.map(\.id)), label: d.title)
                     d.status = "已整理 \(evidence.count) 封邮件"
                     detail = d.status
                 } else {
-                    var readable: [MailMessage] = []
-                    for mail in evidence { try Task.checkCancellation(); readable.append(await MailEvidence.forAnalysis(mail, store: store)) }
+                    let evidenceIDs = evidence.map(\.id)
                     await updateRun(workspaceRun, phase: .working, summary: "正在整理资料并准备产出。")
                     await addStep(workspaceRun, title: "核对正文与附件", tool: "资料", detail: "已读取本机可提取内容；长资料会分块整理。", sourceIDs: evidence.map(\.id))
-                    let result = d.action == "draft" || d.sendAuthorized ? try await partner.draft(instruction: d.instruction, mails: readable, settings: settings) : try await partner.report(instruction: d.instruction, mails: readable, settings: settings)
+                    let result = d.action == "draft" || d.sendAuthorized ? try await partner.draft(instruction: d.instruction, mailIDs: evidenceIDs, store: store, settings: settings) : try await partner.report(instruction: d.instruction, mailIDs: evidenceIDs, store: store, settings: settings)
                     if let latest = try await store.object(Delegation.self, kind: "delegation", id: d.id), !latest.active { await updateRun(workspaceRun, phase: .paused, summary: "工作已暂停，未执行后续交付。"); continue }
                     detail = result.text
                     if d.action == "draft" || d.sendAuthorized {
@@ -1010,7 +1048,7 @@ enum Destination: String, CaseIterable, Identifiable {
                             await completeRunOutput(workspaceRun, draft: nil, text: detail, sourceIDs: evidence.map(\.id))
                             reportPublished = true
                             await updateRun(workspaceRun, phase: .working, summary: "比较简报已经更新，正在备好给对方的回复。")
-                            let reply = try await partner.draft(instruction: d.instruction, mails: readable, settings: settings)
+                            let reply = try await partner.draft(instruction: d.instruction, mailIDs: evidenceIDs, store: store, settings: settings)
                             var draft = ComposeDraft(); draft.id = runID; draft.accountID = evidence.first?.accountID ?? accounts.first?.id ?? ""
                             let latest = evidence.max { $0.date < $1.date }
                             draft.to = d.recipient.isEmpty ? (latest?.replyTo.first?.email ?? latest?.from.email ?? "") : d.recipient
@@ -1022,9 +1060,11 @@ enum Destination: String, CaseIterable, Identifiable {
                 d.processedMessageIDs = Array(Set(d.processedMessageIDs + evidence.map(\.canonicalID))); d.lastRun = Date(); d.nextRun = timed ? Date().addingTimeInterval(Double(d.intervalHours * 3600)) : nil
                 // A message can arrive while inference is running. Keep its trigger due.
                 let processedAfterRun = Set(d.processedMessageIDs)
+                let latestLegacyIDs = compiled == nil ? try await MailInventorySearch.matchingIDs(root: store.root, text: d.match) : nil
                 if primaryMails.contains(where: { mail in
                     let role = folders.first { $0.accountID == mail.accountID && $0.path == mail.folder }?.role
-                    return role != "trash" && role != "junk" && !isOutbound(mail) && workMatches(mail, delegation: d) && !processedAfterRun.contains(mail.canonicalID)
+                    let matches = compiled?.contains(mail) ?? (latestLegacyIDs.map { $0.contains(mail.id) || $0.contains(mail.canonicalID) } ?? true)
+                    return role != "trash" && role != "junk" && !isOutbound(mail) && matches && !processedAfterRun.contains(mail.canonicalID)
                 }) { d.nextRun = Date() }
                 if let latest = try await store.object(Delegation.self, kind: "delegation", id: d.id), !latest.active { await updateRun(workspaceRun, phase: .paused, summary: "工作已暂停，未执行后续交付。"); continue }
                 let event = PartnerEvent(title: d.title, detail: detail, messageIDs: evidence.map(\.id), delegationID: d.id, kind: "delegation-result")

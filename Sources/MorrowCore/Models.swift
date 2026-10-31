@@ -85,6 +85,8 @@ public struct MailAttachment: Codable, Identifiable, Hashable, Sendable {
     public var contentID: String?
     public var storedPath: String?
     public var byteCount: Int = 0
+    /// Digest of file bytes, retained when a message is saved after a flag edit.
+    public var contentRevision: String?
     public init(name: String, mimeType: String, data: Data, contentID: String? = nil) { self.name = name; self.mimeType = mimeType; self.data = data; self.contentID = contentID }
     public var size: String { ByteCountFormatter.string(fromByteCount: Int64(max(data.count, byteCount)), countStyle: .file) }
 }
@@ -125,6 +127,18 @@ public struct MailReadStateChange: Codable, Sendable, Equatable {
     public init(id: String, wasRead: Bool) { self.id = id; self.wasRead = wasRead }
 }
 
+public struct MailFlagStateChange: Codable, Sendable, Equatable {
+    public var id: String
+    public var wasEnabled: Bool
+    public init(id: String, wasEnabled: Bool) { self.id = id; self.wasEnabled = wasEnabled }
+}
+
+public struct MailLabelStateChange: Codable, Sendable, Equatable {
+    public var id: String
+    public var labels: [String]
+    public init(id: String, labels: [String]) { self.id = id; self.labels = labels }
+}
+
 public struct MailSyncRecord: Identifiable, Equatable, Sendable {
     public var id: String
     public var uid: UInt64
@@ -133,6 +147,10 @@ public struct MailSyncRecord: Identifiable, Equatable, Sendable {
     public init(id: String, uid: UInt64, uidValidity: UInt64, popUID: String? = nil) {
         self.id = id; self.uid = uid; self.uidValidity = uidValidity; self.popUID = popUID
     }
+}
+
+public enum MailContentAvailability: String, Codable, Hashable, Sendable {
+    case complete, preview, textOnly
 }
 
 public struct MailMessage: Codable, Identifiable, Hashable, Sendable {
@@ -164,12 +182,40 @@ public struct MailMessage: Codable, Identifiable, Hashable, Sendable {
     public var note: String = ""
     public var localFlagModifiedAt: Date?
     public var popUID: String?
+    /// Nil is a complete message from databases created before projections.
+    public var contentAvailability: MailContentAvailability?
+    public var contentRevision: String?
+    public var bodyVersion: String { contentRevision ?? "legacy:" + id }
     public init(accountID: String, from: MailAddress, subject: String, text: String) { self.accountID = accountID; self.from = from; self.subject = subject; self.text = text }
     public var preview: String { String(text.replacingOccurrences(of: "\n", with: " ").prefix(180)) }
     public var normalizedSubject: String { subject.replacingOccurrences(of: #"^(?:(?:re|fw|fwd|回复|转发)\s*[:：]\s*)+"#, with: "", options: [.regularExpression, .caseInsensitive]).trimmingCharacters(in: .whitespacesAndNewlines) }
     public var threadKey: String { normalizedSubject.lowercased() }
     public var actionable: Bool { !actionDone && (analysis?.needsReply == true || analysis?.action != nil) }
     public var canonicalID: String { messageID.isEmpty ? id : accountID + ":message:" + messageID.trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+/// A list/profile-navigation value that never retains full body or file bytes.
+/// Complete messages can only be obtained through MailStore.message(_:).
+public struct MailMessageSummary: Codable, Hashable, Sendable, Identifiable {
+    private var projectedMessage: MailMessage
+    public let hasHTML: Bool
+    public var id: String { projectedMessage.id }
+    public var contentRevision: String? { projectedMessage.contentRevision }
+    public var displayMessage: MailMessage { projectedMessage }
+    public init(message: MailMessage) {
+        hasHTML = !message.html.isEmpty
+        var value = message
+        // CRLF is one grapheme. Replacing only LF splits it into CR + space
+        // and can expand a 300-grapheme prefix beyond the cache's limit.
+        // Bound both before normalization (allocation) and after (invariant).
+        let bounded = String(message.text.prefix(300))
+        let normalized = bounded.replacingOccurrences(of: "\r\n", with: " ").replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+        value.text = String(normalized.prefix(300))
+        value.html = ""; value.raw = Data(); value.contentAvailability = .preview
+        for index in value.attachments.indices { value.attachments[index].data = Data() }
+        value.analysis?.evidenceText = nil
+        projectedMessage = value
+    }
 }
 
 public struct ComposeDraft: Codable, Identifiable, Sendable {

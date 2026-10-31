@@ -56,6 +56,8 @@ struct RichMailEditor: NSViewRepresentable {
             if let html, let data = html.data(using: .utf8), let attributed = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil) { view.textStorage?.setAttributedString(attributed) }
             else { view.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: [.font: Theme.editorFont, .foregroundColor: NSColor(Theme.documentInk)])) }
             view.setSelectedRange(ChatEditorSynchronization.selection(originalSelection, replacing: originalText, with: view.string))
+            context.coordinator.exportRevision.imported(hasHTML: html != nil)
+            context.coordinator.lastNativeText = view.string
         }
         if !staleEcho { context.coordinator.lastModelText = text; if text == context.coordinator.publishedNativeText { context.coordinator.publishedNativeText = nil } }
         view.backgroundColor = NSColor(Theme.documentPaper)
@@ -78,13 +80,17 @@ struct RichMailEditor: NSViewRepresentable {
         var displayTheme: MorrowTheme?
         var lastModelText = ""
         var publishedNativeText: String?
+        var lastNativeText = ""
+        var exportRevision = RichTextExportRevision()
         init(_ parent: RichMailEditor) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
-            guard let view = notification.object as? NSTextView else { return }; publish(view)
+            guard let view = notification.object as? NSTextView else { return }; publish(view, editedNotification: true)
         }
-        func publish(_ view: NSTextView) {
+        func publish(_ view: NSTextView, editedNotification: Bool = false) {
             guard !updating, !view.hasMarkedText() else { exportWork?.cancel(); return }
+            if editedNotification || view.string != lastNativeText { exportRevision.edited(); lastNativeText = view.string }
             publishedNativeText = view.string; if parent.text != view.string { parent.text = view.string }; exportWork?.cancel()
+            guard exportRevision.needsExport else { return }
             let work = DispatchWorkItem { [weak self] in self?.exportHTML() }; exportWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
         }
         func finishAndExport() {
@@ -98,11 +104,14 @@ struct RichMailEditor: NSViewRepresentable {
         }
         func exportHTML() {
             exportWork?.cancel()
-            guard let view = parent.actions.view, !view.hasMarkedText(), let storage = view.textStorage else { return }
+            guard exportRevision.needsExport, let view = parent.actions.view, !view.hasMarkedText(), let storage = view.textStorage else { return }
+            let revision = exportRevision.current
             let outgoing = NSMutableAttributedString(attributedString: storage)
             outgoing.addAttribute(.foregroundColor, value: NSColor(Theme.documentExportInk), range: NSRange(location: 0, length: outgoing.length))
             guard let data = try? outgoing.data(from: NSRange(location: 0, length: outgoing.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.html]) else { return }
-            parent.html = String(data: data, encoding: .utf8)
+            exportRevision.acknowledge(revision)
+            let generated = String(data: data, encoding: .utf8)
+            if parent.html != generated { parent.html = generated }
         }
     }
 }

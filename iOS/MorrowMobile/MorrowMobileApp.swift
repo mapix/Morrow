@@ -102,15 +102,6 @@ struct MobileInbox: View {
     }
 }
 
-struct MobileReader: View {
-    @EnvironmentObject var model: MobileModel
-    let mailID: String
-    @State var analyzing = false
-    var mail: MailMessage? { model.mails.first { $0.id == mailID } }
-    var body: some View {
-        ScrollView { if let mail { VStack(alignment: .leading, spacing: 22) { Text(mail.subject).font(.title2).fontWeight(.semibold).accessibilityIdentifier("mail.subject"); HStack { VStack(alignment: .leading) { Text(mail.from.display).font(.headline); Text(mail.from.email).font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(MobileL10n.text(mail.isRead ? "已读" : "未读")).font(.caption).fontWeight(.semibold) }; if let analysis = mail.analysis { VStack(alignment: .leading, spacing: 10) { Text(analysis.summary).font(.body); if !analysis.reasoning.isEmpty { Text(analysis.reasoning).font(.caption).foregroundStyle(.secondary) }; Text(analysis.source).font(.caption2).foregroundStyle(.secondary) }.padding(16).background(.quaternary, in: RoundedRectangle(cornerRadius: 14)) }; Text(mail.text).textSelection(.enabled).font(.body).lineSpacing(6); ForEach(mail.attachments) { item in NavigationLink(value: MobileRoute.attachment(item.id)) { Label(item.name + " (" + item.size + ")", systemImage: "paperclip") } }; HStack { Button(MobileL10n.text("回复")) { model.compose = model.reply(mail) }.buttonStyle(.borderedProminent).accessibilityIdentifier("mail.reply"); Button(MobileL10n.text(mail.isRead ? "标记未读" : "标记已读")) { Task { await model.mark(mail, read: !mail.isRead) } }.buttonStyle(.bordered) } }.padding(22) } }.navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .topBarTrailing) { Button(MobileL10n.text("分析邮件")) { guard let mail else { return }; analyzing = true; Task { do { var updated = mail; updated.analysis = try await model.partner.analyze(mail, settings: model.settings); _ = try await model.store.upsert(updated); await model.reload() } catch { model.error = error.localizedDescription }; analyzing = false } }.disabled(analyzing) } }.onAppear { if let mail { model.context = .init(page: "mail", label: mail.subject, mailIDs: [mail.id]); model.context?.accountID = mail.accountID } }
-    }
-}
 
 struct MobilePeople: View {
     @EnvironmentObject var model: MobileModel
@@ -132,11 +123,4 @@ struct MobileAttachments: View {
     @EnvironmentObject var model: MobileModel
     @State var search = ""
     var body: some View { List { ForEach(model.attachments.filter { search.isEmpty || $0.attachment.name.localizedCaseInsensitiveContains(search) }) { item in NavigationLink(value: MobileRoute.attachment(item.id)) { VStack(alignment: .leading, spacing: 8) { Label(item.attachment.name, systemImage: "doc").font(.headline); Text(item.mail.from.display + " — " + item.mail.subject).font(.caption).foregroundStyle(.secondary).lineLimit(1); Text(item.attachment.size).font(.caption) } } }; if model.attachments.isEmpty { Text(MobileL10n.text("暂无附件")) } }.navigationTitle(MobileL10n.text("附件")).searchable(text: $search).onAppear { if model.selectedTab == .attachments && model.attachmentsPath.isEmpty { model.context = model.pageContext("attachments", label: MobileL10n.text("附件")) } } }
-}
-
-struct MobileAttachmentReader: View {
-    @EnvironmentObject var model: MobileModel
-    let attachment: MailAttachment; let mail: MailMessage
-    @State var text = ""; @State var url: URL?
-    var body: some View { ScrollView { VStack(alignment: .leading, spacing: 18) { Text(attachment.name).font(.title2).fontWeight(.semibold).accessibilityIdentifier("attachment.title"); Text(text).textSelection(.enabled); if let url { ShareLink(item: url) { Label(MobileL10n.text("保存"), systemImage: "square.and.arrow.up") } }; NavigationLink(MobileL10n.text("来源邮件"), value: MobileRoute.mail(mail.id)) }.padding(22) }.onAppear { var scope = model.mailContext(mail); scope.page = "attachments"; scope.label = attachment.name; scope.attachmentIDs = [attachment.id]; model.context = scope }.task { do { let result = try await AttachmentTextExtractor.shared.extract(attachment, store: model.store); text = result.text.isEmpty ? result.failure ?? "" : result.text; let bytes = try await model.store.attachmentData(attachment); let target = FileManager.default.temporaryDirectory.appendingPathComponent(URL(fileURLWithPath: attachment.name).lastPathComponent); try bytes.write(to: target); url = target } catch { model.error = error.localizedDescription } } }
 }

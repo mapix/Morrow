@@ -78,7 +78,7 @@ final class AttachmentTests: XCTestCase {
         var mail = MailMessage(accountID: "test", from: .init(email: "sender@example.com"), subject: "Contract", text: String(repeating: "context ", count: 2000) + "critical footer")
         mail.attachments = [.init(name: "notes.txt", mimeType: "text/plain", data: Data("Please review invoice 4200".utf8))]
         mail = try await store.upsert(mail)
-        let evidence = await MailEvidence.forAnalysis(mail, store: store)
+        let evidence = try await MailEvidence.forAnalysis(mail, store: store)
         XCTAssertTrue(evidence.text.contains("critical footer")); XCTAssertTrue(evidence.text.contains("invoice 4200"))
         struct Probe: Decodable { var fingerprint: String; var result: AttachmentText }
         let cached = try await store.object(Probe.self, kind: "attachment-text", id: mail.attachments[0].id); XCTAssertNotNil(cached)

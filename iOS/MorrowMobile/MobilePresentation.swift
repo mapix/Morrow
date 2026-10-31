@@ -8,6 +8,16 @@ import SwiftUI
         let pair = values[source]; return language == "ja" ? pair?.1 ?? source : pair?.0 ?? source
     }
     static let values: [String: (String, String)] = [
+        "关闭": ("Close", "閉じる"),
+        "原始排版": ("Original layout", "元のレイアウト"),
+        "外部图片已阻止": ("External images blocked", "外部画像をブロック済み"),
+        "正文显示方式": ("Message display", "本文の表示"),
+        "正文暂时无法显示，请稍后重试。": ("The message cannot be displayed right now. Try again.", "本文を表示できません。再試行してください。"),
+        "此邮件没有可显示的纯文本正文。": ("This message has no plain-text body.", "このメールにはプレーンテキスト本文がありません。"),
+        "纯文本": ("Plain text", "プレーンテキスト"),
+        "邮件详情": ("Mail details", "メールの詳細"),
+        "加载外部图片": ("Load external images", "外部画像を読み込む"),
+        "阻止外部图片": ("Block external images", "外部画像をブロック"),
         "让往来的邮件，成为可委托的工作。": ("Turn correspondence into work you can delegate.", "メールのやり取りを、任せられる仕事に。"),
         "查找相关往来，拟定回复，整理附件，记住你的偏好。": ("Find conversations, prepare replies, organize files, remember your preferences.", "やり取りを探し、返信を準備し、添付ファイルや好みを整理します。"),
         "结构化交互无法显示，请用聊天继续。": ("This form is unavailable. Continue in Chat.", "このフォームは表示できません。チャットで続けてください。"),
