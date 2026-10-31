@@ -57,6 +57,17 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}"]
     static let catalog: [String: (String, String)] = [
+        "检索范围：{0}": ("Search scope: {0}", "検索範囲：{0}"),
+        "当前收件箱": ("Current inbox", "現在の受信トレイ"),
+        "当前{0}": ("Current {0}", "現在の{0}"),
+        "已固定的邮件检索范围": ("Pinned mail search scope", "固定したメール検索範囲"),
+        "在全部邮箱中检索": ("Search all mailboxes", "すべてのメールボックスを検索"),
+        "检索范围：全部邮箱": ("Search scope: all mailboxes", "検索範囲：すべてのメールボックス"),
+        "邮件在此范围内按需检索。": ("Mail is searched within this scope when needed.", "必要に応じてこの範囲のメールを検索します。"),
+        "正在检索邮件…": ("Searching mail…", "メールを検索中…"),
+        "正在读取所选邮件…": ("Reading the selected mail…", "選択したメールを読み取り中…"),
+        "正在整理答案…": ("Preparing the answer…", "回答をまとめています…"),
+        "本轮提供了 {0} 封邮件": ("{0} messages provided in this turn", "このターンでは{0}通のメールを提供"),
         "当前对话正在处理": ("Working on this chat", "このチャットを処理中"),
         "另一对话正在处理": ("Working on another chat", "別のチャットを処理中"),
         "工作正在推进": ("Work in progress", "作業を進めています"),

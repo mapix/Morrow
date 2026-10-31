@@ -177,6 +177,28 @@ public actor MailStore {
         } catch { try? execute("ROLLBACK"); throw error }
     }
 
+    /// IMAP calls supply a folder and read only indexed inventory columns.
+    /// Account-wide POP calls additionally extract UIDL from one row at a time,
+    /// without decoding a MailMessage or holding its body across a sync pass.
+    public func syncRecords(account: String, folder: String? = nil) throws -> [MailSyncRecord] {
+        let popField = folder == nil ? "json_extract(CAST(json AS TEXT),'$.popUID')" : "NULL"
+        var sql = "SELECT id,uid,validity," + popField + " FROM messages WHERE account=?"
+        var parameters: [Value] = [.text(account)]
+        if let folder { sql += " AND folder=?"; parameters.append(.text(folder)) }
+        sql += " ORDER BY date DESC,id"
+        let s = try statement(sql, parameters); defer { sqlite3_finalize(s) }
+        var result: [MailSyncRecord] = []
+        while true {
+            let code = sqlite3_step(s)
+            if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else { throw databaseError() }
+            let uid = sqlite3_column_int64(s, 1), validity = sqlite3_column_int64(s, 2)
+            guard uid >= 0, validity >= 0 else { throw MailError.message("本地邮件同步标识无效。") }
+            let popUID = sqlite3_column_type(s, 3) == SQLITE_NULL ? nil : string(s, 3)
+            result.append(MailSyncRecord(id: string(s, 0), uid: UInt64(uid), uidValidity: UInt64(validity), popUID: popUID))
+        }
+        return result
+    }
     public func messages(account: String? = nil, folder: String? = nil) throws -> [MailMessage] {
         var sql = "SELECT json FROM messages"; var clauses: [String] = []; var params: [Value] = []
         if let account { clauses.append("account=?"); params.append(.text(account)) }

@@ -5,6 +5,60 @@ enum MobileTab: Int, Hashable { case work, mail, people, attachments }
 enum MobileRoute: Hashable { case mail(String), contact(String), attachment(String), connectMailbox(String), drafts, memory, responders, settings }
 struct MobileComposerContext { let previous: WorkspaceContext?; let tab: MobileTab }
 
+/// Immutable host boundary captured before a planning turn. It deliberately
+/// separates a directory's scope from mail bodies actually given to the model.
+struct MobileMailTurnScope {
+    let context: WorkspaceContext
+    let modelContext: WorkspaceContext
+    let accounts: [MailAccount]
+    let mails: [MailMessage]
+    let allowedIDs: Set<String>
+    let initialCandidates: [MailMessage]
+    let mailbox: String
+    init(context original: WorkspaceContext?, accounts availableAccounts: [MailAccount], mails availableMails: [MailMessage], folders: [MailFolder], fallbackAccountID: String, fallbackFilter: String, capturedAt: Date = Date()) {
+        var scope = original ?? WorkspaceContext(page: "work", label: "工作")
+        let knownIDs = Set(availableAccounts.map(\.id))
+        let mailbox = scope.accountID ?? fallbackAccountID
+        self.mailbox = mailbox
+        let accountIDs = scope.mailList?.accountIDs ?? (mailbox.isEmpty ? availableAccounts.map(\.id) : [mailbox])
+        let boundAccounts = availableAccounts.filter { accountIDs.contains($0.id) }
+        var descriptor = scope.mailList ?? MailListContextDescriptor(accountIDs: accountIDs.filter(knownIDs.contains), destination: ["mail", "mail-list"].contains(scope.page) ? scope.filter ?? fallbackFilter : "all", capturedAt: capturedAt,
+            folderRoles: Dictionary(folders.map { (MailListContextDescriptor.folderKey(accountID: $0.accountID, path: $0.path), $0.role) }, uniquingKeysWith: { first, _ in first }))
+        descriptor.accountIDs = descriptor.accountIDs.filter(knownIDs.contains)
+        let explicit = scope.hasExplicitMailSelection && (scope.page != "mail" || scope.mailIDs.count == 1)
+        let originalIDs = Set(scope.mailIDs)
+        let own = Dictionary(boundAccounts.map { ($0.id, $0.email) }, uniquingKeysWith: { first, _ in first })
+        let captured: [MailMessage]
+        if scope.page == "materials" { captured = [] }
+        else {
+            captured = availableMails.filter { mail in
+                guard descriptor.accountIDs.contains(mail.accountID) else { return false }
+                if !originalIDs.isEmpty && !originalIDs.contains(mail.id) { return false }
+                if !explicit && !descriptor.matches(mail, ownEmail: own[mail.accountID]) { return false }
+                if let contact = scope.contactEmail {
+                    return ContactProfileBuilder.participants(mail).contains { $0.email.caseInsensitiveCompare(contact) == .orderedSame }
+                }
+                return true
+            }
+        }
+        if !explicit {
+            // Preserve legacy pinned IDs in the host boundary, but describe new
+            // lists by portable filters and never send their complete ID set.
+            scope.mailList = descriptor
+            if scope.page == "mail" { scope.page = "mail-list" }
+        }
+        let capturedByID = Dictionary(captured.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let initial = explicit ? Array(scope.mailIDs.compactMap { capturedByID[$0] }.prefix(18)) : []
+        var model = scope
+        model.mailIDs = initial.map(\.id)
+        model.attachmentIDs = explicit ? Array(scope.attachmentIDs.prefix(8)) : []
+        model.mailList?.folderRoles = [:]
+        self.context = scope; self.modelContext = model; self.accounts = boundAccounts
+        self.mails = captured; self.allowedIDs = Set(captured.map(\.id))
+        self.initialCandidates = initial
+    }
+}
+
 extension MobileModel {
     func pathBinding(_ tab: MobileTab) -> Binding<[MobileRoute]> {
         Binding(get: { self.path(tab) }, set: { value in self.setPath(value, tab: tab); self.refreshVisibleContext() })
@@ -55,12 +109,22 @@ extension MobileModel {
     }
     func pageContext(_ page: String, label: String) -> WorkspaceContext { var value = WorkspaceContext(page: page, label: label); value.accountID = ""; return value }
     func mailContext(_ mail: MailMessage) -> WorkspaceContext { var value = WorkspaceContext(page: "mail", label: mail.subject, mailIDs: [mail.id]); value.accountID = mail.accountID; return value }
-    func contactContext(_ profile: ContactProfile) -> WorkspaceContext { var value = WorkspaceContext(page: "contacts", label: profile.name.isEmpty ? profile.email : profile.name, mailIDs: profile.mailIDs, contactEmail: profile.email); value.accountID = ""; return value }
+    func contactContext(_ profile: ContactProfile) -> WorkspaceContext { var value = WorkspaceContext(page: "contacts", label: profile.name.isEmpty ? profile.email : profile.name, contactEmail: profile.email); value.accountID = ""; return value }
     func attachmentContext(_ item: MailAttachmentRecord) -> WorkspaceContext { var value = WorkspaceContext(page: "attachments", label: item.attachment.name, mailIDs: [item.mail.id], attachmentIDs: [item.attachment.id]); value.accountID = item.mail.accountID; return value }
     func updateInboxContext() {
         guard selectedTab == .mail, mailPath.isEmpty, workingDraft == nil else { return }
-        var value = WorkspaceContext(page: "mail", label: query.isEmpty ? mailFilterLabel : MobileL10n.text("搜索邮件") + ": " + query)
-        value.accountID = accountID; value.filter = mailFilter; value.query = query.isEmpty ? nil : query; context = value
+        let resultIDs = query.isEmpty ? [] : searchHits.map(\.id)
+        var value = WorkspaceContext(page: resultIDs.isEmpty ? "mail-list" : "mail-results", label: query.isEmpty ? mailFilterLabel : MobileL10n.text("搜索邮件") + ": " + query, mailIDs: resultIDs)
+        value.accountID = accountID; value.filter = mailFilter; value.query = query.isEmpty ? nil : query
+        if resultIDs.isEmpty { value.mailList = currentMailListDescriptor(account: accountID) }
+        context = value
+    }
+    func currentMailListDescriptor(account: String, filter: String? = nil, capturedAt: Date = Date()) -> MailListContextDescriptor {
+        MailListContextDescriptor(accountIDs: account.isEmpty ? accounts.map(\.id) : [account], destination: filter ?? mailFilter, capturedAt: capturedAt,
+            folderRoles: Dictionary(folders.map { (MailListContextDescriptor.folderKey(accountID: $0.accountID, path: $0.path), $0.role) }, uniquingKeysWith: { first, _ in first }))
+    }
+    func captureMailTurnScope(_ scope: WorkspaceContext?) -> MobileMailTurnScope {
+        MobileMailTurnScope(context: scope, accounts: accounts, mails: mails, folders: folders, fallbackAccountID: accountID, fallbackFilter: mailFilter)
     }
     var mailFilterLabel: String {
         MobileL10n.text(["inbox": "邮件", "unread": "未读", "all": "全部", "sent": "已发送", "starred": "星标", "archive": "归档", "trash": "废纸篓"][mailFilter] ?? "邮件")
@@ -94,7 +158,7 @@ extension MobileModel {
     func openNativeAttachment(_ item: MailAttachmentRecord) async throws { try await publishNavigation(.attachments, route: .attachment(item.id), context: attachmentContext(item)) }
     func showNativeSearch(_ query: String, hits: [SearchHit], mailbox: String) async throws {
         self.query = query; searchHits = hits
-        var scope = WorkspaceContext(page: "mail", label: MobileL10n.text("搜索邮件") + ": " + query); scope.accountID = mailbox; scope.query = query
+        var scope = WorkspaceContext(page: "mail-results", label: MobileL10n.text("搜索邮件") + ": " + query, mailIDs: hits.map(\.id)); scope.accountID = mailbox; scope.query = query
         try await publishNavigation(.mail, route: nil, context: scope, mailbox: mailbox)
     }
     func navigateNative(_ target: String, mailbox: String) async throws {
@@ -104,7 +168,7 @@ extension MobileModel {
         case "工作", "工作台", "work", "仕事": try await publishNavigation(.work, route: nil, context: pageContext("work", label: MobileL10n.text("工作")))
         case "邮件", "收件箱", "mail", "inbox", "メール", "受信トレイ", "已发送", "sent", "送信済み", "星标", "starred", "归档", "archive", "废纸篓", "trash", "ゴミ箱":
             query = ""; mailFilter = ["已发送": "sent", "sent": "sent", "送信済み": "sent", "星标": "starred", "starred": "starred", "归档": "archive", "archive": "archive", "废纸篓": "trash", "trash": "trash", "ゴミ箱": "trash"][name] ?? "inbox"
-            var scope = WorkspaceContext(page: "mail", label: mailFilterLabel); scope.accountID = mailbox; scope.filter = mailFilter
+            var scope = WorkspaceContext(page: "mail-list", label: mailFilterLabel); scope.accountID = mailbox; scope.filter = mailFilter; scope.mailList = currentMailListDescriptor(account: mailbox)
             try await publishNavigation(.mail, route: nil, context: scope, mailbox: mailbox)
         case "联系人", "people", "contacts", "連絡先": try await publishNavigation(.people, route: nil, context: pageContext("contacts", label: MobileL10n.text("联系人")))
         case "附件", "attachments", "files", "添付ファイル": try await publishNavigation(.attachments, route: nil, context: pageContext("attachments", label: MobileL10n.text("附件")))

@@ -95,6 +95,51 @@ public struct ChatMaterial: Codable, Identifiable, Sendable {
     public var transcript: String?
     public init(name: String, mimeType: String, path: String, byteCount: Int) { self.name = name; self.mimeType = mimeType; self.path = path; self.byteCount = byteCount }
 }
+/// A captured list boundary, not a request to preload every message body.
+public struct MailListContextDescriptor: Codable, Sendable, Equatable {
+    public var accountIDs: [String]
+    public var folderPath: String?
+    public var destination: String
+    public var unreadOnly: Bool
+    public var category: MailCategory?
+    public var capturedAt: Date
+    /// Host-only role metadata. Remove from the bounded model presentation.
+    public var folderRoles: [String: String]
+    public init(accountIDs: [String], folderPath: String? = nil, destination: String,
+                unreadOnly: Bool = false, category: MailCategory? = nil,
+                capturedAt: Date = Date(), folderRoles: [String: String] = [:]) {
+        self.accountIDs = accountIDs; self.folderPath = folderPath; self.destination = destination
+        self.unreadOnly = unreadOnly; self.category = category; self.capturedAt = capturedAt; self.folderRoles = folderRoles
+    }
+    public static func folderKey(accountID: String, path: String) -> String { accountID + "\u{1f}" + path }
+    public var destinationCode: String? {
+        let code = destination.lowercased()
+        if ["inbox", "focus", "starred", "sent", "trash", "snoozed", "all", "unread", "archive"].contains(code) { return code }
+        return ["收件箱": "inbox", "待处理": "focus", "伙伴": "focus", "星标": "starred", "已发送": "sent", "废纸篓": "trash", "稍后处理": "snoozed", "全部邮件": "all", "未读": "unread", "归档": "archive"][destination]
+    }
+    public func matches(_ mail: MailMessage, ownEmail: String? = nil) -> Bool {
+        guard accountIDs.contains(mail.accountID), let code = destinationCode else { return false }
+        if let folderPath, mail.folder != folderPath { return false }
+        if unreadOnly && mail.isRead { return false }
+        if let category, mail.analysis?.category != category { return false }
+        let role = folderRoles[Self.folderKey(accountID: mail.accountID, path: mail.folder)]
+            ?? (mail.folder.uppercased() == "INBOX" ? "inbox" : nil)
+        if folderPath == nil && role == nil && !["all", "unread"].contains(code) { return false }
+        let outbound = role == "sent" || (ownEmail.map { own in mail.from.email.lowercased() == own.lowercased() && mail.to.contains { $0.email.lowercased() != own.lowercased() } } ?? false)
+        switch code {
+        case "focus": return mail.actionable && !outbound && role != "trash" && role != "junk" && (mail.snoozedUntil == nil || mail.snoozedUntil! <= capturedAt)
+        case "starred": return mail.isStarred && role != "trash"
+        case "snoozed": return mail.snoozedUntil.map { $0 > capturedAt } ?? false
+        case "sent": return role == "sent"
+        case "trash": return role == "trash"
+        case "archive": return role == "archive"
+        case "unread": return !mail.isRead && (folderPath != nil || (role != "trash" && role != "junk"))
+        case "all": return folderPath != nil || (role != "trash" && role != "junk")
+        default: return folderPath != nil || role == "inbox"
+        }
+    }
+}
+
 public struct WorkspaceContext: Codable, Sendable, Equatable {
     public var page: String
     public var label: String
@@ -107,5 +152,7 @@ public struct WorkspaceContext: Codable, Sendable, Equatable {
     public var query: String?
     public var filter: String?
     public var accountID: String?
+    public var mailList: MailListContextDescriptor?
+    public var hasExplicitMailSelection: Bool { mailList == nil && ["mail", "mail-results", "attachments", "desk"].contains(page) && !mailIDs.isEmpty }
     public init(page: String, label: String, mailIDs: [String] = [], contactEmail: String? = nil, attachmentIDs: [String] = [], runID: String? = nil) { self.page = page; self.label = label; self.mailIDs = mailIDs; self.contactEmail = contactEmail; self.attachmentIDs = attachmentIDs; self.runID = runID }
 }

@@ -118,6 +118,17 @@ public struct MailAnalysis: Codable, Hashable, Sendable {
     }
 }
 
+/// Synchronization inventory without retaining text, HTML, raw bytes or files.
+public struct MailSyncRecord: Identifiable, Equatable, Sendable {
+    public var id: String
+    public var uid: UInt64
+    public var uidValidity: UInt64
+    public var popUID: String?
+    public init(id: String, uid: UInt64, uidValidity: UInt64, popUID: String? = nil) {
+        self.id = id; self.uid = uid; self.uidValidity = uidValidity; self.popUID = popUID
+    }
+}
+
 public struct MailMessage: Codable, Identifiable, Hashable, Sendable {
     public var id: String = UUID().uuidString
     public var accountID: String

@@ -22,7 +22,8 @@ extension AppModel {
         chatInput = ""; chatMaterials = []; newChatWork = false
         if chatPinnedContext?.page == "materials" { chatPinnedContext = nil }
         persistCurrentSessionDraft(); executingSessionID = snapshot.sessionID
-        sidebarTask = Task { await ChatTaskContext.$sessionID.withValue(snapshot.sessionID) { await submitSidebarChat(snapshot) }; sidebarTask = nil; executingSessionID = nil }
+        sidebarEvidenceMailIDs = []; sidebarToolStatus = nil
+        sidebarTask = Task { await ChatTaskContext.$sessionID.withValue(snapshot.sessionID) { await submitSidebarChat(snapshot) }; sidebarTask = nil; executingSessionID = nil; sidebarToolStatus = nil }
     }
     func submitSidebarChat(_ submission: ChatSubmission? = nil) async {
         let instruction = (submission?.instruction ?? chatInput).trimmingCharacters(in: .whitespacesAndNewlines)

@@ -147,6 +147,8 @@ enum Destination: String, CaseIterable, Identifiable {
     private var outboundBusy = false
     @Published var delegationBusy = false
     @Published var executingRunIDs = Set<String>()
+    @Published var sidebarEvidenceMailIDs = Set<String>()
+    @Published var sidebarToolStatus: String?
     private var lastSyncFailure: String?
     let store: MailStore
     let transport = MailTransport()
@@ -363,7 +365,7 @@ enum Destination: String, CaseIterable, Identifiable {
                     syncStatus = "正在同步 \(account.name) / \(folder.name)"
                     let inventoryStarted = Date()
                     let (validity, flags) = try await transport.inventory(account, folder: folder.path, password: secret)
-                    let existing = try await store.messages(account: account.id, folder: folder.path)
+                    let existing = try await store.syncRecords(account: account.id, folder: folder.path)
                     let byUID = Dictionary(uniqueKeysWithValues: existing.filter { $0.uidValidity == validity && $0.uid > 0 }.map { ($0.uid, $0) })
                     for (uid, flag) in flags.sorted(by: { $0.key > $1.key }) {
                         if let old = byUID[uid] {
@@ -393,7 +395,7 @@ enum Destination: String, CaseIterable, Identifiable {
         let defaults = try await transport.folders(account, password: secret)
         for folder in defaults where !folders.contains(where: { $0.id == folder.id }) { folders.append(folder); try await store.save(folder, kind: "folder", id: folder.id) }
         let inventory = try await transport.popInventory(account, password: secret)
-        let known = Set(try await store.messages(account: account.id).compactMap(\.popUID))
+        let known = Set(try await store.syncRecords(account: account.id).compactMap(\.popUID))
         var added = 0; var failures: [String] = []
         for (uid, number) in inventory.sorted(by: { $0.value > $1.value }) where !known.contains(uid) {
             syncStatus = "正在下载 \(account.name) / 邮件\(number)"
@@ -446,8 +448,10 @@ enum Destination: String, CaseIterable, Identifiable {
         guard analysisTask == nil, settings.enabled, settings.autoAnalyze else { return }
         analysisTask = Task { [weak self] in
             guard let self else { return }; defer { self.analysisTask = nil }
-            for original in mails where original.analysis == nil || original.analysis?.source == "规则分析" || original.analysis?.evidenceVersion != MailEvidence.version {
+            let pendingIDs = mails.filter { $0.analysis == nil || $0.analysis?.source == "规则分析" || $0.analysis?.evidenceVersion != MailEvidence.version }.map(\.id)
+            for id in pendingIDs {
                 guard !Task.isCancelled, settings.enabled, settings.autoAnalyze else { return }
+                guard let original = try? await store.message(id) else { continue }
                 partnerStatus = "正在读：" + original.subject
                 do {
                     let reused = mails.first { $0.canonicalID == original.canonicalID && $0.analysis?.evidenceVersion == MailEvidence.version && $0.analysis?.source != "规则分析" }?.analysis
@@ -779,7 +783,6 @@ enum Destination: String, CaseIterable, Identifiable {
             if let draftID = uiContext?.draftID { composeSnapshot = try await sidebarDraft(id: draftID) }
             else { composeSnapshot = uiContext?.page == "materials" ? nil : composer ?? (uiContext?.page == "desk" ? workingDraft : nil) }
             let work = runID.flatMap { id in agentRuns.first { $0.id == id } }
-            let scopedMails = work?.agreement.map { agreement in primaryMails.filter { agreement.contains($0) } }
             var workContext = ""
             if let work {
                 workContext = "当前同一工作：\(work.title)\n已经接受的约定：\(work.instruction)\n"
@@ -798,7 +801,7 @@ enum Destination: String, CaseIterable, Identifiable {
                 for id in uiContext.attachmentIDs.prefix(8) { attachmentEvidence.append(try await sidebarQuery(.init(type: "readAttachment", text: id), context: uiContext)) }
             }
             if !attachmentEvidence.isEmpty { attachmentEvidence = [try await partner.readEvidence(MailMessage(accountID: "chat", from: .init(email: "local@example.com"), subject: "所选附件", text: attachmentEvidence.joined(separator: "\n\n")), settings: settings)] }
-            var boundedContext = uiContext; boundedContext?.mailIDs = Array(uiContext?.mailIDs.prefix(18) ?? [])
+            let boundedContext = uiContext.map(chatContextForModel)
             let profile = uiContext?.contactEmail.flatMap { email in contactProfiles.first { $0.email == email } }
             var profileData = ""
             if let profile {
@@ -809,22 +812,9 @@ enum Destination: String, CaseIterable, Identifiable {
             let composeData = composeSnapshot.map { "当前草稿ID：\($0.id)\n收件人：\($0.to)\n主题：\($0.subject)\n正文：\($0.body)" } ?? ""
             let effectiveInstruction = [workContext, "<workspace-data>", uiData, profileData, uploadEvidence, composeData, attachmentEvidence.joined(separator: "\n\n"), "</workspace-data>", "用户本轮要求：" + instruction].joined(separator: "\n")
 
-            var relevant: [MailMessage]
+            var relevant = initialChatEvidence(uiContext)
             var snippets: [String: String] = [:]
-            do { try await index.load(directory: settings.embeddingDirectory); let hits = try await index.search(instruction, store: store, allowedIDs: allowedIDs); relevant = hits.prefix(12).map(\.message); snippets = Dictionary(uniqueKeysWithValues: hits.map { ($0.id, $0.snippet) }) }
-            catch { relevant = (try await store.keywordSearch(instruction, allowedIDs: allowedIDs)).prefix(12).map(\.message) }
-            if let scopedMails {
-                let ids = Set(scopedMails.map(\.canonicalID)); relevant = relevant.filter { ids.contains($0.canonicalID) }
-                for mail in scopedMails.prefix(12) where !relevant.contains(where: { $0.canonicalID == mail.canonicalID }) { relevant.append(mail) }
-            } else {
-                for m in primaryMails.filter({ $0.actionable && !isOutbound($0) }).prefix(8) where !relevant.contains(where: { $0.canonicalID == m.canonicalID }) { relevant.append(m) }
-                if relevant.isEmpty { relevant = Array(primaryMails.prefix(12)) }
-            }
-            if scopeIsExplicit {
-                relevant = primaryMails.filter { selectedSources.contains($0.id) }
-                snippets = snippets.filter { selectedSources.contains($0.key) }
-            }
-            if let id = uiContext?.mailIDs.first, let current = primaryMails.first(where: { $0.id == id }) { relevant.removeAll { $0.canonicalID == current.canonicalID }; relevant.insert(current, at: 0) }
+            sidebarEvidenceMailIDs.formUnion(relevant.map(\.id))
             var toolHistory: [PartnerChat] = work == nil ? Array(taskChatHistory.dropLast()) : []
             let workDelegations: [Delegation] = work == nil ? delegations : delegations.filter { $0.id == work?.delegationID }
             var plan: PartnerPlan?
@@ -846,18 +836,25 @@ enum Destination: String, CaseIterable, Identifiable {
                         let incoming = inventory.filter { m in let role = folders.first { $0.accountID == m.accountID && $0.path == m.folder }?.role; return role != "trash" && role != "junk" && role != "sent" && !isOutbound(m) }
                         receipts.append("\(allowedIDs == nil ? "本机全部范围" : "本轮指定范围")邮件 \(inventory.count)，收件及归档 \(incoming.count)，未读 \(incoming.filter { !$0.isRead }.count)，待处理 \(incoming.filter(\.actionable).count)，已分析 \(inventory.filter { $0.analysis != nil && $0.analysis?.source != "规则分析" }.count)。这些是本机当前数据，不代表尚未同步的服务器邮件。")
                     } else if query.type == "search", let text = query.text {
+                        sidebarToolStatus = L10n.t("正在检索邮件…")
                         let hits: [SearchHit]
-                        do { hits = try await index.search(text, store: store, allowedIDs: allowedIDs) } catch { hits = try await store.keywordSearch(text, allowedIDs: allowedIDs) }
+                        let retrieval: String
+                        do { try await index.load(directory: settings.embeddingDirectory); hits = try await index.search(text, store: store, allowedIDs: allowedIDs); retrieval = "语义与条件检索" }
+                        catch { hits = try await store.keywordSearch(text, allowedIDs: allowedIDs); retrieval = "关键词检索（语义模型暂不可用）" }
                         let allowed = hits.filter { hit in (work?.agreement?.contains(hit.message) ?? true) && (!scopeIsExplicit || selectedSources.contains(hit.message.id)) }
                         relevant = Array(allowed.prefix(18).map(\.message)); snippets = Dictionary(uniqueKeysWithValues: allowed.map { ($0.id, $0.snippet) })
-                        receipts.append("查询 \(text)：返回 \(allowed.count) 个范围内候选（上限60，不是全局总数），已提供前18封邮件与相关原文片段。")
+                        sidebarEvidenceMailIDs.formUnion(relevant.map(\.id))
+                        receipts.append("查询 \(text)：\(retrieval)，返回 \(allowed.count) 个范围内候选（上限60，不是全局总数），本轮实际提供 \(relevant.count) 封邮件与相关原文片段。")
                     } else if query.type == "read", let id = query.messageID, let message = try await store.message(id) {
                         guard (work?.agreement?.contains(message) ?? true) && (!scopeIsExplicit || selectedSources.contains(message.id)) else { receipts.append("该邮件不在已确认的工作范围内，未读取。"); continue }
                         let evidence = await MailEvidence.forAnalysis(message, store: store)
+                        sidebarToolStatus = L10n.t("正在读取所选邮件…")
                         relevant.removeAll { $0.id == id }; relevant.insert(message, at: 0); snippets[id] = try await partner.readEvidence(evidence, settings: settings); receipts.append("已读取 \(message.subject) 的本机可提取正文和附件，长内容已分块合并；保留未读状态。")
+                        sidebarEvidenceMailIDs.insert(id)
                     }
                 }
                 toolHistory.append(PartnerChat(role: "tool", text: receipts.joined(separator: "\n") + "\n本轮写入操作尚未执行，请基于资料完成分析或给出最终操作。"))
+                sidebarToolStatus = L10n.t("正在整理答案…")
             }
             guard let plan else { throw MailError.message("伙伴尚未形成执行方案。") }
             if let source = plan.openUI, let program = try? OpenUILang.parse(source), (try? program.root()) != nil { await saveOpenUIInteraction(OpenUIInteraction(source: source, runID: runID)) }
@@ -871,7 +868,7 @@ enum Destination: String, CaseIterable, Identifiable {
                 }
                 do {
                     try Task.checkCancellation()
-                    try validateChatOperation(op, context: uiContext, agreement: work?.agreement)
+                    try validateChatOperation(op, context: uiContext, agreement: work?.agreement, capturedMailIDs: scopeIsExplicit ? selectedSources : nil)
                     let receipt = op.type == "updateDraft" ? try await applySidebarDraftEdit(op, snapshot: composeSnapshot) : try await execute(op); results.append(receipt)
                     if ["label", "star", "markRead", "complete", "snooze", "archive", "addContact"].contains(op.type) { await log("委托操作已完成", detail: receipt, messageIDs: op.messageID.map { [$0] } ?? [], kind: "operation") }
                 } catch { results.append("未完成：" + error.localizedDescription); break }

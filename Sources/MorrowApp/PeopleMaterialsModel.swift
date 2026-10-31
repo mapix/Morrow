@@ -47,7 +47,23 @@ extension AppModel {
         if workspacePage == .mail {
             if let selected { var c = WorkspaceContext(page: "mail", label: selected.subject, mailIDs: [selected.id]); c.accountID = selected.accountID; return c }
             if searchMode { let waitingForFirstResult = searchBusy && searchHits.isEmpty; var context = WorkspaceContext(page: "mail-results", label: waitingForFirstResult ? "正在检索：" + searchText : searchScopeTitle + "：" + searchText + "（\(searchHits.count)封）", mailIDs: waitingForFirstResult ? [] : searchHits.map { $0.message.id }); context.query = searchText; context.accountID = searchScope == .allMailboxes ? nil : selectedAccount; return context }
-            if [.inbox, .focus, .starred, .sent, .trash, .snoozed].contains(destination) { var context = WorkspaceContext(page: "mail-list", label: (selectedFolder ?? destination.rawValue) + "（\(visibleMails.count)封）", mailIDs: visibleMails.map(\.id)); context.accountID = selectedAccount; return context }
+            if [.inbox, .focus, .starred, .sent, .trash, .snoozed].contains(destination) {
+                let accountIDs = selectedAccount.map { [$0] } ?? accounts.map(\.id).sorted()
+                let allowedAccounts = Set(accountIDs)
+                let roles = Dictionary(folders.filter { allowedAccounts.contains($0.accountID) }.map {
+                    (MailListContextDescriptor.folderKey(accountID: $0.accountID, path: $0.path), $0.role)
+                }, uniquingKeysWith: { _, last in last })
+                let target: String
+                if let path = selectedFolder { target = L10n.t(folders.first(where: { $0.accountID == selectedAccount && $0.path == path })?.name ?? path) }
+                else { target = destination == .inbox ? L10n.t("当前收件箱") : L10n.format("当前{0}", L10n.t(destination.rawValue)) }
+                var context = WorkspaceContext(page: "mail-list", label: L10n.format("检索范围：{0}", target))
+                context.accountID = selectedAccount
+                let code: String
+                switch destination { case .focus, .partner: code = "focus"; case .starred: code = "starred"; case .sent: code = "sent"; case .trash: code = "trash"; case .snoozed: code = "snoozed"; default: code = "inbox" }
+                context.mailList = .init(accountIDs: accountIDs, folderPath: selectedFolder, destination: code,
+                    unreadOnly: unreadOnly, category: category, folderRoles: roles)
+                return context
+            }
         }
         if workspacePage == .desk, let run = selectedRun ?? agentRuns.first(where: { $0.id == visibleRunID }) ?? agentRuns.sorted(by: { ($0.phase == .waitingUser ? 0 : 1, -$0.updatedAt.timeIntervalSince1970) < ($1.phase == .waitingUser ? 0 : 1, -$1.updatedAt.timeIntervalSince1970) }).first {
             var context = WorkspaceContext(page: "desk", label: run.title, mailIDs: run.sourceMailIDs, runID: run.id)

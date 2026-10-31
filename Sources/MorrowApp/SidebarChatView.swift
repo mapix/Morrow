@@ -27,7 +27,7 @@ struct SidebarChatView: View {
                     }.padding(.vertical, 24) }
                     ForEach(model.visibleChat) { entry in ChatMessageView(entry: entry).id(entry.id) }
                     ForEach(model.openUIInteractions.filter { $0.completedAt == nil && ($0.sessionID ?? "legacy") == model.activeSessionID && ($0.runID == nil || $0.runID == context.runID) }) { interaction in NativeOpenUIView(interaction: interaction) }
-                    if model.currentSessionBusy { HStack(spacing: 10) { ProgressView().controlSize(.small); Text(model.mailboxConnectionStatus ?? L10n.t("正在处理…")).font(Theme.label).foregroundStyle(Theme.secondary) }.id("busy") }
+                    if model.currentSessionBusy { VStack(alignment: .leading, spacing: 6) { HStack(spacing: 10) { ProgressView().controlSize(.small); Text(model.mailboxConnectionStatus ?? model.sidebarToolStatus ?? L10n.t("正在处理…")).font(Theme.label).foregroundStyle(Theme.secondary) }; if !model.sidebarEvidenceMailIDs.isEmpty { Text(L10n.format("本轮提供了 {0} 封邮件", "\(model.sidebarEvidenceMailIDs.count)")).font(Theme.small).foregroundStyle(Theme.secondary) } }.id("busy") }
                 }.padding(.horizontal, 20).padding(.vertical, 8) }
                 .onAppear { if let id = model.scrollChatID { proxy.scrollTo(id, anchor: .center) } else if let last = model.visibleChat.last { proxy.scrollTo(last.id, anchor: .bottom) } }
                 .onChange(of: model.visibleChat.count) { if let last = model.visibleChat.last { proxy.scrollTo(last.id, anchor: .bottom) } }
@@ -47,12 +47,12 @@ struct SidebarChatView: View {
         Menu {
             Button(model.chatPinnedContext == nil ? L10n.t("固定此范围") : L10n.t("跟随左侧内容")) { model.chatPinnedContext = model.chatPinnedContext == nil ? model.currentContext : nil }
             Button(L10n.t("仅使用本轮文件")) { model.newChatWork = false; model.chatPinnedContext = .init(page: "materials", label: L10n.t("本轮带入资料")) }
-            Button(L10n.t("使用整个邮箱")) { model.newChatWork = false; model.chatPinnedContext = .init(page: "global", label: L10n.t("整个邮箱")) }
+            Button(L10n.t("在全部邮箱中检索")) { model.newChatWork = false; model.chatPinnedContext = .init(page: "global", label: L10n.t("检索范围：全部邮箱")) }
             Divider(); Button(model.newChatWork ? L10n.t("返回普通对话") : L10n.t("形成新委托")) { model.newChatWork.toggle() }
         } label: {
-            HStack(spacing: 7) { Image(systemName: model.chatPinnedContext == nil ? "link" : "pin.fill").foregroundStyle(Theme.accent2); Text(context.label).lineLimit(1); Spacer(minLength: 0); if model.newChatWork { Text(L10n.t("新委托")).foregroundStyle(Theme.accent2) }; Image(systemName: "chevron.down").font(Theme.small).foregroundStyle(Theme.muted) }.font(Theme.context).padding(.leading, 10).frame(minHeight: 28)
+            HStack(spacing: 7) { Image(systemName: model.chatPinnedContext == nil ? "link" : "pin.fill").foregroundStyle(Theme.accent2); Text(model.chatScopeLabel(context)).lineLimit(1); Spacer(minLength: 0); if model.newChatWork { Text(L10n.t("新委托")).foregroundStyle(Theme.accent2) }; Image(systemName: "chevron.down").font(Theme.small).foregroundStyle(Theme.muted) }.font(Theme.context).padding(.leading, 10).frame(minHeight: 28)
         }.menuStyle(.borderlessButton).menuIndicator(.hidden).overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 1).fill(Theme.accent2).frame(width: 2, height: 20) }
-            .help((model.chatPinnedContext == nil ? L10n.t("跟随左侧：") : L10n.t("固定范围：")) + context.label).accessibilityLabel((model.newChatWork ? L10n.t("新委托，") : "") + (model.chatPinnedContext == nil ? L10n.t("跟随左侧：") : L10n.t("固定范围：")) + context.label)
+            .help(L10n.t("邮件在此范围内按需检索。") + " " + model.chatScopeLabel(context)).accessibilityLabel((model.newChatWork ? L10n.t("新委托，") : "") + model.chatScopeLabel(context))
     }
     private var composer: some View {
         let sessionID = model.activeSessionID
