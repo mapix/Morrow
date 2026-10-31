@@ -3,6 +3,7 @@ set -euo pipefail
 cd "${0:A:h:h}"
 swift package resolve
 python3 scripts/patch-mlx-nax.py
+python3 scripts/patch-package-resources.py
 build_configuration="${MORROW_BUILD_CONFIGURATION:-release}"
 swift build --configuration "$build_configuration" --jobs 4 -Xswiftc -debug-prefix-map -Xswiftc "$PWD=." -Xswiftc -file-prefix-map -Xswiftc "$PWD=." -Xcc "-ffile-prefix-map=$PWD=." -Xcc "-fdebug-prefix-map=$PWD=."
 if [[ ! -f .build/morrow-metal/mlx.metallib ]]; then python3 scripts/build-metal.py; fi

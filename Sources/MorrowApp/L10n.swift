@@ -23,13 +23,14 @@ enum L10n {
         "Synchronizing iCloud…": ("正在同步 iCloud…", "iCloud と同期中…"),
         "iCloud synchronized.": ("iCloud 同步完成。", "iCloud と同期しました。"),
         "This build has no signed iCloud container. Sync remains off.": ("此构建尚未配置已签名的 iCloud 容器，同步保持关闭。", "このビルドには署名済み iCloud コンテナがありません。同期待機はオフです。"),
+        "This build has no verified iCloud environment. Sync remains off.": ("此构建的 iCloud 环境尚未验证，同步保持关闭。", "このビルドの iCloud 環境は未確認です。同期はオフのままです。"),
         "Sign in to iCloud in System Settings before enabling sync.": ("请先在系统设置中登录 iCloud，再开启同步。", "同期を有効にする前に、システム設定で iCloud にログインしてください。")
     ]
     /// Only known application status templates are translated. Captured mail
     /// subjects, account names, and diagnostic details remain verbatim.
     static func status(_ source: String, code: String? = nil) -> String {
         let code = code ?? languageCode
-        if catalog[source] != nil { return localized(source, code: code) }
+        if catalog[source] != nil || englishSourceCatalog[source] != nil { return localized(source, code: code) }
         for template in statusTemplates {
             var pattern = NSRegularExpression.escapedPattern(for: template)
             let count = template.filter { $0 == "{" }.count
@@ -56,6 +57,9 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}"]
     static let catalog: [String: (String, String)] = [
+        "当前对话正在处理": ("Working on this chat", "このチャットを処理中"),
+        "另一对话正在处理": ("Working on another chat", "別のチャットを処理中"),
+        "工作正在推进": ("Work in progress", "作業を進めています"),
         "默认加载邮件外部图片": ("Load external mail images by default", "メールの外部画像を既定で読み込む"),
         "外部图片已阻止": ("External image blocked", "外部画像はブロックされています"),
         "加载外部图片": ("Load external images", "外部画像を読み込む"),

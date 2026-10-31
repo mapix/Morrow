@@ -40,6 +40,11 @@ class PublicationGateTests(unittest.TestCase):
         self.assertEqual(publication.path_category("Sources/token.p12", policy), "runtime-or-sensitive-file")
         self.assertEqual(publication.path_category("configuration/oauth-clients.json", policy), "personal-configuration")
         self.assertEqual(publication.path_category("../private.swift", policy), "unsafe-path")
+        self.assertEqual(publication.path_category("Sources/unsafe\nfile.swift", policy), "unsafe-path")
+        self.assertIsNone(publication.path_category("website/deploy/nginx.conf", POLICY))
+        self.assertEqual(publication.path_category("website/deploy/personal.conf", POLICY), "unapproved-configuration-file")
+        self.assertIsNone(publication.path_category("iOS/MorrowMobile/Resources/Notices/MLX-LICENSE", POLICY))
+        self.assertEqual(publication.path_category("docs/public/personal-LICENSE", POLICY), "unapproved-file-type")
 
     def testIndexBytesAreCheckedInsteadOfSanitizedWorktree(self):
         with tempfile.TemporaryDirectory(prefix="publication-index-") as folder:

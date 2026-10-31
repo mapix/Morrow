@@ -211,7 +211,7 @@ public actor AcceptanceHarness {
         for attempt in 0..<12 {
             try Task.checkCancellation()
             try await boundedCloud(cloud: cloud) { try await cloud.sync() }
-            let pending = try await store.cloudChanges().count; proof.pendingRecords = pending
+            let pending = try await cloud.pendingRecordCount(); proof.pendingRecords = pending
             proof.importedRevision = await cloud.status().importedRevision
             switch mode {
             case .cloudPublish, .cloudReceive: matched = try await matchesFixture(store: store, prefix: prefix, revision: 1) && pending == 0
@@ -245,14 +245,16 @@ public actor AcceptanceHarness {
             let assetBytes = try? Data(contentsOf: URL(fileURLWithPath: assetPath))
             let revision = mode == .cloudPublish || mode == .cloudReceive ? 1 : 2
             proof.checks.append(.init(name: "synthetic-asset-byte-equality", passed: assetPath.hasPrefix(store.root.path + "/") && assetBytes == Self.asset(prefix: prefix, revision: revision), detail: "Chat material bytes match the known synthetic fixture in the isolated workspace."))
-            let acknowledged = try await cloudRecords.asyncAll { change in try await store.object(Data.self, kind: "cloud-record-state", id: change.id) != nil }
+            let acknowledged = try await cloudRecords.asyncAll { change in try await cloud.hasPersistedServerMetadata(forRecordName: change.id) }
             proof.checks.append(.init(name: "server-record-metadata-persisted", passed: acknowledged, detail: "CKSyncEngine server record system fields persisted for all synthetic records."))
         }
         proof.phase = "restarting-persisted-sync-engine"; try Self.write(proof, to: destination)
         let prior = try await store.cloudChanges(dirtyOnly: false)
         await cloud.stop(); try await boundedCloud(cloud: cloud) { try await cloud.start() }
         let after = try await store.cloudChanges(dirtyOnly: false)
-        proof.checks.append(.init(name: "restart-does-not-echo-or-resurrect", passed: FileManager.default.fileExists(atPath: store.root.appendingPathComponent("icloud-engine-state.json").path) && after.count == prior.count && after.allSatisfy { !$0.dirty } && after.map(\.clock) == prior.map(\.clock), detail: "Persisted engine restarted without resending unchanged objects or resurrecting tombstones."))
+        let persisted = await cloud.hasPersistedEngineState()
+        let remaining = try await cloud.pendingRecordCount()
+        proof.checks.append(.init(name: "restart-does-not-echo-or-resurrect", passed: persisted && remaining == 0 && after.count == prior.count && after.allSatisfy { !$0.dirty } && after.map(\.clock) == prior.map(\.clock), detail: "Persisted engine restarted without resending unchanged objects or resurrecting tombstones."))
     }
 
     private func seedCloudFixture(store: MailStore, prefix: String, revision: Int) async throws {

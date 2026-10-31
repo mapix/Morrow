@@ -7,6 +7,30 @@ private struct CloudIncomingFailure: Codable, Sendable, Identifiable {
     var reason: String
 }
 
+enum CloudSyncEnvironment: String, Codable, Sendable {
+    case development = "Development", production = "Production"
+}
+
+struct CloudSyncPersistenceScope: Equatable, Sendable {
+    var container: String
+    var environment: CloudSyncEnvironment
+    var zone: String
+    var identifier: String { MailStore.hash(container + "\n" + environment.rawValue + "\n" + zone) }
+    func directory(in root: URL) -> URL { root.appendingPathComponent("icloud-state/" + identifier, isDirectory: true) }
+    func objectKind(_ prefix: String) -> String { prefix + ":" + identifier }
+}
+
+struct CloudEnvironmentAcknowledgement: Codable, Sendable, Identifiable {
+    var id: String
+    var clock: Int64
+    var device: String
+    func matches(_ change: CloudWorkspaceChange) -> Bool { id == change.id && clock == change.clock && device == change.deviceID }
+    static func pending(_ changes: [CloudWorkspaceChange], acknowledged: [Self]) -> [CloudWorkspaceChange] {
+        let byID = Dictionary(acknowledged.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        return changes.filter { byID[$0.id]?.matches($0) != true }
+    }
+}
+
 public struct CloudSyncStatus: Sendable {
     public var enabled = false
     public var busy = false
@@ -23,7 +47,12 @@ public actor CloudSyncService: CKSyncEngineDelegate {
     private var engine: CKSyncEngine?
     private var current = CloudSyncStatus()
     private var syncing = false
-    private var stateURL: URL { store.root.appendingPathComponent("icloud-engine-state.json") }
+    private var persistenceScope: CloudSyncPersistenceScope?
+    private var stateDirectory: URL { persistenceScope?.directory(in: store.root) ?? store.root.appendingPathComponent("icloud-state/unconfigured", isDirectory: true) }
+    private var stateURL: URL { stateDirectory.appendingPathComponent("engine-state.json") }
+    private var recordStateKind: String { persistenceScope?.objectKind("cloud-record-state") ?? "cloud-record-state:unconfigured" }
+    private var incomingFailureKind: String { persistenceScope?.objectKind("cloud-incoming-failure") ?? "cloud-incoming-failure:unconfigured" }
+    private var acknowledgementKind: String { persistenceScope?.objectKind("cloud-environment-ack") ?? "cloud-environment-ack:unconfigured" }
     private var recordCache: [String: CKRecord] = [:]
     private var stagedFiles: [String: [URL]] = [:]
     private var blockedRecords: [String: String] = [:]
@@ -38,17 +67,49 @@ public actor CloudSyncService: CKSyncEngineDelegate {
         #endif
         return value
     }
+    static func configuredEnvironment() -> CloudSyncEnvironment? {
+        #if os(macOS)
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(task, "com.apple.developer.icloud-container-environment" as CFString, nil) as? String else { return nil }
+        return CloudSyncEnvironment(rawValue: value)
+        #else
+        // The signing pipeline writes this value from the verified mobile
+        // profile. Unknown/unsigned builds may not guess a cloud environment.
+        return (Bundle.main.object(forInfoDictionaryKey: "MorrowCloudKitEnvironment") as? String).flatMap(CloudSyncEnvironment.init(rawValue:))
+        #endif
+    }
+    public func hasPersistedServerMetadata(forRecordName id: String) async throws -> Bool {
+        guard persistenceScope != nil else { return false }
+        return try await store.object(Data.self, kind: recordStateKind, id: id) != nil
+    }
+    public func hasPersistedEngineState() -> Bool {
+        persistenceScope != nil && FileManager.default.fileExists(atPath: stateURL.path)
+    }
+    public func pendingRecordCount() async throws -> Int { try await pendingChanges().count }
+    private func pendingChanges() async throws -> [CloudWorkspaceChange] {
+        let changes = try await store.cloudChanges(dirtyOnly: false)
+        let acknowledged = try await store.load(CloudEnvironmentAcknowledgement.self, kind: acknowledgementKind)
+        return CloudEnvironmentAcknowledgement.pending(changes, acknowledged: acknowledged)
+    }
+    private func acknowledgeEnvironment(_ change: CloudWorkspaceChange) async throws {
+        try await store.save(CloudEnvironmentAcknowledgement(id: change.id, clock: change.clock, device: change.deviceID), kind: acknowledgementKind, id: change.id)
+    }
     public func start() async throws {
         guard engine == nil else { return }
         lifecycle += 1; let attempt = lifecycle
         guard let identifier = Self.configuredContainer() else { throw MailError.message("This build has no signed iCloud container. Sync remains off.") }
+        guard let environment = Self.configuredEnvironment() else { throw MailError.message("This build has no verified iCloud environment. Sync remains off.") }
+        let scope = CloudSyncPersistenceScope(container: identifier, environment: environment, zone: zoneID.zoneName)
+        if persistenceScope != scope { recordCache.removeAll(); blockedRecords.removeAll(); current.lastSync = nil; current.importedRevision = 0 }
+        persistenceScope = scope
+        try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let container = CKContainer(identifier: identifier)
         guard try await container.accountStatus() == .available else { throw MailError.message("Sign in to iCloud in System Settings before enabling sync.") }
         try Task.checkCancellation(); guard lifecycle == attempt else { throw CancellationError() }
         let account = try await container.userRecordID().recordName
         try Task.checkCancellation(); guard lifecycle == attempt else { throw CancellationError() }
         let accountKey = MailStore.hash(account)
-        let bindingURL = store.root.appendingPathComponent("icloud-account-binding.txt")
+        let bindingURL = stateDirectory.appendingPathComponent("account-binding.txt")
         if let previous = try? String(contentsOf: bindingURL, encoding: .utf8), previous != accountKey {
             throw MailError.message("The iCloud account changed. Use a separate local workspace to keep the two accounts separate.")
         }
@@ -59,6 +120,10 @@ public actor CloudSyncService: CKSyncEngineDelegate {
         let created = CKSyncEngine(configuration); engine = created
         current.enabled = true; current.message = "iCloud sync is ready."
         created.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zoneID))])
+        // The journal represents local user data, but its global dirty flag may
+        // have been acknowledged in another environment. Environment-specific
+        // acknowledgements start empty, so all current versions/tombstones are
+        // seeded and uploaded without reusing the other server's progress.
         try await store.seedCloudJournal()
         try Task.checkCancellation(); guard lifecycle == attempt, engine === created else { throw CancellationError() }
         try await sync()
@@ -81,13 +146,13 @@ public actor CloudSyncService: CKSyncEngineDelegate {
             // Fetch first so optimistic writes include the most recent server change tag.
             try await active.fetchChanges(CKSyncEngine.FetchChangesOptions(scope: .zoneIDs([zoneID])))
             guard engine === active else { return }
-            let pending = try await store.cloudChanges().map { CKSyncEngine.PendingRecordZoneChange.saveRecord(CKRecord.ID(recordName: $0.id, zoneID: zoneID)) }
+            let pending = try await pendingChanges().map { CKSyncEngine.PendingRecordZoneChange.saveRecord(CKRecord.ID(recordName: $0.id, zoneID: zoneID)) }
             active.state.add(pendingRecordZoneChanges: pending)
             try await active.sendChanges(CKSyncEngine.SendChangesOptions(scope: .zoneIDs([zoneID])))
             guard engine === active else { return }
             current.lastSync = Date()
-            let remaining = try await store.cloudChanges().count
-            let incoming = try await store.load(CloudIncomingFailure.self, kind: "cloud-incoming-failure")
+            let remaining = try await pendingChanges().count
+            let incoming = try await store.load(CloudIncomingFailure.self, kind: incomingFailureKind)
             let total = remaining + incoming.count
             current.message = total == 0 ? "iCloud synchronized." : "iCloud has \(total) pending records. " + (blockedRecords.values.first ?? incoming.first?.reason ?? "They will retry during the next sync.")
         } catch {
@@ -113,10 +178,10 @@ public actor CloudSyncService: CKSyncEngineDelegate {
                     guard engine === syncEngine else { return }
                     do {
                         try await accept(modification.record)
-                        try await store.remove(kind: "cloud-incoming-failure", id: modification.record.recordID.recordName)
+                        try await store.remove(kind: incomingFailureKind, id: modification.record.recordID.recordName)
                     } catch {
                         let failure = CloudIncomingFailure(id: modification.record.recordID.recordName, reason: error.localizedDescription)
-                        try await store.save(failure, kind: "cloud-incoming-failure", id: failure.id)
+                        try await store.save(failure, kind: incomingFailureKind, id: failure.id)
                         current.message = "iCloud incoming record is pending: " + error.localizedDescription
                     }
                 }
@@ -126,7 +191,7 @@ public actor CloudSyncService: CKSyncEngineDelegate {
                 for record in changes.savedRecords {
                     recordCache[record.recordID.recordName] = record
                     try await cacheSystemFields(record)
-                    if let acknowledged = try decodeChange(record) { try await store.acknowledgeCloudChange(acknowledged) }
+                    if let acknowledged = try decodeChange(record) { try await store.acknowledgeCloudChange(acknowledged); try await acknowledgeEnvironment(acknowledged) }
                     cleanupFiles(record.recordID.recordName)
                 }
                 for failure in changes.failedRecordSaves {
@@ -144,7 +209,7 @@ public actor CloudSyncService: CKSyncEngineDelegate {
         guard engine === syncEngine else { return nil }
         do {
             let allowed = Set(syncEngine.state.pendingRecordZoneChanges.compactMap { change -> String? in if case .saveRecord(let id) = change { return id.recordName }; return nil })
-            let changes = try await store.cloudChanges().filter { allowed.contains($0.id) }
+            let changes = try await pendingChanges().filter { allowed.contains($0.id) }
             var records: [CKRecord] = []
             for change in changes {
                 guard records.count < 50 else { break }
@@ -156,7 +221,7 @@ public actor CloudSyncService: CKSyncEngineDelegate {
     }
     private func makeRecord(_ change: CloudWorkspaceChange) async throws -> CKRecord {
         let id = CKRecord.ID(recordName: change.id, zoneID: zoneID)
-        let savedFields = try await store.object(Data.self, kind: "cloud-record-state", id: change.id)
+        let savedFields = try await store.object(Data.self, kind: recordStateKind, id: change.id)
         let record: CKRecord
         if let cached = recordCache[change.id] { record = try copySystemFields(cached) }
         else if let savedFields { record = try restoreSystemFields(savedFields) }
@@ -176,19 +241,19 @@ public actor CloudSyncService: CKSyncEngineDelegate {
         return record
     }
     private func retryIncoming(_ active: CKSyncEngine) async throws {
-        let failures = try await store.load(CloudIncomingFailure.self, kind: "cloud-incoming-failure")
+        let failures = try await store.load(CloudIncomingFailure.self, kind: incomingFailureKind)
         for failure in failures.prefix(50) {
             guard engine === active else { return }
             do {
                 let record = try await active.database.record(for: CKRecord.ID(recordName: failure.id, zoneID: zoneID))
                 guard engine === active else { return }
                 try await accept(record)
-                try await store.remove(kind: "cloud-incoming-failure", id: failure.id)
+                try await store.remove(kind: incomingFailureKind, id: failure.id)
             } catch let error as CKError where error.code == .unknownItem {
                 // The source was removed externally; retain local work without retrying forever.
-                try await store.remove(kind: "cloud-incoming-failure", id: failure.id)
+                try await store.remove(kind: incomingFailureKind, id: failure.id)
             } catch {
-                try await store.save(CloudIncomingFailure(id: failure.id, reason: error.localizedDescription), kind: "cloud-incoming-failure", id: failure.id)
+                try await store.save(CloudIncomingFailure(id: failure.id, reason: error.localizedDescription), kind: incomingFailureKind, id: failure.id)
             }
         }
     }
@@ -245,17 +310,17 @@ public actor CloudSyncService: CKSyncEngineDelegate {
             }
             object["materials"] = materials; change.payload = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         }
-        if try await store.importCloudChange(change) { current.importedRevision += 1 }
+        if try await store.importCloudChange(change) { current.importedRevision += 1; try await acknowledgeEnvironment(change) }
     }
     private func stagingURL(_ name: String) throws -> URL {
-        let directory = store.root.appendingPathComponent("cloud-staging")
+        let directory = stateDirectory.appendingPathComponent("staging", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return directory.appendingPathComponent(name + "-" + UUID().uuidString)
     }
     private func privateWrite(_ data: Data, to url: URL) throws { try data.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
     private func cacheSystemFields(_ record: CKRecord) async throws {
         let coder = NSKeyedArchiver(requiringSecureCoding: true); record.encodeSystemFields(with: coder); coder.finishEncoding()
-        try await store.save(coder.encodedData, kind: "cloud-record-state", id: record.recordID.recordName)
+        try await store.save(coder.encodedData, kind: recordStateKind, id: record.recordID.recordName)
     }
     private func copySystemFields(_ record: CKRecord) throws -> CKRecord {
         let coder = NSKeyedArchiver(requiringSecureCoding: true); record.encodeSystemFields(with: coder); coder.finishEncoding()

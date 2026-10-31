@@ -1,23 +1,23 @@
-# Smail for iPhone and iPad
+# Morrow for iPhone and iPad
 
-Native SwiftUI target, shared SmailCore SQLite/MIME/IMAP/POP3/Agent/OpenUI/embedding protocols. The app has contextual Chat, separate Sessions, contacts, attachments, read state, drafts, manual mailbox setup, voice, language/theme choices, managed memories and foreground draft responders.
+Native SwiftUI target, shared MorrowCore SQLite/MIME/IMAP/POP3/Agent/OpenUI/embedding protocols. The app has contextual Chat, separate Sessions, contacts, attachments, read state, drafts, manual mailbox setup, voice, language/theme choices, managed memories and foreground draft responders.
 
 ## Build
 
 Xcode 26, XcodeGen and asc are required. Run from the repository:
 
 ```sh
-scripts/build-mobile.sh simulator
-scripts/build-mobile.sh device
+zsh scripts/build-mobile.sh simulator
+zsh scripts/build-mobile.sh device
 ```
 
 The second command validates the hardware SDK without signing. It does **not** produce an installable IPA. For a registered iPhone and an authenticated Xcode developer account:
 
 ```sh
-MORROW_DEVELOPMENT_TEAM=YOUR_TEAM scripts/build-mobile.sh signed-device
+MORROW_DEVELOPMENT_TEAM=YOUR_TEAM zsh scripts/build-mobile.sh signed-device
 ```
 
-Open `iOS/SmailMobile.xcodeproj` to select your team/device, then Run. No App Store upload is performed by these scripts.
+Open `iOS/MorrowMobile.xcodeproj` to select your team/device, then Run. No App Store upload is performed by these scripts.
 
 ## Model
 

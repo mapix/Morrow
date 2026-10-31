@@ -30,7 +30,8 @@ targets:
       - path: ../dist/EmbeddingGemma2-Text
         type: folder
         buildPhase: resources
-      - path: ../configuration/oauth-clients.json
+      - path: ../.build-mobile-oauth/oauth-clients.json
+        optional: true
         buildPhase: resources
     info:
       path: MorrowMobile/Info.plist

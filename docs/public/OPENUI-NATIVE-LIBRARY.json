@@ -432,67 +432,67 @@
   "components": {
     "Stack": {
       "signature": "Stack(children: Component[])",
-      "description": "Smail native Stack"
+      "description": "Morrow native Stack"
     },
     "Card": {
       "signature": "Card(children: Component[])",
-      "description": "Smail native Card"
+      "description": "Morrow native Card"
     },
     "CardHeader": {
       "signature": "CardHeader(title: string, subtitle?: string)",
-      "description": "Smail native CardHeader"
+      "description": "Morrow native CardHeader"
     },
     "TextContent": {
       "signature": "TextContent(text: string, style?: string)",
-      "description": "Smail native TextContent"
+      "description": "Morrow native TextContent"
     },
     "Text": {
       "signature": "Text(text: string)",
-      "description": "Smail native Text"
+      "description": "Morrow native Text"
     },
     "Markdown": {
       "signature": "Markdown(text: string)",
-      "description": "Smail native Markdown"
+      "description": "Morrow native Markdown"
     },
     "Table": {
       "signature": "Table(columns: Component[])",
-      "description": "Smail native Table"
+      "description": "Morrow native Table"
     },
     "Col": {
       "signature": "Col(label: string, data: unknown[])",
-      "description": "Smail native Col"
+      "description": "Morrow native Col"
     },
     "Form": {
       "signature": "Form(name: string, children: Component[])",
-      "description": "Smail native Form"
+      "description": "Morrow native Form"
     },
     "FormControl": {
       "signature": "FormControl(label: string, child?: Component)",
-      "description": "Smail native FormControl"
+      "description": "Morrow native FormControl"
     },
     "Input": {
       "signature": "Input(name: string, placeholder?: string, value?: $binding<string>, rules?: {})",
-      "description": "Smail native Input"
+      "description": "Morrow native Input"
     },
     "TextArea": {
       "signature": "TextArea(name: string, placeholder?: string, value?: $binding<string>, rules?: {})",
-      "description": "Smail native TextArea"
+      "description": "Morrow native TextArea"
     },
     "Choice": {
       "signature": "Choice(name: string, label: string, options: unknown[], value?: $binding<string>)",
-      "description": "Smail native Choice"
+      "description": "Morrow native Choice"
     },
     "Buttons": {
       "signature": "Buttons(children: Component[], direction?: string)",
-      "description": "Smail native Buttons"
+      "description": "Morrow native Buttons"
     },
     "Button": {
       "signature": "Button(label: string, action?: ActionExpression, variant?: string)",
-      "description": "Smail native Button"
+      "description": "Morrow native Button"
     },
     "Citation": {
       "signature": "Citation(sourceId: string, label?: string)",
-      "description": "Smail native Citation"
+      "description": "Morrow native Citation"
     }
   },
   "actions": {

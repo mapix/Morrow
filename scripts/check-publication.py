@@ -76,7 +76,7 @@ def safe_email(value: str, public: set[str]) -> bool:
 
 def path_category(path: str, policy: dict) -> str | None:
     p = PurePosixPath(path)
-    if p.is_absolute() or ".." in p.parts or "\\" in path:
+    if p.is_absolute() or ".." in p.parts or "\\" in path or any(ord(character) < 32 for character in path):
         return "unsafe-path"
     if not p.parts:
         return "unsafe-path"
@@ -96,7 +96,10 @@ def path_category(path: str, policy: dict) -> str | None:
     allowed = path in policy["allowed_exact"] or any(path.startswith(tree) for tree in policy["allowed_trees"])
     if not allowed:
         return "outside-public-allowlist"
-    if p.suffix.lower() not in policy["text_suffixes"] and p.name not in {"LICENSE", "NOTICE", ".gitignore", ".gitattributes", "Dockerfile", ".dockerignore"}:
+    if p.suffix.lower() == ".conf" and path not in policy["allowed_exact"]:
+        return "unapproved-configuration-file"
+    third_party_notice = str(p.parent) == "iOS/MorrowMobile/Resources/Notices" and p.name.endswith("-LICENSE")
+    if p.suffix.lower() not in policy["text_suffixes"] and p.name not in {"LICENSE", "NOTICE", ".gitignore", ".gitattributes", "Dockerfile", ".dockerignore"} and not third_party_notice:
         return "unapproved-file-type"
     return None
 

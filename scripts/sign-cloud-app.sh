@@ -25,6 +25,7 @@ parser.add_argument('--device', help='Paired CoreDevice identifier, required for
 parser.add_argument('--output', help='Optional new clone destination; must not already exist')
 parser.add_argument('--expect-version')
 parser.add_argument('--expect-build')
+parser.add_argument('--cloud-environment', choices=['Development', 'Production'], default='Development', help='Concrete environment already authorized by the supplied profile')
 parser.add_argument('--check', action='store_true')
 parser.add_argument('--install', action='store_true', help='Install iOS app after verification')
 parser.add_argument('--launch', action='store_true', help='Install and launch iOS app after verification')
@@ -148,8 +149,8 @@ try:
     require(CONTAINER in allowed.get('com.apple.developer.icloud-container-identifiers', []), 'Apple profile does not explicitly authorize the shared container')
     require(entitlements.get('com.apple.developer.icloud-services') == ['CloudKit'], 'Signing entitlements must select CloudKit')
     require(profile_allows(allowed.get('com.apple.developer.icloud-services', []), 'CloudKit'), 'Apple profile does not authorize CloudKit')
-    require(entitlements.get('com.apple.developer.icloud-container-environment') == 'Development', 'Signing entitlements must use the development cloud environment')
-    require(profile_allows(allowed.get('com.apple.developer.icloud-container-environment', []), 'Development'), 'Apple profile does not authorize the development cloud environment')
+    require(entitlements.get('com.apple.developer.icloud-container-environment') == args.cloud_environment, 'Signing entitlements must use the selected cloud environment')
+    require(profile_allows(allowed.get('com.apple.developer.icloud-container-environment', []), args.cloud_environment), 'Apple profile does not authorize the selected cloud environment')
     task_key = 'com.apple.security.get-task-allow' if args.platform == 'macos' else 'get-task-allow'
     # macOS development profiles omit this unrestricted entitlement; iOS
     # development profiles explicitly constrain get-task-allow.
@@ -185,7 +186,7 @@ try:
     summary = {'platform': args.platform, 'bundleIdentifier': expected_bundle,
                'version': info.get('CFBundleShortVersionString'), 'build': info.get('CFBundleVersion'),
                'existingCertificateVerified': True, 'explicitCloudProfileVerified': True,
-               'targetDeviceInProfile': True, 'cloudContainer': CONTAINER, 'cloudEnvironment': 'Development',
+               'targetDeviceInProfile': True, 'cloudContainer': CONTAINER, 'cloudEnvironment': args.cloud_environment,
                'appPath': str(app), 'checkedOnly': args.check, 'signed': False,
                'installed': False, 'launched': False, 'cloudOptInPerformed': False}
     (proof / 'profile-uuid.txt').write_text(profile['UUID'] + '\n')
@@ -202,11 +203,12 @@ try:
             executable = app / ('Contents/MacOS/' if args.platform == 'macos' else '') / info['CFBundleExecutable']
             summary['appPath'] = str(app)
         embedded_profile = app / ('Contents/embedded.provisionprofile' if args.platform == 'macos' else 'embedded.mobileprovision')
-        already_signed = info.get('MorrowCloudKitContainer') == CONTAINER and verify_signature(app, entitlements, identity, embedded_profile, profile_bytes)
+        already_signed = info.get('MorrowCloudKitContainer') == CONTAINER and info.get('MorrowCloudKitEnvironment') == args.cloud_environment and verify_signature(app, entitlements, identity, embedded_profile, profile_bytes)
         if not already_signed:
             before_resources = resource_manifest(app, info_path, executable, embedded_profile)
             original_info = copy.deepcopy(info)
             info['MorrowCloudKitContainer'] = CONTAINER
+            info['MorrowCloudKitEnvironment'] = args.cloud_environment
             info_path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY if info_bytes.startswith(b'bplist00') else plistlib.FMT_XML, sort_keys=False))
             embedded_profile.write_bytes(profile_bytes)
             (proof / 'signing-entitlements.plist').write_bytes(plistlib.dumps(entitlements))
@@ -218,6 +220,8 @@ try:
             after_info = plistlib.loads(info_path.read_bytes())
             original_info.pop('MorrowCloudKitContainer', None)
             after_info.pop('MorrowCloudKitContainer', None)
+            original_info.pop('MorrowCloudKitEnvironment', None)
+            after_info.pop('MorrowCloudKitEnvironment', None)
             require(after_info == original_info, 'Signing changed unrelated Info.plist values')
             require(resource_manifest(app, info_path, executable, embedded_profile) == before_resources, 'Signing changed a bundled resource')
         summary.update({'signed': True, 'signatureVerified': True, 'idempotentNoOp': already_signed,
