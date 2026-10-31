@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "version": "0.10.1",
+  "version": "0.10.2",
   "macOS": {
-    "url": "https://github.com/mapix/Morrow/releases/download/v0.10.1/Morrow-0.10.1-macOS-arm64.zip",
-    "fileName": "Morrow-0.10.1-macOS-arm64.zip",
-    "sizeBytes": 516403969,
-    "sha256": "f511707eec21145338ea83e1e619214e3b9f452db3c21bd80ebcc930c1c277f0",
+    "url": "https://github.com/mapix/Morrow/releases/download/v0.10.2/Morrow-0.10.2-macOS-arm64.zip",
+    "fileName": "Morrow-0.10.2-macOS-arm64.zip",
+    "sizeBytes": 516437578,
+    "sha256": "571268ca29e3323bdcf2a79c4aa84e307ed84043275ff3a9a3733fb5251d4216",
     "minimumVersion": "26.0",
     "architecture": "Apple Silicon"
   },
-  "releaseUrl": "https://github.com/mapix/Morrow/releases/tag/v0.10.1"
+  "releaseUrl": "https://github.com/mapix/Morrow/releases/tag/v0.10.2"
 }
