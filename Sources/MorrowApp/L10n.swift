@@ -57,6 +57,22 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}"]
     static let catalog: [String: (String, String)] = [
+        "全部已读": ("Mark all read", "すべて既読にする"),
+        "全选本页": ("Select this page", "このページを選択"),
+        "每页 {0} 封": ("{0} messages per page", "1ページ{0}通"),
+        "每页邮件数量": ("Messages per page", "1ページのメール数"),
+        "上一页": ("Previous page", "前のページ"),
+        "下一页": ("Next page", "次のページ"),
+        "将当前列表跨页的未读邮件全部标为已读": ("Mark unread messages across this list as read", "このリストの全ページの未読メールを既読にする"),
+        "全部标为已读：正在处理 {0}/{1} 个邮箱文件夹": ("Mark all read: processing folder {0}/{1}", "すべて既読：フォルダー {0}/{1} を処理中"),
+        "批量标记：正在处理 {0}/{1} 组": ("Marking batch {0}/{1}", "一括マーク：{0}/{1} を処理中"),
+        "全部标为已读": ("Mark all as read", "すべて既読にする"),
+        "标为已读": ("Mark as read", "既読にする"),
+        "标为未读": ("Mark as unread", "未読にする"),
+        "{0}：完成 {1} 封": ("{0}: {1} messages completed", "{0}：{1}通を完了"),
+        "，{0} 组未完成": (", {0} batches incomplete", "、{0}件のバッチが未完了"),
+        "已撤销批量已读标记": ("Bulk read marking undone", "既読の一括マークを取り消しました"),
+        "部分撤销尚未完成，请同步后重试": ("Some undo operations are incomplete; sync and retry", "一部の取り消しが未完了です。同期して再試行してください"),
         "检索范围：{0}": ("Search scope: {0}", "検索範囲：{0}"),
         "当前收件箱": ("Current inbox", "現在の受信トレイ"),
         "当前{0}": ("Current {0}", "現在の{0}"),

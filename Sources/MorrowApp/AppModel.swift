@@ -30,6 +30,7 @@ enum Destination: String, CaseIterable, Identifiable {
     private var reloadEpoch = 0
     private var localMutationEpoch = 0
     private var localMutationVersions: [String: Int] = [:]
+    private var bulkSeenOverrides: [BulkSeenKey: (Bool, Date)] = [:]
     @Published var drafts: [ComposeDraft] = []
     @Published var delegations: [Delegation] = []
     @Published var responders: [MailResponder] = []
@@ -87,11 +88,13 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var inspectorPage: InspectorPage = .artifacts
     @Published var focusMailSearch = false
     @Published var settings = AgentSettings()
-    @Published var destination: Destination = .partner { didSet { if searchMode && oldValue != destination { search() } } }
+    @Published var mailPageIndex = 0
+    @Published var mailPageSize = MailPageWindow.preferredSize
+    @Published var destination: Destination = .partner { didSet { if oldValue != destination { mailPageIndex = 0; if searchMode { search() } } } }
     @Published var selectedID: String?
-    @Published var selectedAccount: String? { didSet { if searchMode && oldValue != selectedAccount { search() } } }
-    @Published var selectedFolder: String? { didSet { if oldValue != selectedFolder { searchScope = selectedFolder == nil ? .mailbox : .currentView; if searchMode { search() } } } }
-    @Published var searchText = ""
+    @Published var selectedAccount: String? { didSet { if oldValue != selectedAccount { mailPageIndex = 0; if searchMode { search() } } } }
+    @Published var selectedFolder: String? { didSet { if oldValue != selectedFolder { mailPageIndex = 0; searchScope = selectedFolder == nil ? .mailbox : .currentView; if searchMode { search() } } } }
+    @Published var searchText = "" { didSet { if oldValue != searchText { mailPageIndex = 0 } } }
     @Published var searchStrategy: MailSearchStrategy = .semantic { didSet { if searchMode && oldValue != searchStrategy { search() } } }
     @Published var searchScope: MailboxSearchScope = .mailbox { didSet { if searchMode && oldValue != searchScope { search() } } }
     @Published var searchStatus = ""
@@ -110,8 +113,8 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     @Published var searchBusy = false
     @Published var searchMode = false
-    @Published var unreadOnly = false { didSet { if searchMode && oldValue != unreadOnly { search() } } }
-    @Published var category: MailCategory? { didSet { if searchMode && oldValue != category { search() } } }
+    @Published var unreadOnly = false { didSet { if oldValue != unreadOnly { mailPageIndex = 0; if searchMode { search() } } } }
+    @Published var category: MailCategory? { didSet { if oldValue != category { mailPageIndex = 0; if searchMode { search() } } } }
     @Published var syncBusy = false
     @Published var syncStatus = "尚未连接邮箱"
     @Published var indexStatus = "等待邮件"
@@ -365,17 +368,20 @@ enum Destination: String, CaseIterable, Identifiable {
                     syncStatus = "正在同步 \(account.name) / \(folder.name)"
                     let inventoryStarted = Date()
                     let (validity, flags) = try await transport.inventory(account, folder: folder.path, password: secret)
+                    bulkSeenOverrides = bulkSeenOverrides.filter { key, value in key.account != account.id || key.folder != folder.path || (key.validity == validity && value.1 > inventoryStarted) }
                     let existing = try await store.syncRecords(account: account.id, folder: folder.path)
                     let byUID = Dictionary(uniqueKeysWithValues: existing.filter { $0.uidValidity == validity && $0.uid > 0 }.map { ($0.uid, $0) })
                     for (uid, flag) in flags.sorted(by: { $0.key > $1.key }) {
                         if let old = byUID[uid] {
                             guard var mail = try await store.message(old.id) else { continue }
                             if mail.localFlagModifiedAt.map({ $0 > inventoryStarted }) == true { continue }
-                            if mail.isRead != flag.read || mail.isStarred != flag.starred { mail.isRead = flag.read; mail.isStarred = flag.starred; try await store.upsert(mail) }
+                            let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
+                            if mail.isRead != (seen?.0 ?? flag.read) || mail.isStarred != flag.starred { mail.isRead = seen?.0 ?? flag.read; mail.isStarred = flag.starred; if let seen { mail.localFlagModifiedAt = seen.1 }; try await store.upsert(mail) }
                         } else {
                             do {
                                 var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
-                                mail.isRead = flag.read; mail.isStarred = flag.starred; mail.analysis = PartnerEngine.baseline(mail)
+                                let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
+                                mail.isRead = seen?.0 ?? flag.read; mail.isStarred = flag.starred; if let seen { mail.localFlagModifiedAt = seen.1 }; mail.analysis = PartnerEngine.baseline(mail)
                                 try await store.upsert(mail); newCount += 1
                                 if newCount % 10 == 0 { await reload(); process() }
                             } catch { failures.append(account.name + " / " + folder.name + " / UID \(uid)：" + error.localizedDescription) }
@@ -544,11 +550,24 @@ enum Destination: String, CaseIterable, Identifiable {
         for mail in updates { if let position = mailProjection.positions[mail.id], updated.indices.contains(position) { updated[position] = Self.validatedMail(mail); localMutationVersions[mail.id] = localMutationEpoch } }
         mails = updated
     }
+    func cacheReadStates(_ states: [String: Bool], modifiedAt: Date) {
+        guard !states.isEmpty else { return }
+        var updated = mails; localMutationEpoch += 1
+        for (id, value) in states { if let position = mailProjection.positions[id], updated.indices.contains(position) { updated[position].isRead = value; updated[position].localFlagModifiedAt = modifiedAt; localMutationVersions[id] = localMutationEpoch } }
+        mails = updated
+    }
+    func noteBulkSeen(account: String, folder: String, validity: UInt64, uids: [UInt64], value: Bool, modifiedAt: Date) {
+        for uid in uids { bulkSeenOverrides[.init(account: account, folder: folder, validity: validity, uid: uid)] = (value, modifiedAt) }
+    }
+    func bulkSeenValue(account: String, folder: String, validity: UInt64, uid: UInt64, inventoryStarted: Date) -> (Bool, Date)? {
+        guard let entry = bulkSeenOverrides[.init(account: account, folder: folder, validity: validity, uid: uid)], entry.1 > inventoryStarted else { return nil }; return entry
+    }
     @discardableResult private func performFlag(_ mail: MailMessage, flag: String, value: Bool) async throws -> MailMessage {
         if let account = accounts.first(where: { $0.id == mail.accountID && !$0.isDemo }), mail.uid > 0 { try await transport.setFlag(account, message: mail, flag: flag, enabled: value, password: credentials.credential(account)) }
         guard var m = try await store.message(mail.id) else { throw MailError.message("此邮件已不在本机缓存。") }; if flag == "\\Seen" { m.isRead = value } else { m.isStarred = value }; m.localFlagModifiedAt = Date(); return try await store.upsert(m)
     }
     func batch(_ ids: Set<String>, action: BatchMailAction) async {
+        if case .read(let value) = action { await bulkRead(ids, value: value); return }
         guard !batchBusy, !ids.isEmpty else { return }; batchBusy = true; defer { batchBusy = false }
         let selected = mails.filter { ids.contains($0.id) }; var completed: [MailMessage] = []; var failures: [String] = []
         for (i, mail) in selected.enumerated() {
@@ -636,7 +655,7 @@ enum Destination: String, CaseIterable, Identifiable {
         for i in chat.indices where chat[i].messageIDs.contains(oldID) { chat[i].messageIDs = chat[i].messageIDs.map { $0 == oldID ? newID : $0 }; try await store.save(chat[i], kind: "chat", id: chat[i].id) }
     }
     func offerUndo(_ label: String, action: @escaping () async -> Void) { guard !undoing else { return }; undoLabel = label; undoAction = action }
-    func undo() async { let action = undoAction; undoAction = nil; undoLabel = nil; undoing = true; await action?(); undoing = false }
+    func undo() async { guard !batchBusy else { return }; let action = undoAction; undoAction = nil; undoLabel = nil; undoing = true; await action?(); undoing = false }
 
     func compose(replyTo mail: MailMessage? = nil, replyAll: Bool = false, forward: Bool = false, suggested: Bool = false) async {
         var draft = ComposeDraft(); draft.accountID = mail?.accountID ?? selectedAccount.flatMap { id in accounts.first { $0.id == id }?.id } ?? realAccounts.first?.id ?? accounts.first?.id ?? ""

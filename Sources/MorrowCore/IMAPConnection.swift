@@ -84,6 +84,89 @@ public actor IMAPConnection {
         if let expectedValidity, current != expectedValidity { throw MailError.message("文件夹已重建，未执行标记，请重新同步。") }
         _ = try await command("UID STORE \(uid) \(enabled ? "+" : "-")FLAGS.SILENT (\(flag))")
     }
+    struct UIDFlagBatch {
+        var uids: [UInt64]
+        var command: String
+    }
+    static func validateBulkFolder(_ folder: String) throws {
+        guard !folder.isEmpty, !folder.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw MailError.message("邮箱字段包含无效控制字符。") }
+        _ = try quote(folder)
+    }
+    static func flagBatches(_ values: [UInt64], flag: String, enabled: Bool, maximumCommandBytes: Int = 4096, maximumUIDs: Int = 500) throws -> [UIDFlagBatch] {
+        guard ["\\Seen", "\\Flagged"].contains(flag), values.allSatisfy({ $0 > 0 && $0 <= UInt64(UInt32.max) }) else { throw MailError.message("批量邮件标记或 UID 无效。") }
+        guard maximumCommandBytes >= 96, maximumUIDs > 0 else { throw MailError.message("批量邮件命令限制无效。") }
+        let sorted = Array(Set(values)).sorted()
+        guard !sorted.isEmpty else { return [] }
+        var ranges: [[UInt64]] = [], current: [UInt64] = []
+        for value in sorted {
+            if let last = current.last, value != last + 1 { ranges.append(current); current = [] }
+            current.append(value)
+        }
+        if !current.isEmpty { ranges.append(current) }
+        var result: [UIDFlagBatch] = [], tokens: [String] = [], ids: [UInt64] = []
+        let suffix = " \(enabled ? "+" : "-")FLAGS.SILENT (\(flag))"
+        // Reserve enough for the generated tag and CRLF, not just UID syntax.
+        let setBudget = min(4096, maximumCommandBytes) - 64
+        func flush() {
+            guard !ids.isEmpty else { return }
+            result.append(UIDFlagBatch(uids: ids, command: "UID STORE " + tokens.joined(separator: ",") + suffix)); tokens = []; ids = []
+        }
+        for range in ranges {
+            let token = range.count == 1 ? String(range[0]) : "\(range[0]):\(range[range.count - 1])"
+            guard token.utf8.count <= setBudget else { throw MailError.message("UID 范围超过批量命令长度限制。") }
+            if range.count > maximumUIDs {
+                flush(); tokens = [token]; ids = range; flush(); continue
+            }
+            let bytes = tokens.reduce(0) { $0 + $1.utf8.count } + token.utf8.count + tokens.count
+            if !ids.isEmpty && (ids.count + range.count > maximumUIDs || bytes > setBudget) { flush() }
+            tokens.append(token); ids.append(contentsOf: range)
+        }
+        flush(); return result
+    }
+    public func storeMany(folder: String, uids: [UInt64], flag: String, enabled: Bool, expectedValidity: UInt64) async throws -> MailBulkFlagReceipt {
+        let batches = try Self.flagBatches(uids, flag: flag, enabled: enabled)
+        try Self.validateBulkFolder(folder)
+        guard !batches.isEmpty else { return MailBulkFlagReceipt(uids: [], uidValidity: expectedValidity) }
+        guard expectedValidity > 0 && expectedValidity <= UInt64(UInt32.max) else { throw MailError.message("UIDVALIDITY 无效，未执行批量标记。") }
+        let current: UInt64
+        do {
+            selected = nil; current = try await select(folder)
+            guard current == expectedValidity else { throw MailError.message("文件夹已重建，未执行批量标记，请重新同步。") }
+        } catch { close(); throw error }
+        return await applyFlagBatches(batches, uidValidity: current)
+    }
+    public func markFolderRead(folder: String, expectedValidity: UInt64? = nil) async throws -> MailBulkFlagReceipt {
+        try Self.validateBulkFolder(folder)
+        let current: UInt64
+        let batches: [UIDFlagBatch]
+        do {
+            if let expectedValidity { guard expectedValidity > 0 && expectedValidity <= UInt64(UInt32.max) else { throw MailError.message("UIDVALIDITY 无效，未执行批量标记。") } }
+            selected = nil; current = try await select(folder)
+            if let expectedValidity { guard current == expectedValidity else { throw MailError.message("文件夹已重建，未执行批量标记，请重新同步。") } }
+            let snapshot = try await command("UID SEARCH UNSEEN")
+            var uids: [UInt64] = [], received = false
+            for line in snapshot.lines {
+                let parts = line.split(whereSeparator: \.isWhitespace)
+                guard parts.count >= 2, parts[0] == "*", parts[1].uppercased() == "SEARCH" else { continue }
+                received = true
+                for value in parts.dropFirst(2) {
+                    guard let uid = UInt64(value), uid > 0 && uid <= UInt64(UInt32.max) else { throw MailError.message("服务器返回了无效的未读 UID 快照，未执行标记。") }
+                    uids.append(uid)
+                }
+            }
+            guard received else { throw MailError.message("服务器未返回未读 UID 快照，未执行标记。") }
+            batches = try Self.flagBatches(uids, flag: "\\Seen", enabled: true)
+        } catch { close(); throw error }
+        return await applyFlagBatches(batches, uidValidity: current)
+    }
+    private func applyFlagBatches(_ batches: [UIDFlagBatch], uidValidity: UInt64) async -> MailBulkFlagReceipt {
+        var acknowledged: [UInt64] = []
+        for batch in batches {
+            do { try Task.checkCancellation(); _ = try await command(batch.command); acknowledged.append(contentsOf: batch.uids) }
+            catch { close(); return MailBulkFlagReceipt(uids: acknowledged, uidValidity: uidValidity, failure: String(error.localizedDescription.prefix(240))) }
+        }
+        return MailBulkFlagReceipt(uids: acknowledged, uidValidity: uidValidity)
+    }
     public func move(folder: String, uid: UInt64, destination: String, expectedValidity: UInt64? = nil) async throws -> MailMoveReceipt {
         selected = nil; let current = try await select(folder)
         if let expectedValidity, current != expectedValidity { throw MailError.message("文件夹已重建，未执行移动，请重新同步。") }

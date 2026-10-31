@@ -119,6 +119,12 @@ public struct MailAnalysis: Codable, Hashable, Sendable {
 }
 
 /// Synchronization inventory without retaining text, HTML, raw bytes or files.
+public struct MailReadStateChange: Codable, Sendable, Equatable {
+    public var id: String
+    public var wasRead: Bool
+    public init(id: String, wasRead: Bool) { self.id = id; self.wasRead = wasRead }
+}
+
 public struct MailSyncRecord: Identifiable, Equatable, Sendable {
     public var id: String
     public var uid: UInt64

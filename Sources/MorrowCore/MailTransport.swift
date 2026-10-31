@@ -8,6 +8,14 @@ public struct TransportReply: Sendable {
     public var protocolText: String { headers + "\n" + text }
 }
 
+/// Only UIDs covered by successfully acknowledged STORE commands are listed.
+public struct MailBulkFlagReceipt: Sendable {
+    public var uids: [UInt64]
+    public var uidValidity: UInt64
+    public var failure: String?
+    public init(uids: [UInt64], uidValidity: UInt64, failure: String? = nil) { self.uids = uids; self.uidValidity = uidValidity; self.failure = failure }
+}
+
 public actor MailTransport {
     private var sessions: [String: (IMAPConnection, AsyncMutex)] = [:]
     private var popSessions: [String: (POP3Client, AsyncMutex)] = [:]
@@ -87,6 +95,20 @@ public actor MailTransport {
     public func setFlag(_ account: MailAccount, message: MailMessage, flag: String, enabled: Bool, password: String) async throws {
         guard ["\\Seen", "\\Flagged", "\\Deleted"].contains(flag), message.uid > 0 else { throw MailError.message("邮件标记无效。") }
         try await withSession(account, password: password) { try await $0.store(folder: message.folder, uid: message.uid, flag: flag, enabled: enabled, expectedValidity: message.uidValidity) }
+    }
+    public func setFlags(_ account: MailAccount, folder: String, uids: [UInt64], expectedValidity: UInt64, flag: String, enabled: Bool, password: String) async throws -> MailBulkFlagReceipt {
+        let batches = try IMAPConnection.flagBatches(uids, flag: flag, enabled: enabled)
+        try IMAPConnection.validateBulkFolder(folder)
+        guard !batches.isEmpty else { return MailBulkFlagReceipt(uids: [], uidValidity: expectedValidity) }
+        guard expectedValidity > 0 && expectedValidity <= UInt64(UInt32.max) else { throw MailError.message("UIDVALIDITY 无效，未执行批量标记。") }
+        guard !account.usesPOP else { throw MailError.message("POP 邮箱不支持服务器批量标记。") }
+        return try await withSession(account, password: password) { try await $0.storeMany(folder: folder, uids: uids, flag: flag, enabled: enabled, expectedValidity: expectedValidity) }
+    }
+    public func markFolderRead(_ account: MailAccount, folder: String, expectedValidity: UInt64? = nil, password: String) async throws -> MailBulkFlagReceipt {
+        try IMAPConnection.validateBulkFolder(folder)
+        if let expectedValidity { guard expectedValidity > 0 && expectedValidity <= UInt64(UInt32.max) else { throw MailError.message("UIDVALIDITY 无效，未执行批量标记。") } }
+        guard !account.usesPOP else { throw MailError.message("POP 邮箱不支持服务器批量标记。") }
+        return try await withSession(account, password: password) { try await $0.markFolderRead(folder: folder, expectedValidity: expectedValidity) }
     }
     public func move(_ account: MailAccount, message: MailMessage, destination: String, password: String) async throws -> MailMoveReceipt {
         guard message.uid > 0, destination != message.folder else { return MailMoveReceipt(destinationValidity: nil, destinationUID: nil) }

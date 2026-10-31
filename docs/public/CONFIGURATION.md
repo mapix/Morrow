@@ -11,3 +11,9 @@ Optional iCloud needs a properly signed build with an authorized container. The 
 The scope above Chat is a search boundary, not a preload of its message bodies. Browsing an inbox supplies a compact account/folder/filter description. An ordinary question starts without inbox mail content; selecting a message or attachment explicitly supplies that content. The agent requests search or reading tools as needed and receives at most 18 mail snippets in a round. Its running state shows how many messages have actually been provided.
 
 The scope is captured when you submit. Navigating to another mailbox or adding an account during the request does not expand that request. Use the scope menu to search across all mailboxes. Automatic reading of new mail is a separate setting in the proactive mail pipeline.
+
+## Mail pages and marking read
+
+The macOS mail list shows 50 messages per page by default. The range control lets you choose 25, 50 or 100. Previous/next moves between pages, and selection applies only to the displayed page.
+
+“Mark all read” is independent of page selection. In an unfiltered IMAP folder it queries the server's current unread UID snapshot, including mail that has not yet downloaded, then marks that exact set. With a category/search or other view filter it applies to matching locally available messages across pages. Already-read messages are skipped. Undo restores the messages changed by that operation. The operation does not fetch message bodies or delete messages.

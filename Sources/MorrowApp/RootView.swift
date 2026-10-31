@@ -189,13 +189,31 @@ struct MailListView: View {
     @State private var selectedIDs = Set<String>()
     @State private var label = ""
     var body: some View {
+        let page = model.mailPageWindow
+        let pageMails = model.pagedMails
+        let pageIdentity = [String(page.index), String(page.size), model.selectedAccount ?? "", model.selectedFolder ?? "", model.destination.rawValue, model.searchText, String(model.unreadOnly), model.category?.rawValue ?? ""]
         VStack(spacing: 0) {
             HStack {
                 Text(model.searchMode ? L10n.t("检索结果") : model.selectedFolder.flatMap { path in model.folders.first { $0.path == path }?.name } ?? L10n.t(model.destination.rawValue)).font(Theme.heading)
-                Spacer(); if !model.searchBusy { Text("\(model.visibleMails.count)").font(Theme.label).foregroundStyle(Theme.muted) }
+                Spacer()
                 Button(selecting ? L10n.t("结束选择") : L10n.t("选择")) { selecting.toggle(); selectedIDs = [] }.buttonStyle(.link).font(Theme.label).disabled(model.batchBusy)
                 Menu { Toggle(L10n.t("只看未读"), isOn: $model.unreadOnly); Button(L10n.t("所有分类")) { model.category = nil }; ForEach(MailCategory.allCases, id: \.self) { category in Button(category.rawValue) { model.category = category } } } label: { Image(systemName: "line.3.horizontal.decrease") }.menuStyle(.borderlessButton).frame(width: 24).help(L10n.t("筛选邮件"))
-            }.padding(20)
+            }.padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 12)
+            HStack(spacing: 10) {
+                Button(L10n.t("全部已读")) { Task { await model.markAllReadInCurrentList() } }
+                    .buttonStyle(.plain).foregroundStyle(Theme.accent2).font(Theme.label)
+                    .disabled(model.batchBusy || (page.total == 0 && !model.canMarkWholeFolderRead))
+                    .help(L10n.t("将当前列表跨页的未读邮件全部标为已读"))
+                    .accessibilityIdentifier("mail.mark-all-read")
+                Spacer(minLength: 0)
+                Menu { ForEach([25, 50, 100], id: \.self) { size in Button(L10n.format("每页 {0} 封", "\(size)")) { model.setMailPageSize(size) } } } label: {
+                    Text(page.total == 0 ? "0 / 0" : "\(page.start + 1)–\(page.end) / \(page.total.formatted())").monospacedDigit().font(Theme.small)
+                }.menuStyle(.borderlessButton).menuIndicator(.hidden).foregroundStyle(Theme.secondary).help(L10n.t("每页邮件数量"))
+                Button { model.turnMailPage(-1) } label: { Image(systemName: "chevron.left").frame(width: 20, height: 24) }
+                    .buttonStyle(.plain).disabled(!page.hasPrevious || model.batchBusy).help(L10n.t("上一页")).accessibilityLabel(L10n.t("上一页")).accessibilityIdentifier("mail.pagination.previous")
+                Button { model.turnMailPage(1) } label: { Image(systemName: "chevron.right").frame(width: 20, height: 24) }
+                    .buttonStyle(.plain).disabled(!page.hasNext || model.batchBusy).help(L10n.t("下一页")).accessibilityLabel(L10n.t("下一页")).accessibilityIdentifier("mail.pagination.next")
+            }.padding(.horizontal, 20).padding(.bottom, 12)
             if model.searchMode { Text(model.searchStatus).font(Theme.small).foregroundStyle(model.searchFallback ? Theme.error : Theme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 12) }
             Divider().overlay(Theme.rule)
             if model.searchBusy && model.visibleMails.isEmpty { VStack(spacing: 12) { ProgressView(); Text(L10n.t("正在按") + model.searchStrategy.title + L10n.t("查找…")).font(Theme.label).foregroundStyle(Theme.muted) }.frame(maxWidth: .infinity, maxHeight: .infinity) }
@@ -204,7 +222,7 @@ struct MailListView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                        ForEach(model.visibleMails) { mail in
+                        ForEach(pageMails) { mail in
                             HStack(spacing: 0) {
                                 if selecting { Button { if selectedIDs.contains(mail.id) { selectedIDs.remove(mail.id) } else { selectedIDs.insert(mail.id) } } label: { Image(systemName: selectedIDs.contains(mail.id) ? "checkmark.square.fill" : "square").foregroundStyle(Theme.ink) }.buttonStyle(IconButtonStyle()).accessibilityLabel(L10n.t("选择") + mail.subject) }
                                 Button { model.select(mail) } label: { MailRow(mail: mail) }.buttonStyle(.plain)
@@ -212,28 +230,28 @@ struct MailListView: View {
                                 .contextMenu { Button(mail.isRead ? L10n.t("标记未读") : L10n.t("标记已读")) { Task { await model.markRead(mail, !mail.isRead) } }; Button(mail.isStarred ? L10n.t("取消星标") : L10n.t("添加星标")) { Task { await model.star(mail) } }; Button(L10n.t("归档")) { Task { await model.move(mail, role: "archive") } }; Button(L10n.t("移到废纸篓")) { Task { await model.move(mail, role: "trash") } } }
                         }
                         }
-                    }.focusable().focusEffectDisabled().onKeyPress(.upArrow) { moveSelection(-1); return .handled }.onKeyPress(.downArrow) { moveSelection(1); return .handled }.onChange(of: model.selectedID) { if let id = model.selectedID { proxy.scrollTo(id) } }
+                    }.id(pageIdentity).focusable().focusEffectDisabled().onAppear { if let id = model.selectedID, pageMails.contains(where: { $0.id == id }) { proxy.scrollTo(id) } }.onKeyPress(.upArrow) { moveSelection(-1); return .handled }.onKeyPress(.downArrow) { moveSelection(1); return .handled }.onChange(of: model.selectedID) { model.revealSelectedMailPage(); if let id = model.selectedID { proxy.scrollTo(id) } }
                 }
             }
             if selecting {
                 Divider().overlay(Theme.rule)
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack { Text(L10n.format("已选{0}封", "\(selectedIDs.count)")).font(Theme.label); Spacer(); Button(L10n.t("全选")) { selectedIDs = Set(model.visibleMails.map(\.id)) }.buttonStyle(.link); Button(L10n.t("清除")) { selectedIDs = [] }.buttonStyle(.link) }
+                    HStack { Text(L10n.format("已选{0}封", "\(selectedIDs.count)")).font(Theme.label); Spacer(); Button(L10n.t("全选本页")) { selectedIDs = Set(pageMails.map(\.id)) }.buttonStyle(.link).accessibilityIdentifier("mail.select-page"); Button(L10n.t("清除")) { selectedIDs = [] }.buttonStyle(.link) }
                     HStack {
                         Menu(L10n.t("标记")) { Button(L10n.t("已读")) { run(.read(true)) }; Button(L10n.t("未读")) { run(.read(false)) }; Button(L10n.t("星标")) { run(.star(true)) }; Button(L10n.t("取消星标")) { run(.star(false)) } }.menuStyle(.borderlessButton)
                         Button(L10n.t("归档")) { run(.move("archive")) }.buttonStyle(QuietButtonStyle())
                         Button(L10n.t("废纸篓")) { run(.move("trash")) }.buttonStyle(QuietButtonStyle())
                     }.disabled(selectedIDs.isEmpty || model.batchBusy)
                     HStack { TextField(L10n.t("标签"), text: $label).textFieldStyle(PaperFieldStyle()); Button(L10n.t("添加")) { run(.label(label)) }.buttonStyle(.link).disabled(selectedIDs.isEmpty || model.batchBusy) }
-                    if let status = model.batchStatus { Text(status).font(Theme.small).foregroundStyle(Theme.muted).lineLimit(2) }
                 }.padding(16)
             }
+            if let status = model.batchStatus { HStack(spacing: 8) { if model.batchBusy { ProgressView().controlSize(.small) }; Text(status).font(Theme.small).lineLimit(2); Spacer(minLength: 0) }.foregroundStyle(Theme.secondary).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Theme.sheet).accessibilityIdentifier("mail.batch.status") }
         }.background(Theme.paper)
-            .onChange(of: model.visibleMails.map(\.id)) { selectedIDs.formIntersection(Set(model.visibleMails.map(\.id))) }
+            .onChange(of: model.pagedMails.map(\.id)) { selectedIDs.formIntersection(Set(model.pagedMails.map(\.id))) }
     }
     private func run(_ action: BatchMailAction) { let ids = selectedIDs; Task { await model.batch(ids, action: action) } }
     private func moveSelection(_ offset: Int) {
-        let mails = model.visibleMails; guard !mails.isEmpty else { return }
+        let mails = model.pagedMails; guard !mails.isEmpty else { return }
         let current = mails.firstIndex { $0.id == model.selectedID } ?? (offset > 0 ? -1 : mails.count)
         model.select(mails[max(0, min(mails.count - 1, current + offset))])
     }

@@ -199,6 +199,73 @@ public actor MailStore {
         }
         return result
     }
+    private func readStates(ids: Set<String>, includeCanonicalCopies: Bool) throws -> [String: Bool] {
+        let ordered = ids.sorted(); var states: [String: Bool] = [:]
+        for start in stride(from: 0, to: ordered.count, by: 400) {
+            let chunk = Array(ordered[start..<min(start + 400, ordered.count)])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            let parameters = chunk.map(Value.text)
+            var queries = ["SELECT id,json_extract(CAST(json AS TEXT),'$.isRead'),json_type(CAST(json AS TEXT)),json_type(CAST(json AS TEXT),'$.isRead') FROM messages WHERE id IN (" + placeholders + ")"]
+            if includeCanonicalCopies {
+                queries.append("SELECT DISTINCT m.id,json_extract(CAST(m.json AS TEXT),'$.isRead'),json_type(CAST(m.json AS TEXT)),json_type(CAST(m.json AS TEXT),'$.isRead') FROM messages anchor JOIN messages m ON m.account=anchor.account AND m.canonical=anchor.canonical WHERE anchor.id IN (" + placeholders + ") AND anchor.canonical<>''")
+            }
+            for query in queries {
+                let s = try statement(query, parameters); defer { sqlite3_finalize(s) }
+                while true {
+                    let code = sqlite3_step(s)
+                    if code == SQLITE_DONE { break }
+                    guard code == SQLITE_ROW else { throw databaseError() }
+                    guard string(s, 2) == "object", ["true", "false"].contains(string(s, 3)) else { throw MailError.message("邮件已读状态数据损坏。") }
+                    states[string(s, 0)] = sqlite3_column_int(s, 1) != 0
+                }
+            }
+        }
+        return states
+    }
+    private func writeReadState(ids: Set<String>, read: Bool, modifiedAt: Date) throws {
+        let ordered = ids.sorted(), boolean = read ? "true" : "false"
+        // The timestamp adds one parameter, keeping each statement <=400.
+        for start in stride(from: 0, to: ordered.count, by: 399) {
+            let chunk = Array(ordered[start..<min(start + 399, ordered.count)])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            let sql = "UPDATE messages SET json=json_set(CAST(json AS TEXT),'$.isRead',json('" + boolean + "'),'$.localFlagModifiedAt',?) WHERE id IN (" + placeholders + ")"
+            try execute(sql, [.real(modifiedAt.timeIntervalSinceReferenceDate)] + chunk.map(Value.text))
+        }
+    }
+    /// Change only read metadata. Neither payload decoding, FTS rebuilding nor
+    /// vector invalidation belongs to a flag mutation.
+    public func setReadState(ids: Set<String>, read: Bool, modifiedAt: Date = Date(), includeCanonicalCopies: Bool = false) throws -> [MailReadStateChange] {
+        guard !ids.isEmpty else { return [] }
+        guard modifiedAt.timeIntervalSinceReferenceDate.isFinite else { throw MailError.message("本地修改时间无效。") }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let states = try readStates(ids: ids, includeCanonicalCopies: includeCanonicalCopies)
+            let changes = states.filter { $0.value != read }.map { MailReadStateChange(id: $0.key, wasRead: $0.value) }.sorted { $0.id < $1.id }
+            try writeReadState(ids: Set(changes.map(\.id)), read: read, modifiedAt: modifiedAt)
+            try execute("COMMIT"); return changes
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+    /// Restore exactly the rows changed by the original operation, using their
+    /// captured state. Rows that were already read never enter that undo list.
+    public func restoreReadState(changes: [MailReadStateChange], modifiedAt: Date = Date()) throws -> Set<String> {
+        guard !changes.isEmpty else { return [] }
+        guard modifiedAt.timeIntervalSinceReferenceDate.isFinite else { throw MailError.message("本地修改时间无效。") }
+        var desired: [String: Bool] = [:]
+        for change in changes {
+            if let previous = desired[change.id], previous != change.wasRead { throw MailError.message("邮件恢复状态冲突。") }
+            desired[change.id] = change.wasRead
+        }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let current = try readStates(ids: Set(desired.keys), includeCanonicalCopies: false)
+            var restored = Set<String>()
+            for read in [false, true] {
+                let ids = Set(desired.compactMap { id, value in value == read && current[id] != nil && current[id] != read ? id : nil })
+                try writeReadState(ids: ids, read: read, modifiedAt: modifiedAt); restored.formUnion(ids)
+            }
+            try execute("COMMIT"); return restored
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
     public func messages(account: String? = nil, folder: String? = nil) throws -> [MailMessage] {
         var sql = "SELECT json FROM messages"; var clauses: [String] = []; var params: [Value] = []
         if let account { clauses.append("account=?"); params.append(.text(account)) }
