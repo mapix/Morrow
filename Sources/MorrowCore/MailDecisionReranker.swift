@@ -120,7 +120,7 @@ public actor MailDecisionReranker {
             for (position, hit) in hits.enumerated() {
                 try Task.checkCancellation()
                 var candidate = MailDecisionCandidate(query: query, hit: hit)
-                let remaining = 60 - Date().timeIntervalSince(started)
+                let remaining = 120 - Date().timeIntervalSince(started)
                 guard remaining > 0 else { throw MailError.message("决策复核超过本轮时间限制。") }
                 candidate.timeout = min(30, remaining)
                 let day = String(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
