@@ -45,7 +45,7 @@ struct WorkDocumentView: View {
                         DisclosureGroup(isExpanded: $agreementExpanded) {
                             agreementDocument(agreement).padding(.top, 12)
                         } label: {
-                            Text(L10n.t("工作约定")).font(Theme.body.weight(.medium)).frame(minHeight: 44)
+                            Text(L10n.t("工作约定")).font(Theme.body.weight(.medium))
                         }
                     }
                 }
@@ -92,7 +92,7 @@ struct WorkDocumentView: View {
                     Menu {
                         Button(currentRun.phase == .paused ? L10n.t("恢复关注") : L10n.t("暂停关注")) { Task { await model.toggleRun(currentRun) } }
                         if let id = currentRun.delegationID, currentRun.phase != .paused { Button(L10n.t("重新整理")) { Task { await model.runDelegations(forceID: id) } }.disabled(model.delegationBusy) }
-                    } label: { Image(systemName: "ellipsis").frame(width: 30, height: 28) }.menuStyle(.borderlessButton).frame(width: 30).help(L10n.t("工作操作")).accessibilityLabel(L10n.t("工作操作"))
+                    } label: { Image(systemName: "ellipsis").frame(width: 32, height: 32).contentShape(Rectangle()) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32).help(L10n.t("工作操作")).accessibilityLabel(L10n.t("工作操作"))
                 }
             }
             HStack(alignment: .firstTextBaseline, spacing: 20) {
@@ -230,7 +230,7 @@ struct WorkDocumentView: View {
             }
             .padding(.top, 16)
         } label: {
-            Text(L10n.t("原邮件与工作记录")).font(Theme.body).frame(minHeight: 44)
+            Text(L10n.t("原邮件与工作记录")).font(Theme.body)
         }
     }
 
@@ -482,7 +482,7 @@ private struct WorkInlineAgreement: View {
                     WorkDocumentEditor(title: L10n.t("需要守住的边界，每行一项"), text: $boundaries, height: 140)
                 }.padding(.top, 12)
             } label: {
-                Text(L10n.t("计划与边界")).font(Theme.body).frame(minHeight: 44)
+                Text(L10n.t("计划与边界")).font(Theme.body)
             }
             HStack(spacing: 16) {
                 WorkDocumentButton {

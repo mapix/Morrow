@@ -44,8 +44,8 @@ authentication and delivery policy checks. Their policy loop is still native.
 UI state is a hint, not a retrieval ceiling. Explicit user scopes and accepted
 work agreements remain native boundaries. Tool loading does not expand them.
 Mail and attachments are evidence, never authorization. Unknown or forbidden
-targets produce a tool failure observation; the SDK can adjust within the same
-permissions. An observation of failure cannot be described as a completed action.
+targets pause the run with an explanation and a user decision. Continuing
+retains the same permissions. A failure cannot be described as a completed action.
 
 Search returns bounded candidates and snippets. Counts distinguish candidate
 retrieval from mailbox totals. `scan_mail` and reading tools support pages;
@@ -59,7 +59,14 @@ so the model cannot accidentally spend many turns reading tiny fragments.
 - Hosted tracing is disabled; model traffic uses the user's selected provider.
 - SDK checkpoints share the existing mail database, with a128MiB budget.
 - Node's JavaScript heap is limited to256MiB; protocol and tool payloads are bounded.
-- Runs have model/tool/time budgets, and native inference keeps its concurrency gate.
+- Default budgets are128model turns per agent segment,1,024shared tool calls,
+  and60minutes per run. Settings allow up to512turns,4,096tools and240minutes.
+  Specialist agents use the same turn allowance; their tools share the run budget.
+- Turn exhaustion and tool failures save SDK state when available and ask the
+  user before continuing. Timeouts preserve session material, the original task
+  and its source constraints; a terminated in-flight operation has no guaranteed
+  completion and must be checked before retrying.
+- Native inference keeps its concurrency gate.
 - Model text streams into a throttled progress preview; input composition is separate.
 - OpenUI forms use SDK approval interruptions and resume the same run state.
 - Plans and actual tool executions are displayed separately, with model and tool timings.

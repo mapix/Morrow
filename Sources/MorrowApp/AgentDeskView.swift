@@ -32,12 +32,14 @@ struct RootView: View {
             }
 
         }.font(Theme.body).foregroundStyle(Theme.ink).background(Theme.paper)
+            .disclosureGroupStyle(MorrowDisclosureStyle())
+            .environment(\.compactInteraction, model.compactLayout)
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 12) {
                     Button { model.chatExpanded.toggle(); dragOrigin = nil } label: {
                         Image(systemName: "sidebar.right").font(Theme.actionIcon).frame(width: 36, height: 32)
                             .foregroundStyle(Theme.muted).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.controlRadius))
-                    }.buttonStyle(.plain).accessibilityIdentifier("morrow-chat-toggle")
+                    }.buttonStyle(ToolbarIconButtonStyle()).accessibilityIdentifier("morrow-chat-toggle")
                         .accessibilityLabel(model.chatExpanded ? L10n.t("收起对话") : L10n.t("打开伙伴Chat"))
                         .help(model.chatExpanded ? L10n.t("收起对话") : L10n.t("打开伙伴Chat"))
                 }.padding(.top, 13).padding(.trailing, 16)
@@ -85,7 +87,7 @@ struct RootView: View {
                 }
             }
             footer
-        }.padding(.top, model.chatExpanded || hasMailToolbar ? 0 : 40).frame(minWidth: CompanionPaneLayout.minimumWorkspace)
+        }.padding(.trailing, model.chatExpanded || hasMailToolbar ? 0 : 48).frame(minWidth: CompanionPaneLayout.minimumWorkspace)
     }
     private var hasMailToolbar: Bool {
         model.workspacePage == .mail && model.composer == nil && model.attachmentTextPreview == nil && ![Destination.settings, .contacts, .drafts, .delegations].contains(model.destination)

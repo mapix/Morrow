@@ -248,6 +248,7 @@ public struct ComposeDraft: Codable, Identifiable, Sendable {
 }
 
 public struct AgentSettings: Codable, Sendable {
+    public var runBudget: AgentRunBudget?
     public var enabled: Bool = true
     public var provider: String = "auto"
     public var ollamaURL: String = "http://127.0.0.1:11434"
@@ -312,6 +313,7 @@ public struct PartnerEvent: Codable, Identifiable, Sendable {
 }
 
 public struct PartnerChat: Codable, Identifiable, Sendable {
+    public var continuationPrompt: String?
     public var executionTrace: AgentExecutionTrace?
     public var openUIID: String?
     public var draftIDs: [String]?

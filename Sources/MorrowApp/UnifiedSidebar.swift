@@ -14,7 +14,7 @@ struct UnifiedSidebar: View {
     private var sessions: [ChatSession] { model.orderedChatSessions(archived: showArchived).filter { sessionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(sessionQuery) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Morrow").font(Theme.wordmark).padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 22)
+            Text("Morrow").font(Theme.wordmark).padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 16)
             VStack(alignment: .leading, spacing: 4) {
                     ForEach([WorkspacePage.desk, .mail, .people, .attachments]) { page in
                         SidebarRow(title: page == .desk ? L10n.t("工作") : L10n.t(page.rawValue), icon: page == .desk && (model.partnerBusy || model.delegationBusy) ? "hourglass" : icon(page), selected: model.workspacePage == page && (page != .mail || (model.selectedAccount == nil && model.destination != .settings && model.destination != .drafts)), count: page == .mail ? model.inboxUnreadCount(nil) : page == .desk ? model.pendingDecisions.count : 0, compact: model.compactLayout) { model.openWorkspace(page) }.help(page == .desk && (model.partnerBusy || model.delegationBusy) ? L10n.t("伙伴正在处理委托") : L10n.t(page.rawValue))
@@ -22,7 +22,7 @@ struct UnifiedSidebar: View {
                     SidebarRow(title: L10n.t("草稿箱"), icon: "doc.text", selected: model.workspacePage == .mail && model.destination == .drafts, count: model.drafts.filter { $0.state != "sent" }.count, compact: model.compactLayout) { model.dismissInlineTools(); model.navigate(.drafts) }.accessibilityIdentifier("morrow.drafts")
             }.padding(.horizontal, 12)
             if !model.accounts.isEmpty {
-                sectionHeader(L10n.t("邮箱")) { Button { model.showAccount = true } label: { Image(systemName: "plus") }.buttonStyle(.plain).frame(width: 28, height: 28).help(L10n.t("添加邮箱")).accessibilityLabel(L10n.t("添加邮箱")) }.padding(.horizontal, 12)
+                sectionHeader(L10n.t("邮箱")) { Button { model.showAccount = true } label: { Image(systemName: "plus") }.buttonStyle(ToolbarIconButtonStyle()).frame(width: 32, height: 32).help(L10n.t("添加邮箱")).accessibilityLabel(L10n.t("添加邮箱")) }.padding(.horizontal, 12)
                 ScrollView { LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(model.accounts) { account in
                             SidebarRow(title: account.name.isEmpty ? account.email : account.name, subtitle: account.email, icon: "envelope", selected: model.selectedAccount == account.id && model.workspacePage == .mail && model.destination != .settings, count: model.inboxUnreadCount(account.id), compact: model.compactLayout) { model.chooseMailbox(account.id) }
@@ -32,9 +32,9 @@ struct UnifiedSidebar: View {
             }
             VStack(alignment: .leading, spacing: 6) {
                 sectionHeader(showArchived ? L10n.t("已归档对话") : L10n.t("对话")) {
-                    Button { showSessionSearch.toggle(); if !showSessionSearch { sessionQuery = "" } } label: { Image(systemName: "magnifyingglass") }.buttonStyle(.plain).frame(width: 24, height: 28).accessibilityLabel(L10n.t("搜索对话"))
-                    Menu { Button(showArchived ? L10n.t("查看当前对话") : L10n.t("查看已归档对话")) { showArchived.toggle() } } label: { Image(systemName: "ellipsis").frame(width: 24, height: 28) }.menuStyle(.borderlessButton).frame(width: 24).accessibilityLabel(L10n.t("对话列表管理"))
-                    Button { Task { _ = await model.createChatSession() } } label: { Image(systemName: "plus") }.buttonStyle(.plain).frame(width: 24, height: 28).accessibilityLabel(L10n.t("新建对话"))
+                    Button { showSessionSearch.toggle(); if !showSessionSearch { sessionQuery = "" } } label: { Image(systemName: "magnifyingglass") }.buttonStyle(ToolbarIconButtonStyle()).frame(width: 32, height: 32).accessibilityLabel(L10n.t("搜索对话"))
+                    Menu { Button(showArchived ? L10n.t("查看当前对话") : L10n.t("查看已归档对话")) { showArchived.toggle() } } label: { Image(systemName: "ellipsis").frame(width: 32, height: 32).contentShape(Rectangle()) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32).accessibilityLabel(L10n.t("对话列表管理"))
+                    Button { Task { _ = await model.createChatSession() } } label: { Image(systemName: "plus") }.buttonStyle(ToolbarIconButtonStyle()).frame(width: 32, height: 32).accessibilityLabel(L10n.t("新建对话"))
                 }
                 if showSessionSearch { TextField(L10n.t("搜索对话标题"), text: $sessionQuery).textFieldStyle(.plain).font(Theme.label).padding(8).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.fieldEdge)).accessibilityLabel(L10n.t("搜索对话标题")) }
                 ScrollViewReader { proxy in
@@ -53,7 +53,7 @@ struct UnifiedSidebar: View {
                     .onChange(of: model.activeSessionID) { showArchived = false; if !sessionQuery.isEmpty && !sessions.contains(where: { $0.id == model.activeSessionID }) { sessionQuery = "" }; proxy.scrollTo(model.activeSessionID, anchor: .top) }
                     .onChange(of: sessions.map(\.id)) { if sessionQuery.isEmpty && !showArchived { proxy.scrollTo(model.activeSessionID, anchor: .top) } }
                 }.frame(maxHeight: .infinity)
-            }.padding(.horizontal, 12).frame(minHeight: 120, maxHeight: .infinity)
+            }.padding(.horizontal, 12).frame(minHeight: 80, maxHeight: .infinity)
             HStack(spacing: 16) {
                 Menu {
                     Button(L10n.t("工作记录")) { model.openWorkspace(.history) }
@@ -73,7 +73,7 @@ struct UnifiedSidebar: View {
         .sheet(item: $renaming) { session in VStack(alignment: .leading, spacing: 18) { Text(L10n.t("重命名对话")).font(Theme.heading); TextField(L10n.t("对话名称"), text: $title).textFieldStyle(PaperFieldStyle()); HStack { Button(L10n.t("取消")) { renaming = nil }.buttonStyle(QuietButtonStyle()); Spacer(); Button(L10n.t("保存")) { Task { await model.renameChatSession(session.id, title: title); renaming = nil } }.buttonStyle(PrimaryButtonStyle()) } }.padding(28).frame(width: 460).background(Theme.paper) }
     }
     private func sectionHeader<Content: View>(_ title: String, @ViewBuilder controls: () -> Content) -> some View {
-        HStack(spacing: 0) { Text(title).font(Theme.label).foregroundStyle(Theme.muted); Spacer(); controls() }.padding(.leading, 10).padding(.top, 20).padding(.bottom, 4)
+        HStack(spacing: 0) { Text(title).font(Theme.label).foregroundStyle(Theme.muted).lineLimit(1); Spacer(minLength: 0); controls() }.padding(.leading, 10).padding(.top, 14).padding(.bottom, 4)
     }
     private func icon(_ page: WorkspacePage) -> String { switch page { case .desk: return "square.and.pencil"; case .mail: return "tray"; case .people: return "person.2"; case .attachments: return "paperclip"; default: return "square" } }
 }

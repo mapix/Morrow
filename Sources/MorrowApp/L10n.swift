@@ -57,6 +57,16 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}", "决策复核 {0}/{1} · {2}"]
     static let catalog: [String: (String, String)] = [
+        "继续这项任务": ("Continue this task", "このタスクを続ける"),
+        "调整运行预算": ("Adjust run budget", "実行上限を調整"),
+        "任务运行预算": ("Task run budget", "タスクの実行上限"),
+        "每段最多 {0} 轮模型调用": ("Up to {0} model turns per segment", "区間あたりモデル呼び出し最大{0}回"),
+        "每段最多 {0} 次工具调用": ("Up to {0} tool calls per segment", "区間あたりツール呼び出し最大{0}回"),
+        "每次最多运行 {0} 分钟": ("Up to {0} minutes per run", "実行あたり最大{0}分"),
+        "达到预算或遇到问题时保存进度，说明已完成部分，等你决定后继续。": ("Save progress at a limit or problem, show completed work, and wait for your decision.", "上限や問題が発生したら進捗と完了分を保存し、次の判断を待ちます。"),
+        "已展开": ("Expanded", "展開済み"),
+        "已收起": ("Collapsed", "折りたたみ済み"),
+        "点击标题展开或收起": ("Click the heading to expand or collapse", "見出しをクリックして展開・折りたたみ"),
         "正在执行": ("Running", "実行中"),
         "模型正在响应": ("Model is responding", "モデルが応答中"),
         "实际步骤（{0}）": ("Executed steps ({0})", "実際の手順（{0}）"),

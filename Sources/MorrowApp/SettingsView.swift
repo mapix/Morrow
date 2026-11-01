@@ -107,6 +107,7 @@ struct SettingsView: View {
                     Toggle(L10n.t("使用长期记忆"), isOn: $model.workspacePreferences.memoryEnabled).onChange(of: model.workspacePreferences.memoryEnabled) { Task { await model.savePreferences() } }
                     Button(L10n.t("管理记忆")) { model.workspacePage = .memory }.buttonStyle(QuietButtonStyle())
                 }
+                section(L10n.t("任务运行预算")) { AgentBudgetSettingsView() }
                 section("iCloud") { CloudWorkspaceSettingsView(cloud: model.cloudWorkspace) }
                 section(L10n.t("自动索引")) {
                     HStack { Text("EmbeddingGemma 2").font(Theme.body.weight(.medium)); Spacer(); Text(L10n.format("{0} / {1} 封已索引", "\(model.indexCount)", "\(model.mailCount)")).font(Theme.label).foregroundStyle(Theme.muted) }

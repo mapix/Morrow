@@ -32,6 +32,11 @@ public struct AgentExecutionTrace: Codable, Sendable {
     public var tools: [AgentToolActivity] = []
     public var models: [AgentModelActivity] = []
     public init() {}
+    public mutating func finish(status: String) {
+        finishedAt = Date(); self.status = status
+        for index in tools.indices where tools[index].status == "running" { tools[index].status = status == "failed" ? "failed" : "paused"; tools[index].seconds = finishedAt!.timeIntervalSince(tools[index].startedAt) }
+        for index in models.indices where models[index].seconds == nil { models[index].seconds = finishedAt!.timeIntervalSince(models[index].startedAt) }
+    }
     public mutating func consume(_ event: OpenUIJSON) {
         let fields = event.object, type = fields["type"]?.text ?? ""
         func number(_ key: String) -> Double? { Double(fields[key]?.text ?? "") }

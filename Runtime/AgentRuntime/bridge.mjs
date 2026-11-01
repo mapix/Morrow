@@ -1,9 +1,10 @@
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import { Agent, Runner, RunState, tool, Usage, setTracingDisabled } from '@openai/agents';
+import { Agent, Runner, RunState, MaxTurnsExceededError, tool as sdkTool, Usage, setTracingDisabled } from '@openai/agents';
 import { z } from 'zod';
 
 setTracingDisabled(true);
+const tool = options => sdkTool({...options,errorFunction:null});
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
 const pending = new Map(); let serial = 0, fixture;
 function rpc(method, params, delta) {
@@ -17,7 +18,7 @@ const text = value => typeof value === 'string' ? value : Array.isArray(value) ?
 class NativeModel {
   turns = 0;
   async getResponse(request) {
-    if (++this.turns > 24) throw new Error('Model turn budget reached');
+    ++this.turns;
     const startedAt = Date.now(); emit({ type: 'phase', stage: 'model', step: this.turns, startedAt });
     const messages = request.systemInstructions ? [{ role: 'system', content: request.systemInstructions }] : [];
     const items = typeof request.input === 'string' ? [{ role: 'user', content: request.input }] : request.input;
@@ -53,9 +54,19 @@ class NativeSession {
 
 export async function runAgent(request) {
   const model = new NativeModel(), session = new NativeSession(request.sessionID);
+  const turnBudget = Math.min(512, Math.max(1, request.budget?.modelTurns ?? 128));
+  const toolBudget = Math.min(4096, Math.max(1, request.budget?.toolCalls ?? 1024));
   const enabled = new Set(['search_mail', 'scan_mail', 'read_mail', 'mail_statistics', 'cite_sources', 'render_ui', 'list_accounts', 'workspace_state', 'prepare_draft', 'read_draft', 'update_draft']);
-  const calls = new Map(); let toolCalls = 0, plan = await rpc('state.get', { key: 'plan' }) ?? [];
-  const native = async (description, args, id) => rpc('tool', { name: description.name, args, callId: id });
+  let toolCalls = 0, plan = await rpc('state.get', { key: 'plan' }) ?? [];
+  const readCache = new Map();
+  const cachedTools = new Set(['search_mail','read_mail','read_attachment','read_material']);
+  const native = async (description, args, id) => {
+    const key = description.name + ':' + JSON.stringify(args);
+    if (cachedTools.has(description.name) && readCache.has(key)) return readCache.get(key);
+    const value = await rpc('tool', { name: description.name, args, callId: id });
+    if (cachedTools.has(description.name)) readCache.set(key, value);
+    return value;
+  };
   const tools = request.tools.map(description => tool({
     name: description.name, description: description.description, parameters: description.parameters, strict: false,
     isEnabled: () => enabled.has(description.name),
@@ -64,7 +75,7 @@ export async function runAgent(request) {
       const result = await native(description, args, details?.toolCall?.callId ?? randomUUID());
       return description.name === 'render_ui' && context?.context?.userChoice ? { ...result, requiresUserInput: false, userChoice: context.context.userChoice } : result;
     },
-    errorFunction: (_, error) => ({ ok: false, error: String(error.message).slice(0, 500), instruction: '未完成此操作。仅在原有权限内调整查询，不能把失败描述为成功。' }),
+    errorFunction: null,
   }));
   tools.push(tool({ name: 'find_tools', description: '按中文或英文目的查找并加载更多邮件、草稿、联系人、附件、设置、会话、响应器工具；offset继续查看。',
     parameters: z.object({ query: z.string(), offset: z.number().int().min(0).optional() }),
@@ -90,19 +101,54 @@ export async function runAgent(request) {
   tools.push(tool({ name: 'write_file', description: '创建或替换虚拟工作文件，最多128 KiB；交付给用户请用save_report。', parameters: z.object({ path: z.string(), content: z.string() }), execute: async ({ path, content }) => { if (Buffer.byteLength(content)>128*1024) throw new Error('File too large'); files[filePath(path)]=content; await saveFiles(); return { saved:true }; } }));
   tools.push(tool({ name: 'edit_file', description: '在虚拟文件中做精确文字替换。', parameters: z.object({ path:z.string(), oldText:z.string(), newText:z.string() }), execute: async ({path,oldText,newText}) => { path=filePath(path); if (!oldText || !files[path]?.includes(oldText)) throw new Error('Exact text not found'); files[path]=files[path].replace(oldText,newText); await saveFiles(); return {saved:true}; } }));
   tools.push(tool({ name:'grep_files', description:'按文字搜索本会话虚拟文件。', parameters:z.object({ query:z.string() }), execute:({query}) => Object.keys(files).filter(path=>files[path].includes(query)) }));
-  const instructions = request.systemPrompt + '\n复杂任务先用write_plan给出简短计划，并按实际进度更新。先取得足够事实再交付，不重复读取已取得资料。更多工具用find_tools发现。';
+  const instructions = request.systemPrompt + '\n复杂任务先用write_plan给出简短计划，并按实际进度更新。先取得足够事实再交付，不重复读取已取得资料。更多工具用find_tools发现。发生工具或模型问题时保存进度，说明具体原因和已完成部分，询问用户后再继续。';
   const specialist = new Agent({ name:'Morrow research', instructions:'处理被委托的邮件或附件分析任务，只根据工具事实，简短返回结论和来源。\n'+instructions, model, tools });
-  tools.push(specialist.asTool({ toolName:'delegate_task', toolDescription:'把明确的邮件或附件分析子任务交给独立SDK Agent处理，继承相同原生权限。' }));
+  tools.push(specialist.asTool({ toolName:'delegate_task', toolDescription:'把明确的邮件或附件分析子任务交给独立SDK Agent处理，继承相同原生权限。', runOptions:{maxTurns:turnBudget} }));
+  // The same registered tools are used by specialist runs. Count invocations
+  // here so nested runs cannot bypass the shared tool allowance.
+  for (const registered of tools) {
+    const invoke = registered.invoke;
+    registered.errorFunction = null;
+    registered.invoke = async (context, input, details) => {
+      if (toolCalls >= toolBudget) throw new Error('本轮工具次数达到运行预算');
+      const step = ++toolCalls, id = details?.toolCall?.callId ?? randomUUID(), startedAt = Date.now();
+      emit({type:'phase',stage:'tool_start',name:registered.name,id,step,startedAt});
+      try {
+        const result = await invoke(context,input,details);
+        let failed=false;try{failed=JSON.parse(result)?.ok===false}catch{}
+        emit({type:'phase',stage:failed?'tool_error':'tool_end',name:registered.name,id,step,elapsedMs:Date.now()-startedAt});
+        return result;
+      } catch (error) {
+        emit({type:'phase',stage:'tool_error',name:registered.name,id,step,elapsedMs:Date.now()-startedAt});
+        throw error;
+      }
+    };
+  }
   const agent = new Agent({ name:'Morrow', instructions, model, tools });
   const runner = new Runner({ tracingDisabled:true, modelSettings:{ maxTokens:1800 } });
-  runner.on('agent_tool_start', (_,agent,tool,details) => { if (++toolCalls>128) throw new Error('Tool budget reached'); const id=details.toolCall.callId;calls.set(id,Date.now()); emit({type:'phase',stage:'tool_start',name:tool.name,id,step:toolCalls,startedAt:Date.now()}); });
-  runner.on('agent_tool_end', (_,agent,tool,result,details) => { const id=details.toolCall.callId;let failed=false;try{failed=JSON.parse(result)?.ok===false}catch{};emit({type:'phase',stage:failed?'tool_error':'tool_end',name:tool.name,id,step:toolCalls,elapsedMs:Date.now()-(calls.get(id)??Date.now())});calls.delete(id); });
   if (plan.length) emit({type:'plan',steps:plan});
   let input = request.instruction;
   const saved = await rpc('state.get',{key:'run'}), context = {userChoice:request.resume};
-  if (saved && request.resume !== undefined) { input=await RunState.fromString(agent,saved); for (const approval of input.getInterruptions()) input.approve(approval); }
+  let maxTurns = turnBudget;
+  if (saved && request.resume !== undefined) {
+    const snapshot = JSON.parse(saved);
+    maxTurns = snapshot.currentTurn + turnBudget;
+    snapshot.maxTurns = maxTurns;
+    input=await RunState.fromString(agent,JSON.stringify(snapshot));
+    const approvals = input.getInterruptions();
+    for (const approval of approvals) input.approve(approval);
+    if (!approvals.length) input.addInput(request.resume);
+  }
   else if (!(await session.getItems()).length && request.history?.length) await session.addItems(request.history.map(x=> x.role==='partner'?{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:x.text}]}:{role:x.role,content:x.text}));
-  const result = await runner.run(agent,input,{session,context,maxTurns:24});
+  let result;
+  try { result = await runner.run(agent,input,{session,context,maxTurns}); }
+  catch (error) {
+    if (error.state) await rpc('state.set',{key:'run',value:error.state.toString()});
+    const reason = error instanceof MaxTurnsExceededError ? 'turn_budget' : 'runtime_error';
+    const message = reason === 'turn_budget' ? '本轮达到运行预算' : String(error.message ?? '工具或模型响应异常').slice(0,300);
+    const recovery = error.state ? '已保存资料和执行断点' : '会话中已有资料已保留；异常步骤的完成状态需要核对';
+    return {text:'需要你决定下一步：'+message+'。\n\n本轮已执行 '+toolCalls+' 次工具调用。'+recovery+'。你可以继续这项任务、调整模型/预算，或结束本次处理。', modelCalls:model.turns,toolCalls,runtime:'openai-agents/0.21.0',todos:plan,paused:true,pauseReason:reason};
+  }
   if (result.interruptions.length) { await rpc('state.set',{key:'run',value:result.state.toString()});return {text:'需要你的选择才能继续，填写下方内容后发送。',modelCalls:model.turns,toolCalls,runtime:'openai-agents/0.21.0',todos:plan,paused:true,interrupts:result.interruptions.map(x=>({name:x.rawItem.name,callId:x.rawItem.callId}))}; }
   await rpc('state.remove',{key:'run'});
   return {text:String(result.finalOutput??''),modelCalls:model.turns,toolCalls,runtime:'openai-agents/0.21.0',todos:plan,paused:false};

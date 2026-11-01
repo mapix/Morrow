@@ -3,6 +3,46 @@ import XCTest
 
 final class AgentSDKTests: XCTestCase {
     private func json(_ value: String) throws -> OpenUIJSON { try JSONDecoder().decode(OpenUIJSON.self, from: Data(value.utf8)) }
+    func testToolBudgetStopsBeforeExecutingExcessToolsAndRetainsState() async throws {
+        #if os(macOS)
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
+        let runtime = try AgentSDKRuntime(runtimeDirectory: directory), root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mail = try MailStore(root: root), checkpoints = try AgentCheckpointStore(root: root), spy = SDKBudgetFixture(); _ = mail
+        let request = try json(#"{"type":"start","sessionID":"tool-budget","instruction":"Find mail","systemPrompt":"Search mail","budget":{"toolCalls":1},"tools":[{"name":"search_mail","description":"Search mail","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}"#)
+        let result = try await runtime.run(request, maximumSeconds: 30, handle: { method, params, _ in
+            if method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: "tool-budget") }
+            return try await spy.handle(method, params)
+        }, event: { _ in })
+        XCTAssertEqual(result.paused, true); XCTAssertEqual(result.toolCalls, 1)
+        let calls = await spy.calls; XCTAssertEqual(calls, 1)
+        let state = try await checkpoints.handle(method: "state.get", params: .object(["key": .string("run")]), sessionID: "tool-budget")
+        XCTAssertFalse(state.text.isEmpty)
+        #else
+        throw XCTSkip("SDK process test requires macOS")
+        #endif
+    }
+    func testTurnBudgetPausesAndResumesSDKWithoutRepeatingCompletedTool() async throws {
+        #if os(macOS)
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
+        let runtime = try AgentSDKRuntime(runtimeDirectory: directory), root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mail = try MailStore(root: root), checkpoints = try AgentCheckpointStore(root: root), spy = SDKFixture(); _ = mail
+        var request = try json(#"{"type":"start","sessionID":"budget-test","instruction":"Find mail","systemPrompt":"Use search_mail first","budget":{"modelTurns":1},"tools":[{"name":"search_mail","description":"Search mail","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}"#).object
+        let handle: @Sendable (String, OpenUIJSON, @escaping @Sendable (String) async throws -> Void) async throws -> OpenUIJSON = { method, params, _ in
+            if method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: "budget-test") }
+            return try await spy.handle(method, params)
+        }
+        let paused = try await runtime.run(.object(request), maximumSeconds: 30, handle: handle, event: { _ in })
+        XCTAssertEqual(paused.paused, true); XCTAssertEqual(paused.pauseReason, "turn_budget")
+        request["resume"] = .string("继续当前任务")
+        let resumed = try await runtime.run(.object(request), maximumSeconds: 30, handle: handle, event: { _ in })
+        XCTAssertEqual(resumed.text, "Verified SDK evidence"); XCTAssertEqual(resumed.paused, false)
+        let calls = await spy.calls; XCTAssertEqual(calls, 1)
+        #else
+        throw XCTSkip("SDK process test requires macOS")
+        #endif
+    }
     func testLiveLocalModelCompletesSDKToolLoopWithSyntheticMail() async throws {
         guard ProcessInfo.processInfo.environment["MORROW_LIVE_SDK"] == "1" else { throw XCTSkip("Opt-in local model validation; synthetic mail only") }
         let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
@@ -75,6 +115,17 @@ final class AgentSDKTests: XCTestCase {
         #else
         throw XCTSkip("SDK subprocess runs on macOS")
         #endif
+    }
+}
+
+private actor SDKBudgetFixture {
+    var calls = 0
+    var turns = 0
+    func handle(_ method: String, _ params: OpenUIJSON) throws -> OpenUIJSON {
+        if method == "tool" { calls += 1; return .object(["evidence": .string("one completed tool")]) }
+        guard method == "model" else { throw MailError.message("Unknown fixture method") }
+        turns += 1
+        return .object(["content": .string(""), "model": .string("fixture"), "toolCalls": .array([.object(["id": .string("call-\(turns)"), "name": .string("search_mail"), "args": .object(["query": .string("page-\(turns)")])])])])
     }
 }
 

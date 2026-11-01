@@ -27,15 +27,9 @@ struct AttachmentWorkspaceView: View {
         let selected = model.selectedAttachmentIDs
         let compact = model.compactLayout
         VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(L10n.t("附件")).font(Theme.title)
-                Text("\(entries.count)").font(Theme.label).monospacedDigit().foregroundStyle(Theme.muted)
-                Spacer()
-                Picker(AttachmentPreviewWords.text("显示方式", "View mode", "表示方式"), selection: $displayMode) {
-                    ForEach(AttachmentBrowserMode.allCases) { mode in Label(mode.title, systemImage: mode.symbol).tag(mode.rawValue) }
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 170).accessibilityIdentifier("attachment.view-mode")
-                Button(selecting ? AttachmentPreviewWords.text("完成选择", "Done", "選択完了") : L10n.t("选择")) { selecting.toggle() }
-                    .buttonStyle(QuietButtonStyle()).accessibilityIdentifier("attachment.selection-mode")
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) { attachmentTitle(entries.count); Spacer(); browserControls }
+                VStack(alignment: .leading, spacing: 12) { HStack { attachmentTitle(entries.count); Spacer() }; HStack { browserControls; Spacer(minLength: 0) } }
             }
             HStack {
                 TextField(L10n.t("搜索文件名、邮件主题或发件人"), text: $model.attachmentQuery).textFieldStyle(PaperFieldStyle())
@@ -58,18 +52,21 @@ struct AttachmentWorkspaceView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(entries) { entry in
-                            HStack(alignment: .top, spacing: 14) {
-                                if selecting { selectionButton(entry, selected: selected.contains(entry.id)) }
-                                Image(systemName: AttachmentFileSymbol.symbol(entry)).font(Theme.heading).foregroundStyle(Theme.muted).frame(width: 32, height: 44).accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: 9) {
-                                    Button(displayName(entry)) { previewRecord = entry }.buttonStyle(.plain).font(Theme.body.weight(.medium)).frame(minHeight: 30).accessibilityIdentifier("attachment.open-preview")
-                                    HStack(spacing: 12) {
-                                        Text(L10n.t(entry.kind)); Text(entry.attachment.size); Text(entry.mail.from.display).lineLimit(1)
-                                        Spacer(); Text(entry.mail.date.uiFormatted(date: .abbreviated, time: .omitted))
-                                    }.font(Theme.label).foregroundStyle(Theme.muted)
-                                    Button(entry.mail.subject) { model.revealMail(entry.mail) }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.accent2).lineLimit(2)
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                                actions(entry)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 8) {
+                                    if selecting { selectionButton(entry, selected: selected.contains(entry.id)) }
+                                    Button { previewRecord = entry } label: {
+                                        HStack(spacing: 12) {
+                                            Image(systemName: AttachmentFileSymbol.symbol(entry)).font(Theme.heading).foregroundStyle(Theme.muted).frame(width: 28).accessibilityHidden(true)
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                Text(displayName(entry)).font(Theme.body.weight(.medium)).lineLimit(2)
+                                                HStack(spacing: 10) { Text(L10n.t(entry.kind)); Text(entry.attachment.size).fixedSize(); Text(entry.mail.from.display).lineLimit(1); Spacer(minLength: 0); Text(entry.mail.date.uiFormatted(date: .abbreviated, time: .omitted)).font(Theme.small).fixedSize() }.font(Theme.label).foregroundStyle(Theme.muted)
+                                            }.frame(maxWidth: .infinity, alignment: .leading)
+                                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                                    }.buttonStyle(ListRowButtonStyle()).accessibilityIdentifier("attachment.open-preview")
+                                    actions(entry)
+                                }
+                                Button(entry.mail.subject) { model.revealMail(entry.mail) }.buttonStyle(ReferenceRowButtonStyle()).font(Theme.label).lineLimit(2).padding(.leading, selecting ? 44 : 40)
                             }.padding(.vertical, compact ? 10 : 16).background(selecting && selected.contains(entry.id) ? Theme.selected.opacity(0.5) : Theme.clear)
                             Rectangle().fill(Theme.rule).frame(height: 1)
                         }
@@ -97,12 +94,17 @@ struct AttachmentWorkspaceView: View {
                     }.padding(.vertical, 2)
                 }.accessibilityIdentifier("attachment.grid")
             }
-        }.padding(28).background(Theme.paper)
+        }.padding(compact ? 22 : 28).background(Theme.paper)
             .onAppear { if !selecting { model.selectedAttachmentIDs = [] } }
             .onChange(of: selecting) { if !selecting { model.selectedAttachmentIDs = [] } }
             .sheet(item: $previewRecord) { entry in
                 AttachmentPreviewView(attachment: entry.attachment, onAnalyze: { analyze(entry) }).environmentObject(model)
             }
+    }
+    @ViewBuilder private func attachmentTitle(_ count: Int) -> some View { Text(L10n.t("附件")).font(Theme.title); Text("\(count)").font(Theme.label).monospacedDigit().foregroundStyle(Theme.muted) }
+    @ViewBuilder private var browserControls: some View {
+        Picker(AttachmentPreviewWords.text("显示方式", "View mode", "表示方式"), selection: $displayMode) { ForEach(AttachmentBrowserMode.allCases) { mode in Label(mode.title, systemImage: mode.symbol).tag(mode.rawValue) } }.pickerStyle(.segmented).labelsHidden().frame(width: 170).accessibilityIdentifier("attachment.view-mode")
+        Button(selecting ? AttachmentPreviewWords.text("完成选择", "Done", "選択完了") : L10n.t("选择")) { selecting.toggle() }.buttonStyle(CompactButtonStyle()).accessibilityIdentifier("attachment.selection-mode")
     }
     private func displayName(_ entry: MailAttachmentRecord) -> String { entry.attachment.name.isEmpty ? AttachmentPreviewWords.text("未命名附件", "Unnamed attachment", "名前のない添付ファイル") : entry.attachment.name }
     private func selectionButton(_ entry: MailAttachmentRecord, selected: Bool) -> some View {

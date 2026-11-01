@@ -35,6 +35,7 @@ extension AppModel {
         partnerBusy = true; sdkStreamingText = ""; sdkLiveTrace = AgentExecutionTrace()
         defer { partnerBusy = false; sidebarToolStatus = nil; sdkStreamingText = ""; sdkLiveTrace = nil }
         var human = PartnerChat(role: "user", text: instruction); human.context = uiContext; human.materials = materials
+        var runningContext: SDKChatContext?
         do {
             try await recordChat(human)
             let session = taskSessionID, work = runID.flatMap { id in agentRuns.first { $0.id == id } }
@@ -45,6 +46,7 @@ extension AppModel {
             let submitted = capturedUI.map(submittedMailIDs) ?? []
             let allowed: Set<String>? = explicit || work?.agreement != nil ? Set(primaryMails.filter { (work?.agreement?.contains($0) ?? true) && (!explicit || submitted.contains($0.id)) }.map(\.id)) : nil
             let context = SDKChatContext(sessionID: session, instruction: originalInstruction + (waiting == nil ? "" : "\n用户本轮回答：" + instruction), ui: capturedUI, runID: runID, allowedIDs: allowed, agreement: work?.agreement)
+            runningContext = context
             if case .array(let savedSources) = waiting?.object["sources"] { context.evidenceIDs = Set(savedSources.map(\.text).filter { mailByID($0) != nil && (allowed?.contains($0) ?? true) }) }
             var seenMaterials = Set<String>()
             context.materials = (materials + taskChatHistory.flatMap { $0.materials ?? [] }).filter { seenMaterials.insert($0.id).inserted }
@@ -72,12 +74,14 @@ extension AppModel {
             if let work { task += "\n已接受的工作：\(work.instruction)\n约定：\(work.agreement?.scope ?? "")；\(work.agreement?.doneWhen ?? "")" }
             let history = Array(taskChatHistory.dropLast().suffix(8)).filter { ["user", "partner"].contains($0.role) }.map { OpenUIJSON.object(["role": .string($0.role), "text": .string(String($0.text.prefix(3000)))]) }
             var requestFields: [String: OpenUIJSON] = ["type": .string("start"), "sessionID": .string(session), "instruction": .string(task), "systemPrompt": .string(system), "history": .array(history), "tools": .array(SDKMailTools.descriptions), "contextWindow": .number(16384)]
+            let budget = (settings.runBudget ?? AgentRunBudget()).bounded
+            requestFields["budget"] = .object(["modelTurns": .number(Double(budget.modelTurns)), "toolCalls": .number(Double(budget.toolCalls))])
             if waiting != nil { requestFields["resume"] = .string(instruction) }
             let request: OpenUIJSON = .object(requestFields)
             let modelSettings = settings
             let images = materials.filter { $0.mimeType.hasPrefix("image/") }.compactMap { try? chatMaterialData($0) }
             sidebarToolStatus = L10n.t("正在决定下一步…")
-            let result = try await runtime.run(request, handle: { [weak self] method, params, delta in
+            let result = try await runtime.run(request, maximumSeconds: budget.seconds, handle: { [weak self] method, params, delta in
                 guard let self else { throw CancellationError() }
                 if method.hasPrefix("checkpoint.") || method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: session) }
                 if method == "model" { return try await self.agentToolModel.respond(params, settings: modelSettings, images: images, delta: delta).json() }
@@ -91,7 +95,8 @@ extension AppModel {
             } else { try await store.remove(kind: "agent-sdk-waiting", id: session) }
             var reply = PartnerChat(role: "partner", text: result.text, messageIDs: context.citedIDs.isEmpty ? Array(context.evidenceIDs.prefix(60)) : context.citedIDs)
             reply.sessionID = session; reply.draftIDs = context.draftIDs
-            context.trace.finishedAt = Date(); context.trace.status = result.paused == true ? "paused" : "completed"; reply.executionTrace = context.trace
+            if result.paused == true, result.pauseReason != nil { reply.continuationPrompt = "继续刚才的任务，使用已保存的进度与资料。出现问题先说明并询问我。" }
+            context.trace.finish(status: result.pauseReason == "runtime_error" ? "failed" : result.paused == true ? "paused" : "completed"); reply.executionTrace = context.trace
             if context.presentation == nil, ChatStatisticsPresentation.requested(instruction), let statistics = context.statistics { context.presentation = OpenUIInteraction(source: statistics.chartSource, runID: runID) }
             if var page = context.presentation { page.sessionID = session; page.chatID = reply.id; reply.openUIID = page.id; context.presentation = page }
             try await recordChat(reply, presentation: context.presentation)
@@ -99,7 +104,15 @@ extension AppModel {
             await reload()
         } catch {
             let text = Task.isCancelled ? "这次处理已取消，已保存的资料和会话状态保留。" : "这次任务还没有完成：" + error.localizedDescription
-            try? await recordChat(PartnerChat(role: "partner", text: text))
+            var reply = PartnerChat(role: "partner", text: text)
+            if let context = runningContext {
+                context.trace.finish(status: Task.isCancelled ? "paused" : "failed"); reply.executionTrace = context.trace; reply.messageIDs = Array(context.evidenceIDs.prefix(60))
+                var waiting: [String: OpenUIJSON] = ["instruction": .string(context.instruction), "sources": .array(context.evidenceIDs.map(OpenUIJSON.string))]
+                if let ui = context.ui, let encoded = try? JSONEncoder().encode(ui), let value = try? JSONDecoder().decode(OpenUIJSON.self, from: encoded) { waiting["ui"] = value }
+                try? await store.save(OpenUIJSON.object(waiting), kind: "agent-sdk-waiting", id: context.sessionID)
+            }
+            if !Task.isCancelled { reply.continuationPrompt = "继续刚才的任务，使用已保存的进度与资料。出现问题先说明并询问我。" }
+            try? await recordChat(reply)
         }
     }
     private func receiveSDKEvent(_ event: OpenUIJSON, context: SDKChatContext) {

@@ -44,7 +44,8 @@ final class SDKChatIntegrationTests: XCTestCase {
         let (model, _, _) = try await fixture(mode: "restricted"); defer { try? FileManager.default.removeItem(at: model.store.root) }
         model.pinCurrentChatScope()
         await model.askPartner("只读分析当前明确限定的邮件", uiContext: model.resolvedChatContext)
-        XCTAssertEqual(model.visibleChat.last?.text, "SDK outside source refused")
+        XCTAssertTrue(model.visibleChat.last?.text.contains("需要你决定下一步") == true)
+        XCTAssertNotNil(model.visibleChat.last?.continuationPrompt)
         XCTAssertFalse(model.sidebarEvidenceMailIDs.contains("target")); XCTAssertTrue(model.drafts.isEmpty)
     }
     @MainActor func testSDKFormPausesThenResumesSameCheckpointWithoutDuplicatingUI() async throws {

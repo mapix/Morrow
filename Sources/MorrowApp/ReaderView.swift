@@ -197,7 +197,7 @@ struct ReaderView: View {
                                 Button(L10n.t("查看提取文字")) { Task { await model.previewText(attachment) } }
                                 Button(L10n.t("重新提取文字")) { Task { await model.previewText(attachment, force: true) } }
                                 Button(L10n.t("保存附件")) { Task { await model.attachment(attachment, save: true) } }
-                            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 28)
+                            } label: { Image(systemName: "ellipsis").frame(width: 32, height: 32).contentShape(Rectangle()) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32)
                         }
                     }
                 }

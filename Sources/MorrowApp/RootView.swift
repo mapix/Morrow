@@ -14,7 +14,7 @@ struct LegacyRootView: View {
                 content
                 statusbar
             }.frame(minWidth: 820).background(Theme.paper)
-        }.font(Theme.body).foregroundStyle(Theme.ink).background(Theme.paper)
+        }.font(Theme.body).foregroundStyle(Theme.ink).background(Theme.paper).disclosureGroupStyle(MorrowDisclosureStyle()).environment(\.compactInteraction, model.compactLayout)
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MorrowFocusSearch"))) { _ in searchFocused = true }
             .sheet(item: $model.composer) { draft in ComposerView(initial: draft).environmentObject(model) }
             .sheet(isPresented: $model.showAccount) { AccountSetupView().environmentObject(model) }
@@ -196,12 +196,12 @@ struct MailListView: View {
             HStack {
                 Text(model.searchMode ? L10n.t("检索结果") : model.selectedFolder.flatMap { path in model.folders.first { $0.path == path }?.name } ?? L10n.t(model.destination.rawValue)).font(Theme.heading)
                 Spacer()
-                Button(selecting ? L10n.t("结束选择") : L10n.t("选择")) { selecting.toggle(); selectedIDs = [] }.buttonStyle(.link).font(Theme.label).disabled(model.batchBusy)
-                Menu { Toggle(L10n.t("只看未读"), isOn: $model.unreadOnly); Button(L10n.t("所有分类")) { model.category = nil }; ForEach(MailCategory.allCases, id: \.self) { category in Button(category.rawValue) { model.category = category } } } label: { Image(systemName: "line.3.horizontal.decrease") }.menuStyle(.borderlessButton).frame(width: 24).help(L10n.t("筛选邮件"))
+                Button(selecting ? L10n.t("结束选择") : L10n.t("选择")) { selecting.toggle(); selectedIDs = [] }.buttonStyle(CompactButtonStyle()).font(Theme.label).disabled(model.batchBusy)
+                Menu { Toggle(L10n.t("只看未读"), isOn: $model.unreadOnly); Button(L10n.t("所有分类")) { model.category = nil }; ForEach(MailCategory.allCases, id: \.self) { category in Button(category.rawValue) { model.category = category } } } label: { Image(systemName: "line.3.horizontal.decrease").frame(width: 32, height: 32).contentShape(Rectangle()) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32).help(L10n.t("筛选邮件"))
             }.padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 12)
             HStack(spacing: 10) {
                 Button(L10n.t("全部已读")) { Task { await model.markAllReadInCurrentList() } }
-                    .buttonStyle(.plain).foregroundStyle(Theme.accent2).font(Theme.label)
+                    .buttonStyle(CompactButtonStyle()).foregroundStyle(Theme.accent2).font(Theme.label)
                     .disabled(model.batchBusy || (page.total == 0 && !model.canMarkWholeFolderRead))
                     .help(L10n.t("将当前列表跨页的未读邮件全部标为已读"))
                     .accessibilityIdentifier("mail.mark-all-read")
@@ -209,10 +209,10 @@ struct MailListView: View {
                 Menu { ForEach([25, 50, 100], id: \.self) { size in Button(L10n.format("每页 {0} 封", "\(size)")) { model.setMailPageSize(size) } } } label: {
                     Text(page.total == 0 ? "0 / 0" : "\(page.start + 1)–\(page.end) / \(page.total.formatted())").monospacedDigit().font(Theme.small)
                 }.menuStyle(.borderlessButton).menuIndicator(.hidden).foregroundStyle(Theme.secondary).help(L10n.t("每页邮件数量"))
-                Button { model.turnMailPage(-1) } label: { Image(systemName: "chevron.left").frame(width: 20, height: 24) }
-                    .buttonStyle(.plain).disabled(!page.hasPrevious || model.batchBusy).help(L10n.t("上一页")).accessibilityLabel(L10n.t("上一页")).accessibilityIdentifier("mail.pagination.previous")
-                Button { model.turnMailPage(1) } label: { Image(systemName: "chevron.right").frame(width: 20, height: 24) }
-                    .buttonStyle(.plain).disabled(!page.hasNext || model.batchBusy).help(L10n.t("下一页")).accessibilityLabel(L10n.t("下一页")).accessibilityIdentifier("mail.pagination.next")
+                Button { model.turnMailPage(-1) } label: { Image(systemName: "chevron.left").frame(width: 32, height: 32) }
+                    .buttonStyle(ToolbarIconButtonStyle()).disabled(!page.hasPrevious || model.batchBusy).help(L10n.t("上一页")).accessibilityLabel(L10n.t("上一页")).accessibilityIdentifier("mail.pagination.previous")
+                Button { model.turnMailPage(1) } label: { Image(systemName: "chevron.right").frame(width: 32, height: 32) }
+                    .buttonStyle(ToolbarIconButtonStyle()).disabled(!page.hasNext || model.batchBusy).help(L10n.t("下一页")).accessibilityLabel(L10n.t("下一页")).accessibilityIdentifier("mail.pagination.next")
             }.padding(.horizontal, 20).padding(.bottom, 12)
             if model.searchMode { Text(model.searchStatus).font(Theme.small).foregroundStyle(model.searchFallback ? Theme.error : Theme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 12) }
             if model.searchUpdatesAvailable { Text(L10n.t("索引有更新，按回车刷新结果")).font(Theme.small).foregroundStyle(Theme.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 8) }

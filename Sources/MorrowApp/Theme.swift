@@ -75,11 +75,7 @@ struct CompactButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(Theme.label.weight(.medium)).foregroundStyle(Theme.ink)
-            .padding(.horizontal, 12).frame(minHeight: Theme.compactControlHeight)
-            .background(configuration.isPressed ? Theme.selected : Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius))
-            .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.rule, lineWidth: focused ? 1.5 : 1))
-            .contentShape(Rectangle()).opacity(enabled ? 1 : 0.45)
+        InteractiveControlBody(label: configuration.label, pressed: configuration.isPressed, kind: .compact)
     }
 }
 
@@ -100,21 +96,21 @@ struct PrimaryButtonStyle: ButtonStyle {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(Theme.body.weight(.medium)).foregroundStyle(Theme.paper).padding(.horizontal, 16).frame(minHeight: 48).background(Theme.ink.opacity(configuration.isPressed ? 0.86 : 1), in: RoundedRectangle(cornerRadius: Theme.controlRadius)).shadow(color: Theme.shadow.opacity(0.10), radius: 2, x: 2, y: 2).contentShape(Rectangle()).opacity(enabled ? 1 : 0.55)
+        InteractiveControlBody(label: configuration.label, pressed: configuration.isPressed, kind: .primary)
     }
 }
 struct QuietButtonStyle: ButtonStyle {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(Theme.body).foregroundStyle(Theme.ink).padding(.horizontal, 12).frame(minHeight: 44).background(configuration.isPressed ? Theme.selected : Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.rule, lineWidth: 1)).shadow(color: Theme.shadow.opacity(0.08), radius: 2, x: 2, y: 1).contentShape(Rectangle()).opacity(enabled ? 1 : 0.55)
+        InteractiveControlBody(label: configuration.label, pressed: configuration.isPressed, kind: .quiet)
     }
 }
 struct IconButtonStyle: ButtonStyle {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.frame(minWidth: 44, minHeight: 44).contentShape(Rectangle()).foregroundStyle(configuration.isPressed ? Theme.muted : Theme.ink).opacity(enabled ? 1 : 0.55)
+        InteractiveControlBody(label: configuration.label, pressed: configuration.isPressed, kind: .icon)
     }
 }
 struct PaperFieldStyle: TextFieldStyle {

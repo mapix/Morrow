@@ -49,8 +49,8 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>app.smail.desktop</string>
 <key>CFBundleExecutable</key><string>Morrow</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.14.0</string>
-<key>CFBundleVersion</key><string>140</string>
+<key>CFBundleShortVersionString</key><string>0.15.0</string>
+<key>CFBundleVersion</key><string>150</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>NSHighResolutionCapable</key><true/>

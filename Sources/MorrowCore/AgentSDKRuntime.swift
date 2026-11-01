@@ -11,6 +11,7 @@ public struct AgentSDKResult: Codable, Sendable {
     public var todos: [OpenUIJSON]
     public var paused: Bool?
     public var interrupts: [OpenUIJSON]?
+    public var pauseReason: String?
 }
 
 /// Runs the installed SDK through a private, bounded stdio protocol. Model and
@@ -32,7 +33,7 @@ public final class AgentSDKRuntime: @unchecked Sendable {
         guard let executable = nodes.first(where: { files.isExecutableFile(atPath: $0.path) }) else { throw MailError.message("OpenAI Agents SDK 的 Node.js 运行时不可用。") }
         node = executable.resolvingSymlinksInPath()
     }
-    public func run(_ request: OpenUIJSON, maximumSeconds: Int = 900,
+    public func run(_ request: OpenUIJSON, maximumSeconds: Int = 3600,
         handle: @escaping @Sendable (String, OpenUIJSON, @escaping @Sendable (String) async throws -> Void) async throws -> OpenUIJSON,
         event: @escaping @Sendable (OpenUIJSON) async -> Void) async throws -> AgentSDKResult {
         let process = Process(), input = Pipe(), output = Pipe(), errors = Pipe()
@@ -82,7 +83,7 @@ public final class AgentSDKRuntime: @unchecked Sendable {
                         return result
                     }
                 }
-                group.addTask { try await Task.sleep(for: .seconds(min(1800, max(30, maximumSeconds)))); if process.isRunning { process.terminate() }; throw MailError.message("Agent 达到执行时间预算，已保存的会话状态可继续使用。") }
+                group.addTask { try await Task.sleep(for: .seconds(min(14400, max(30, maximumSeconds)))); if process.isRunning { process.terminate() }; throw MailError.message("Agent 达到执行时间预算，已保存的会话状态可继续使用。") }
                 defer { group.cancelAll() }
                 guard let result = try await group.next() else { throw CancellationError() }; return result
             }
@@ -90,7 +91,7 @@ public final class AgentSDKRuntime: @unchecked Sendable {
     }
     #else
     public init(runtimeDirectory: URL? = nil) throws { throw MailError.message("OpenAI Agents SDK 的本地工具引擎需要在 Mac 执行。") }
-    public func run(_ request: OpenUIJSON, maximumSeconds: Int = 900,
+    public func run(_ request: OpenUIJSON, maximumSeconds: Int = 3600,
         handle: @escaping @Sendable (String, OpenUIJSON, @escaping @Sendable (String) async throws -> Void) async throws -> OpenUIJSON,
         event: @escaping @Sendable (OpenUIJSON) async -> Void) async throws -> AgentSDKResult { throw MailError.message("OpenAI Agents SDK 的本地工具引擎需要在 Mac 执行。") }
     #endif
