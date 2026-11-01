@@ -3,6 +3,26 @@ import MorrowCore
 @testable import MorrowApp
 
 final class SessionsMemoryTests: XCTestCase {
+    @MainActor func testSidebarOrderStaysFixedAfterSwitchRenameAndBackgroundReply() async throws {
+        let model = makeModel(); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        var earlier = ChatSession(id: "a", title: "A"); earlier.createdAt = Date(timeIntervalSince1970: 100)
+        var later = ChatSession(id: "b", title: "B"); later.createdAt = Date(timeIntervalSince1970: 200)
+        model.chatSessions = [earlier, later]; model.activeSessionID = later.id
+        try await model.store.save(earlier, kind: "chat-session", id: earlier.id); try await model.store.save(later, kind: "chat-session", id: later.id)
+        let order = model.orderedChatSessions(archived: false).map(\.id)
+        model.switchChatSession(earlier.id); await model.renameChatSession(earlier.id, title: "New A")
+        var reply = PartnerChat(role: "partner", text: "A complete"); reply.sessionID = earlier.id; try await model.recordChat(reply)
+        XCTAssertEqual(model.orderedChatSessions(archived: false).map(\.id), order)
+        await model.pinChatSession(earlier.id, pinned: true); XCTAssertEqual(model.orderedChatSessions(archived: false).first?.id, earlier.id)
+        await model.pinChatSession(earlier.id, pinned: false); XCTAssertEqual(model.orderedChatSessions(archived: false).map(\.id), order)
+    }
+    func testCompleteReplyCopyPreservesListsTablesCodeAndMarkdownSource() {
+        let source = "# Findings\n\nA **clear** answer.\n\n1. First\n2. Second\n\n| Name | Value |\n| --- | --- |\n| A | 42 |\n\n```swift\nlet result = 42\n```"
+        let plain = ChatReplyClipboard.content(source)
+        XCTAssertTrue(plain.contains("Findings\n\nA clear answer.")); XCTAssertTrue(plain.contains("1. First")); XCTAssertTrue(plain.contains("2. Second"))
+        XCTAssertTrue(plain.contains("Name\tValue\nA\t42")); XCTAssertTrue(plain.contains("let result = 42"))
+        XCTAssertEqual(ChatReplyClipboard.content(source, markdown: true), source)
+    }
     @MainActor func makeModel() -> AppModel { let model = AppModel(root:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),notifications:SessionNotifications()); model.settings.enabled = false; model.workspacePreferences.memoryEnabled = false; return model }
     @MainActor func testSessionsKeepDraftsMessagesAndBackgroundReceiptsSeparate() async throws {
         let model = makeModel(); defer { try? FileManager.default.removeItem(at:model.store.root) }

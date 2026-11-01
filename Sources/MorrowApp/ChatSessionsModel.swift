@@ -108,6 +108,15 @@ extension AppModel {
         chatSessions[i].title = String(trimmed.prefix(80)); chatSessions[i].updatedAt = Date()
         do { _ = try await store.saveSessionMetadata(chatSessions[i]) } catch { self.error = error.localizedDescription }
     }
+    func pinChatSession(_ id: String, pinned: Bool) async {
+        guard chatSessions.contains(where: { $0.id == id }) else { return }
+        do {
+            let saved = try await store.setSessionPinned(id, pinned: pinned)
+            guard let index = chatSessions.firstIndex(where: { $0.id == id }) else { return }
+            chatSessions[index].pinnedAt = saved.pinnedAt
+            chatSessions[index].updatedAt = max(chatSessions[index].updatedAt, saved.updatedAt)
+        } catch { self.error = error.localizedDescription }
+    }
     func archiveChatSession(_ id: String, archived: Bool = true) async {
         guard let i = chatSessions.firstIndex(where: { $0.id == id }), id != executingSessionID else { return }
         if id == activeSessionID { persistCurrentSessionDraft() }

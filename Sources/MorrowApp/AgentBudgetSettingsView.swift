@@ -16,3 +16,15 @@ struct AgentBudgetSettingsView: View {
         Binding(get: { budget[keyPath: path] }, set: { value in var next = budget; next[keyPath: path] = value; model.settings.runBudget = next; Task { await model.saveSettings() } })
     }
 }
+
+struct AgentBudgetSettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack { Text(L10n.t("任务运行预算")).font(Theme.heading); Spacer(); Button { dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(ToolbarIconButtonStyle()).accessibilityLabel(L10n.t("关闭")) }
+            AgentBudgetSettingsView()
+            Text(L10n.t("修改立即保存，下一次继续任务时使用新预算。")).font(Theme.label).foregroundStyle(Theme.secondary)
+            HStack { Spacer(); Button(L10n.t("完成")) { dismiss() }.buttonStyle(PrimaryButtonStyle()) }
+        }.padding(28).frame(width: 520).background(Theme.paper).accessibilityIdentifier("agent.budget.sheet")
+    }
+}

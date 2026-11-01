@@ -754,6 +754,15 @@ public actor MailStore {
 }
 
 extension MailStore {
+    public func setSessionPinned(_ id: String, pinned: Bool, at date: Date = Date()) throws -> ChatSession {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            guard var current = try object(ChatSession.self, kind: "chat-session", id: id) else { throw MailError.message("会话不存在。") }
+            current.pinnedAt = pinned ? current.pinnedAt ?? date : nil
+            current.updatedAt = max(current.updatedAt, date)
+            try save(current, kind: "chat-session", id: id); try execute("COMMIT"); return current
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
     public func saveSessionDraft(_ snapshot: ChatSession) throws -> ChatSession {
         try execute("BEGIN IMMEDIATE")
         do {

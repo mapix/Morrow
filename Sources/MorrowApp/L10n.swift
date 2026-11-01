@@ -59,6 +59,12 @@ enum L10n {
     static let catalog: [String: (String, String)] = [
         "继续这项任务": ("Continue this task", "このタスクを続ける"),
         "调整运行预算": ("Adjust run budget", "実行上限を調整"),
+        "修改立即保存，下一次继续任务时使用新预算。": ("Changes are saved immediately and used when you continue the task.", "変更はすぐ保存され、タスク再開時に適用されます。"),
+        "置顶对话": ("Pin chat", "チャットをピン留め"),
+        "取消置顶": ("Unpin chat", "ピン留めを解除"),
+        "复制回复": ("Copy reply", "返信をコピー"),
+        "复制 Markdown": ("Copy Markdown", "Markdownをコピー"),
+        "已复制": ("Copied", "コピー済み"),
         "任务运行预算": ("Task run budget", "タスクの実行上限"),
         "每段最多 {0} 轮模型调用": ("Up to {0} model turns per segment", "区間あたりモデル呼び出し最大{0}回"),
         "每段最多 {0} 次工具调用": ("Up to {0} tool calls per segment", "区間あたりツール呼び出し最大{0}回"),

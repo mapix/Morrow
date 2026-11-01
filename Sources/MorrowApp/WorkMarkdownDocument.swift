@@ -11,6 +11,19 @@ indirect enum WorkMarkdownBlock {
 /// never collapses a list, paragraph break or code block into one long run.
 struct WorkMarkdownDocument {
     let blocks: [WorkMarkdownBlock]
+    var plainText: String { Self.plainText(blocks) }
+    private static func plainText(_ blocks: [WorkMarkdownBlock]) -> String {
+        blocks.map { block in
+            switch block {
+            case .paragraph(let text), .heading(_, let text): return String(text.characters)
+            case .listItem(let marker, let checked, let children): return (checked.map { $0 ? "☑" : "☐" } ?? marker) + " " + plainText(children).replacingOccurrences(of: "\n", with: "\n  ")
+            case .quote(let children): return plainText(children)
+            case .code(_, let content): return content.trimmingCharacters(in: .newlines)
+            case .table(let rows): return rows.map { $0.map { String($0.characters) }.joined(separator: "\t") }.joined(separator: "\n")
+            case .rule: return "────────"
+            }
+        }.joined(separator: "\n\n")
+    }
     private static let cache: NSCache<NSString, Cached> = { let c = NSCache<NSString, Cached>(); c.countLimit = 128; c.totalCostLimit = 8 * 1024 * 1024; return c }()
     private final class Cached { let blocks: [WorkMarkdownBlock]; init(_ blocks: [WorkMarkdownBlock]) { self.blocks = blocks } }
     init(_ source: String) {

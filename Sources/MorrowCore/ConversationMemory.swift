@@ -6,6 +6,8 @@ public struct ChatSession: Codable, Identifiable, Sendable {
     public var createdAt: Date = Date()
     public var updatedAt: Date = Date()
     public var archived = false
+    public var pinnedAt: Date?
+    public var isPinned: Bool { pinnedAt != nil }
     public var input = ""
     public var materials: [ChatMaterial] = []
     public var pinnedContext: WorkspaceContext?
@@ -14,6 +16,11 @@ public struct ChatSession: Codable, Identifiable, Sendable {
     public var summaryThrough: String?
     public var draftRevision = 0
     public init(id: String = UUID().uuidString, title: String = "新对话") { self.id = id; self.title = title }
+    public static func sidebarPrecedes(_ lhs: Self, _ rhs: Self) -> Bool {
+        if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+        if let left = lhs.pinnedAt, let right = rhs.pinnedAt, left != right { return left > right }
+        return lhs.createdAt == rhs.createdAt ? lhs.id < rhs.id : lhs.createdAt > rhs.createdAt
+    }
 }
 public enum MemoryKind: String, Codable, CaseIterable, Sendable { case preference = "偏好", fact = "事实", relationship = "联系", episodic = "工作经历" }
 public enum MemoryScope: String, Codable, CaseIterable, Sendable { case global = "全局", contact = "联系人", session = "会话" }

@@ -2,6 +2,29 @@ import XCTest
 @testable import MorrowCore
 
 final class ConversationMemoryTests: XCTestCase {
+    func testSessionOrderIgnoresActivityAndPinSurvivesStaleMetadataAndDraftSaves() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try MailStore(root: root)
+        var older = ChatSession(id: "older", title: "Earlier"); older.createdAt = Date(timeIntervalSince1970: 100)
+        var newer = ChatSession(id: "newer", title: "Later"); newer.createdAt = Date(timeIntervalSince1970: 200)
+        older.updatedAt = Date(timeIntervalSince1970: 999)
+        XCTAssertEqual([older, newer].sorted(by: ChatSession.sidebarPrecedes).map(\.id), ["newer", "older"])
+        try await store.save(older, kind: "chat-session", id: older.id)
+        let pinned = try await store.setSessionPinned(older.id, pinned: true, at: Date(timeIntervalSince1970: 300))
+        XCTAssertEqual([newer, pinned].sorted(by: ChatSession.sidebarPrecedes).first?.id, older.id)
+        older.title = "Renamed"; _ = try await store.saveSessionMetadata(older)
+        older.input = "Unsent draft"; older.draftRevision = 1; _ = try await store.saveSessionDraft(older)
+        let stored = try await store.object(ChatSession.self, kind: "chat-session", id: older.id)
+        let restored = try XCTUnwrap(stored)
+        XCTAssertEqual(restored.pinnedAt, pinned.pinnedAt); XCTAssertEqual(restored.title, "Renamed"); XCTAssertEqual(restored.input, "Unsent draft")
+        var message = PartnerChat(role: "partner", text: "Background result"); message.sessionID = older.id
+        let committed = try await store.commitChat(message, session: older)
+        XCTAssertEqual(committed.pinnedAt, pinned.pinnedAt)
+        let unpinned = try await store.setSessionPinned(older.id, pinned: false)
+        XCTAssertEqual([unpinned, newer].sorted(by: ChatSession.sidebarPrecedes).map(\.id), ["newer", "older"])
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(older)) as? [String: Any]); encoded.removeValue(forKey: "pinnedAt")
+        XCTAssertFalse(try JSONDecoder().decode(ChatSession.self, from: JSONSerialization.data(withJSONObject: encoded)).isPinned)
+    }
     func testMemoryScopesExpiryAndInactiveVersionsNeverLeak() {
         var global = AgentMemory(content: "默认简洁中文", kind: .preference); global.confirmed = true
         let a = AgentMemory(content: "本会话项目", scope: .session, scopeID: "a")

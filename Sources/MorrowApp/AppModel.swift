@@ -54,7 +54,7 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var events: [PartnerEvent] = []
     @Published var chat: [PartnerChat] = [] { didSet { chatsBySession = Dictionary(grouping: chat, by: { $0.sessionID ?? "legacy" }).mapValues { $0.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date } } } }
     private var chatsBySession: [String: [PartnerChat]] = [:]
-    @Published var chatSessions: [ChatSession] = [] { didSet { sessionsByID = Dictionary(chatSessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }); let ordered = chatSessions.sorted { $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt }; activeSessionsProjection = ordered.filter { !$0.archived }; archivedSessionsProjection = ordered.filter(\.archived) } }
+    @Published var chatSessions: [ChatSession] = [] { didSet { sessionsByID = Dictionary(chatSessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }); let ordered = chatSessions.sorted(by: ChatSession.sidebarPrecedes); activeSessionsProjection = ordered.filter { !$0.archived }; archivedSessionsProjection = ordered.filter(\.archived) } }
     private var sessionsByID: [String: ChatSession] = [:]
     private var activeSessionsProjection: [ChatSession] = []
     private var archivedSessionsProjection: [ChatSession] = []

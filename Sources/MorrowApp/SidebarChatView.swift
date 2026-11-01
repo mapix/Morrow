@@ -105,6 +105,7 @@ private struct ChatMessageView: View {
     let entry: PartnerChat
     @EnvironmentObject var model: AppModel
     @State private var showingDetails = false
+    @State private var showingBudget = false
     private var sources: [MailMessage] { entry.messageIDs.compactMap(model.mailByID) }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -117,12 +118,16 @@ private struct ChatMessageView: View {
                 }
             } else {
                 if let id = entry.openUIID, let page = model.openUIInteractions.first(where: { $0.id == id && ($0.sessionID ?? "legacy") == (entry.sessionID ?? "legacy") }) { NativeOpenUIView(interaction: page) }
-                if !entry.text.isEmpty { WorkMarkdownContent(text: entry.text).help(L10n.t("回复于 ") + entry.date.uiFormatted()).accessibilityHint(Text(L10n.t("回复于 ") + entry.date.uiFormatted())) }
+                if !entry.text.isEmpty {
+                    WorkMarkdownContent(text: entry.text).help(L10n.t("回复于 ") + entry.date.uiFormatted()).accessibilityHint(Text(L10n.t("回复于 ") + entry.date.uiFormatted()))
+                        .contextMenu { Button(L10n.t("复制回复")) { ChatReplyClipboard.copy(entry.text) }; Button(L10n.t("复制 Markdown")) { ChatReplyClipboard.copy(entry.text, markdown: true) } }
+                    ChatReplyCopyButton(text: entry.text)
+                }
                 if let trace = entry.executionTrace { AgentProgressView(trace: trace) }
                 if let continuation = entry.continuationPrompt ?? (entry.text.contains("Model turn budget reached") ? "继续刚才的任务，使用已保存的资料和进度。" : nil) {
                     HStack(spacing: 10) {
                         Button(L10n.t("继续这项任务")) { if let session = entry.sessionID { model.switchChatSession(session) }; model.chatInput = continuation; model.beginSidebarChat() }.buttonStyle(CompactButtonStyle()).disabled(model.partnerBusy).accessibilityIdentifier("agent.continue")
-                        Button(L10n.t("调整运行预算")) { model.openSettings() }.buttonStyle(CompactButtonStyle())
+                        Button(L10n.t("调整运行预算")) { showingBudget = true }.buttonStyle(CompactButtonStyle()).accessibilityIdentifier("agent.adjust-budget")
                     }
                 }
                 if let ids = entry.draftIDs { ForEach(ids, id: \.self) { id in if let draft = model.drafts.first(where: { $0.id == id }) { Button { model.openDraft(draft) } label: { HStack { Image(systemName: "doc.text"); VStack(alignment: .leading) { Text(draft.subject.isEmpty ? L10n.t("无主题草稿") : draft.subject); Text(L10n.t("已保存到草稿箱 · 点击编辑与预览")).font(Theme.label).foregroundStyle(Theme.secondary) }; Spacer(); Image(systemName: "arrow.up.right") }.padding(12).background(Theme.sidebar, in: RoundedRectangle(cornerRadius: Theme.radius)) }.buttonStyle(.plain).accessibilityIdentifier("chat.open-draft") } } }
@@ -131,6 +136,7 @@ private struct ChatMessageView: View {
             if !sources.isEmpty { DisclosureGroup(L10n.format("依据邮件（{0}）", "\(sources.count)")) { ForEach(sources) { mail in Button { model.revealMail(mail) } label: { Label(mail.subject, systemImage: "envelope").font(Theme.label).lineLimit(2).padding(.vertical, 4) }.buttonStyle(ReferenceRowButtonStyle()) } }.font(Theme.label).foregroundStyle(Theme.secondary) }
             if let ids = entry.memoryIDs, !ids.isEmpty { Button(L10n.format("记忆依据（{0}）", "\(ids.count)")) { model.revealMemories(ids) }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.accent2) }
         }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .contain).accessibilityLabel(entry.role == "user" ? L10n.t("你的要求") : L10n.t("伙伴回复"))
+            .sheet(isPresented: $showingBudget) { AgentBudgetSettingsSheet().environmentObject(model) }
     }
 }
 

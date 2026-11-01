@@ -40,18 +40,18 @@ struct UnifiedSidebar: View {
                 ScrollViewReader { proxy in
                     ScrollView { LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(sessions) { session in
-                        SidebarRow(title: session.title, icon: session.id == model.executingSessionID ? "hourglass" : "bubble.left", selected: session.id == model.activeSessionID, count: 0, compact: model.compactLayout) {
+                        SidebarRow(title: session.title, icon: session.id == model.executingSessionID ? "hourglass" : session.isPinned ? "pin.fill" : "bubble.left", selected: session.id == model.activeSessionID, count: 0, compact: model.compactLayout) {
                             if session.archived { Task { await model.archiveChatSession(session.id, archived: false); model.switchChatSession(session.id) } }
                             else { model.switchChatSession(session.id) }
                         }.id(session.id).contextMenu {
+                            if !session.archived { Button(L10n.t(session.isPinned ? "取消置顶" : "置顶对话")) { Task { await model.pinChatSession(session.id, pinned: !session.isPinned) } } }
                             Button(L10n.t("重命名")) { title = session.title; renaming = session }
                             Button(session.archived ? L10n.t("恢复对话") : L10n.t("归档对话")) { Task { await model.archiveChatSession(session.id, archived: !session.archived) } }.disabled(session.id == model.executingSessionID)
                         }
                     }
                     } }
-                    .onAppear { proxy.scrollTo(model.activeSessionID, anchor: .top) }
-                    .onChange(of: model.activeSessionID) { showArchived = false; if !sessionQuery.isEmpty && !sessions.contains(where: { $0.id == model.activeSessionID }) { sessionQuery = "" }; proxy.scrollTo(model.activeSessionID, anchor: .top) }
-                    .onChange(of: sessions.map(\.id)) { if sessionQuery.isEmpty && !showArchived { proxy.scrollTo(model.activeSessionID, anchor: .top) } }
+                    .onAppear { proxy.scrollTo(model.activeSessionID) }
+                    .onChange(of: model.activeSessionID) { showArchived = false; if !sessionQuery.isEmpty && !sessions.contains(where: { $0.id == model.activeSessionID }) { sessionQuery = "" }; proxy.scrollTo(model.activeSessionID) }
                 }.frame(maxHeight: .infinity)
             }.padding(.horizontal, 12).frame(minHeight: 80, maxHeight: .infinity)
             HStack(spacing: 16) {
