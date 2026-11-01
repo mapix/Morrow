@@ -263,6 +263,8 @@ public struct AgentSettings: Codable, Sendable {
     public var notifications: Bool = false
     public var autoAnalyze: Bool = true
     public var indexAttachments: Bool = true
+    /// Optional so configurations written before decision retrieval remain readable.
+    public var retrievalDecision: RetrievalDecisionSettings?
     public init() {}
 }
 
@@ -271,6 +273,7 @@ public struct SearchHit: Identifiable, Sendable {
     public var score: Float
     public var method: String
     public var snippet: String = ""
+    public var decisionRelevance: Double?
     public var id: String { message.id }
     public init(message: MailMessage, score: Float, method: String, snippet: String = "") { self.message = message; self.score = score; self.method = method; self.snippet = snippet }
 }

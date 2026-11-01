@@ -4,6 +4,7 @@ import MorrowCore
 extension MobileModel {
     func saveModelConfiguration(_ value: AgentSettings, apiKey: String) async throws {
         var next = value
+        next.retrievalDecision = try (value.retrievalDecision ?? RetrievalDecisionSettings()).validated()
         next.replyLanguage = MobileL10n.responseLanguage
         if next.provider == "chatgpt" {
             guard let id = next.chatGPTAccountID, let model = next.chatGPTModel, !model.isEmpty else {
@@ -25,6 +26,7 @@ extension MobileModel {
         let changedIndex = next.embeddingDirectory != settings.embeddingDirectory
         try await store.save(next, kind: "settings", id: "default")
         settings = next
+        await mobileDecisionReranker.invalidate()
         if changedIndex, !next.embeddingDirectory.isEmpty { Task { await indexAll() } }
         if next.enabled { await retryPendingProcessing() }
     }

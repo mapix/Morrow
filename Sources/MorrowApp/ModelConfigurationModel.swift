@@ -12,6 +12,7 @@ extension AppModel {
         next.openAIModel = draft.openAIModel?.trimmingCharacters(in: .whitespacesAndNewlines)
         next.strictJSON = draft.strictJSON; next.useDeveloperRole = draft.useDeveloperRole
         next.chatGPTAccountID = draft.chatGPTAccountID; next.chatGPTModel = draft.chatGPTModel
+        next.retrievalDecision = try (draft.retrievalDecision ?? RetrievalDecisionSettings()).validated()
         next.replyLanguage = PresentationPreferences.shared.replyLanguageName
         if next.provider == "chatgpt" {
             guard let id = next.chatGPTAccountID, let chosen = next.chatGPTModel, !chosen.isEmpty else { throw MailError.message("请登录ChatGPT并选择可用模型。") }
@@ -30,5 +31,6 @@ extension AppModel {
         }
         try await store.save(next, kind: "settings", id: "main")
         settings = next; configurationDidSave()
+        await mailDecisionReranker.invalidate()
     }
 }

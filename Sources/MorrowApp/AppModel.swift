@@ -158,6 +158,7 @@ enum Destination: String, CaseIterable, Identifiable {
     let store: MailStore
     let transport = MailTransport()
     let index = EmbeddingIndex()
+    let mailDecisionReranker = MailDecisionReranker()
     let partner: PartnerEngine
     let ai = AIEngine()
     let credentials = AccountCredentials()
@@ -873,7 +874,7 @@ enum Destination: String, CaseIterable, Identifiable {
                 let recalled = await memoryPrompt(instruction, context: uiContext)
                 let next: PartnerPlan = try await partner.plan(instruction: recalled + "\n" + effectiveInstruction, history: toolHistory, mails: relevant, accounts: accounts, delegations: workDelegations, settings: settings, snippets: snippets, images: images)
                 plan = next
-                let queries = (next.operations ?? []).filter { ["search", "read", "stats", "contacts", "attachments", "readAttachment"].contains($0.type) }
+                let queries = (next.operations ?? []).filter { ["search", "rerank", "read", "stats", "contacts", "attachments", "readAttachment"].contains($0.type) }
                 if queries.isEmpty { break }
                 var receipts: [String] = []
                 for query in queries.prefix(3) {
@@ -891,9 +892,15 @@ enum Destination: String, CaseIterable, Identifiable {
                         do { try await index.load(directory: settings.embeddingDirectory); hits = try await index.search(text, store: store, allowedIDs: allowedIDs); retrieval = "语义与条件检索" }
                         catch { hits = try await store.keywordSearch(text, allowedIDs: allowedIDs); retrieval = "关键词检索（语义模型暂不可用）" }
                         let allowed = hits.filter { hit in (work?.agreement?.contains(hit.message) ?? true) && (!scopeIsExplicit || selectedSources.contains(hit.message.id)) }
-                        relevant = Array(allowed.prefix(18).map(\.message)); snippets = Dictionary(uniqueKeysWithValues: allowed.map { ($0.id, $0.snippet) })
+                        let ranking = try await rankChatMailCandidates(text, hits: Array(allowed.prefix(MailDecisionReranker.maximumCandidates)))
+                        relevant = Array(ranking.hits.prefix(18).map(\.message)); snippets = Dictionary(uniqueKeysWithValues: ranking.hits.map { ($0.id, $0.snippet) })
                         sidebarEvidenceMailIDs.formUnion(relevant.map(\.id))
-                        receipts.append("查询 \(text)：\(retrieval)，返回 \(allowed.count) 个范围内候选（上限60，不是全局总数），本轮实际提供 \(relevant.count) 封邮件与相关原文片段。")
+                        receipts.append("查询 \(text)：\(retrieval)，召回 \(allowed.count) 个范围内候选（不是全局总数），本轮实际提供 \(relevant.count) 封邮件与相关原文片段。\n" + ranking.receipt)
+                    } else if query.type == "rerank", let text = query.text {
+                        let candidates = relevant.map { SearchHit(message: $0, score: 0, method: "本轮已读取资料", snippet: snippets[$0.id] ?? $0.text) }
+                        let ranking = try await rankChatMailCandidates(text, hits: candidates)
+                        relevant = ranking.hits.map(\.message); snippets = Dictionary(uniqueKeysWithValues: ranking.hits.map { ($0.id, $0.snippet) })
+                        receipts.append(ranking.receipt)
                     } else if query.type == "read", let id = query.messageID, let message = try await store.message(id) {
                         guard (work?.agreement?.contains(message) ?? true) && (!scopeIsExplicit || selectedSources.contains(message.id)) else { receipts.append("该邮件不在已确认的工作范围内，未读取。"); continue }
                         let evidence = try await MailEvidence.forAnalysis(message, store: store)
@@ -908,7 +915,7 @@ enum Destination: String, CaseIterable, Identifiable {
             guard let plan else { throw MailError.message("伙伴尚未形成执行方案。") }
             if let source = plan.openUI, let program = try? OpenUILang.parse(source), (try? program.root()) != nil { await saveOpenUIInteraction(OpenUIInteraction(source: source, runID: runID)) }
             var results: [String] = []
-            for op in plan.operations ?? [] where !["search", "read", "stats", "contacts", "attachments", "readAttachment"].contains(op.type) {
+            for op in plan.operations ?? [] where !["search", "rerank", "read", "stats", "contacts", "attachments", "readAttachment"].contains(op.type) {
                 if plan.openUI?.isEmpty == false { results.append("等待你完成结构化选择，未执行依赖该选择的操作。"); break }
                 if let runID, agentRuns.first(where: { $0.id == runID })?.phase == .paused { break }
                 if work?.agreement != nil && uiContext == nil {

@@ -63,6 +63,7 @@ struct ModelSettingsView: View {
                 Text(draft.provider == "openai" ? L10n.t("分析内容会发给你配置的服务。密钥只保存在本机钥匙串。") : L10n.t("本机模型在这台Mac上处理邮件；远程地址会把内容发送给该服务。")).font(Theme.label).foregroundStyle(Theme.secondary)
             }
             Text(L10n.t("保存后应用；连接测试只使用当前填写的配置。")).font(Theme.small).foregroundStyle(Theme.secondary)
+            RetrievalDecisionSettingsView(draft: $draft)
             if busy { ProgressView().controlSize(.small) }
             if let result { Text(result).font(Theme.label).foregroundStyle(Theme.secondary).textSelection(.enabled) }
             Button(saveFeedback.isSaving ? L10n.t("保存中…") : L10n.t("保存模型设置")) {

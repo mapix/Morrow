@@ -190,6 +190,7 @@ public actor PartnerEngine {
         操作字段: type,messageID,text,recipient,subject,kind,match,accountID,hours,start,end,location，各字段不需要时为null。start/end为带时区的ISO8601日期。
         type只允许search(text查询，可用from:/to:/subject:/after:YYYY-MM-DD/before:/is:unread/has:attachment),read(messageID,读取资料，不改变未读),stats(读取实际邮件计数),draft(生成草稿，text正文,subject主题,recipient邮件地址,messageID回复来源可选),delegate(text完整指令,subject标题,kind watch/followUp/briefing/organize/reply,match关键词,hours间隔),label(text标签,messageID),star(messageID),markRead(messageID,仅用户要求标记已读时),complete(messageID),snooze(messageID,hours),archive(messageID),addAccount(text邮箱地址或提供商名),import。
         需要更完整的资料时先使用search/read/stats，工具结果会在下一轮返回。不能把当前提供的少量邮件当成整个邮箱。只有得到实际全局统计才能回答总数。长邮件优先引用检索相关片段。查询与操作分轮，先取资料再行动。
+        search 的候选在交给你之前会经过用户配置的独立决策模型筛选与排序。读取工具 rerank(text=明确的相关性判断目的) 可以再次复核本轮已经读取的候选，例如区分具体待回复事项与只提及同类词汇的订阅内容；它只调整本轮资料，不改变邮件。复核失败的回执不能描述为成功筛选；相关性概率不是事实准确率，也不是执行权限。
         另外支持calendar(subject标题,start开始,end结束,location地点,text说明)，打开日历安排供用户确认；以及addContact(recipient邮箱,text姓名)。无法确定的时间不要猜测，说明需要用户在安排表单中确认。
 
         你还控制当前原生工作区。只在用户要求时操作：showSearch(text=查询，显示左侧检索结果)，navigate(text=工作台/邮件/联系人/附件/资料/工作记录/响应器/草稿/设置/收件箱/已发送/星标/废纸篓)，select(messageID打开邮件，不自动改变未读)，selectContact(recipient=已有联系人邮箱)，selectAttachment(text=已有附件ID)，sync(同步)，reply/replyAll/forward(messageID打开草稿)，compose(recipient可选)，markUnread(messageID)，unstar(messageID)，trash(messageID可恢复废纸篓)，move(messageID,text实际folder路径)，createFolder(accountID,text名称)，exportMail(messageID)，saveAttachment(text附件ID)，undo。
@@ -205,7 +206,7 @@ public actor PartnerEngine {
         let response = try await ai.complete(system: system, prompt: context, settings: settings, json: true, images: images)
         var plan = try JSONDecoder().decode(PartnerPlan.self, from: AIEngine.jsonData(response.text))
         let ids = Set(providedMails.map(\.id)); plan.messageIDs = plan.messageIDs?.filter { ids.contains($0) }
-        let allowed = Set(["search", "read", "stats", "draft", "delegate", "label", "star", "markRead", "complete", "snooze", "archive", "addAccount", "addContact", "calendar", "import", "navigate", "select", "selectContact", "selectAttachment", "sync", "reply", "replyAll", "forward", "compose", "markUnread", "unstar", "trash", "move", "createFolder", "exportMail", "saveAttachment", "undo", "contacts", "attachments", "readAttachment", "updateDraft", "showSearch"])
+        let allowed = Set(["search", "rerank", "read", "stats", "draft", "delegate", "label", "star", "markRead", "complete", "snooze", "archive", "addAccount", "addContact", "calendar", "import", "navigate", "select", "selectContact", "selectAttachment", "sync", "reply", "replyAll", "forward", "compose", "markUnread", "unstar", "trash", "move", "createFolder", "exportMail", "saveAttachment", "undo", "contacts", "attachments", "readAttachment", "updateDraft", "showSearch"])
         let operations = plan.operations ?? []
         if operations.contains(where: { !allowed.contains($0.type) || ($0.messageID != nil && !ids.contains($0.messageID!)) }) { throw MailError.message("模型返回了无法核验的操作或目标，本轮未执行修改。") }
         plan.operations = Array(operations.prefix(8))

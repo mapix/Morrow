@@ -51,4 +51,14 @@ final class SettingsSaveFeedbackTests: XCTestCase {
         XCTAssertEqual(stored?.enabled, false)
         XCTAssertEqual(stored?.indexAttachments, false)
     }
+    @MainActor func testDecisionConfigurationPersistsSeparatelyFromThinkingModel() async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("decision-settings-"+UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let model=AppModel(root:root);model.settings.enabled=false;model.settings.provider="ollama";model.settings.model="fixture-thinker"
+        var draft=model.settings;var decision=RetrievalDecisionSettings();decision.model="fixture-decision";decision.baseURL="http://127.0.0.1:11435";decision.filterIrrelevant=false;draft.retrievalDecision=decision
+        try await model.saveModelConfiguration(draft)
+        let saved=try await model.store.load(AgentSettings.self,kind:"settings").first
+        XCTAssertEqual(saved?.model,"fixture-thinker");XCTAssertEqual(saved?.provider,"ollama");XCTAssertEqual(saved?.retrievalDecision,decision)
+        XCTAssertEqual(saved?.enabled,false)
+    }
 }

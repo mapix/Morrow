@@ -55,8 +55,18 @@ enum L10n {
         }
         return result
     }
-    private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}"]
+    private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}", "决策复核 {0}/{1} · {2}"]
     static let catalog: [String: (String, String)] = [
+        "检索决策模型": ("Retrieval decision model", "検索判断モデル"),
+        "召回后筛选与排序": ("Filter and rerank retrieved mail", "検索結果を絞り込み並べ替える"),
+        "决策服务地址": ("Decision service URL", "判断サービス URL"),
+        "决策模型名称": ("Decision model", "判断モデル"),
+        "过滤明显不相关的候选": ("Filter clearly irrelevant candidates", "明らかに無関係な候補を除外"),
+        "测试决策模型": ("Test decision model", "判断モデルをテスト"),
+        "决策连接成功：": ("Decision connection ready: ", "判断モデルに接続しました："),
+        "决策复核 {0}/{1} · {2}": ("Decision review {0}/{1} · {2}", "判断モデルで確認 {0}/{1} · {2}"),
+        "EmbeddingGemma 2 先找到候选，决策模型再核对相关性。默认使用本机 Ollama 的 nimble；不确定的候选会保留。": ("EmbeddingGemma 2 retrieves candidates; a separate decision model checks relevance. Defaults to local Ollama nimble and retains uncertain candidates.", "EmbeddingGemma 2 が候補を検索し、判断モデルが関連性を確認します。標準はローカル Ollama nimble で、不確かな候補は保持します。"),
+        "只发送本轮召回的相关片段，不把整箱邮件送入决策模型。服务地址如果不是本机，片段会发送到该地址。连接失败时保留原召回结果并说明原因。": ("Only this turn's retrieved passages reach the decision service. A remote address receives those passages. Connection failures preserve original retrieval and show a reason.", "このターンで検索した抜粋のみを判断サービスに送ります。リモートの URL には抜粋が送信されます。接続失敗時は元の結果と理由を表示します。"),
         "搜索全部对话": ("Search all chats", "すべてのチャットを検索"),
         "全部已读": ("Mark all read", "すべて既読にする"),
         "全选本页": ("Select this page", "このページを選択"),
