@@ -215,6 +215,7 @@ struct MailListView: View {
                     .buttonStyle(.plain).disabled(!page.hasNext || model.batchBusy).help(L10n.t("下一页")).accessibilityLabel(L10n.t("下一页")).accessibilityIdentifier("mail.pagination.next")
             }.padding(.horizontal, 20).padding(.bottom, 12)
             if model.searchMode { Text(model.searchStatus).font(Theme.small).foregroundStyle(model.searchFallback ? Theme.error : Theme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 12) }
+            if model.searchUpdatesAvailable { Text(L10n.t("索引有更新，按回车刷新结果")).font(Theme.small).foregroundStyle(Theme.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 8) }
             Divider().overlay(Theme.rule)
             if model.searchBusy && model.visibleMails.isEmpty { VStack(spacing: 12) { ProgressView(); Text(L10n.t("正在按") + model.searchStrategy.title + L10n.t("查找…")).font(Theme.label).foregroundStyle(Theme.muted) }.frame(maxWidth: .infinity, maxHeight: .infinity) }
             else if model.visibleMails.isEmpty { EmptyRegion(icon: "tray", title: model.searchMode ? L10n.t("没有找到匹配邮件") : L10n.t("这里还没有邮件"), detail: model.searchMode ? L10n.t("试试主题、发件人，或换一种描述。") : L10n.t("连接邮箱、同步，或导入邮件。"), action: model.accounts.isEmpty ? L10n.t("连接邮箱") : L10n.t("同步"), perform: { if model.accounts.isEmpty { model.showAccount = true } else { Task { await model.sync() } } }) }

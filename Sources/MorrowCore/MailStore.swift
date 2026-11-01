@@ -601,16 +601,36 @@ public actor MailStore {
     public func isIndexed(_ id: String, hash: String, model: String) throws -> Bool {
         let s = try statement("SELECT 1 FROM index_state WHERE message=? AND hash=? AND model=?", [.text(id), .text(hash), .text(model)]); defer { sqlite3_finalize(s) }; return sqlite3_step(s) == SQLITE_ROW
     }
-    public func verifiedIndexInputs(model: String) throws -> [String: String] {
-        let s = try statement("SELECT v.message,v.input_key FROM index_inputs v JOIN index_state i ON i.message=v.message AND i.model=v.model AND i.hash=v.hash WHERE v.model=?", [.text(model)])
-        defer { sqlite3_finalize(s) }
+    public func verifiedIndexInputs(model: String, ids: Set<String>? = nil) throws -> [String: String] {
+        if ids?.isEmpty == true { return [:] }
         var inputs: [String: String] = [:]
-        while true {
-            let code = sqlite3_step(s); if code == SQLITE_DONE { break }
-            guard code == SQLITE_ROW else { throw databaseError() }
-            inputs[string(s, 0)] = string(s, 1)
+        let ordered = ids?.sorted()
+        let chunks: [[String]?] = ordered.map { values in stride(from: 0, to: values.count, by: 400).map { Array(values[$0..<min($0 + 400, values.count)]) } } ?? [nil]
+        for chunk in chunks {
+            let clause = chunk.map { " AND v.message IN (" + Array(repeating: "?", count: $0.count).joined(separator: ",") + ")" } ?? ""
+            let s = try statement("SELECT v.message,v.input_key FROM index_inputs v JOIN index_state i ON i.message=v.message AND i.model=v.model AND i.hash=v.hash WHERE v.model=?" + clause, [.text(model)] + (chunk ?? []).map(Value.text))
+            defer { sqlite3_finalize(s) }
+            while true {
+                let code = sqlite3_step(s); if code == SQLITE_DONE { break }
+                guard code == SQLITE_ROW else { throw databaseError() }
+                inputs[string(s, 0)] = string(s, 1)
+            }
         }
         return inputs
+    }
+    public func messageSummaries(ids: Set<String>) throws -> [MailMessageSummary] {
+        let ordered = ids.sorted(); var values: [MailMessageSummary] = []
+        for start in stride(from: 0, to: ordered.count, by: 128) {
+            let chunk = Array(ordered[start..<min(start + 128, ordered.count)])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            let scan = try scanProjections("SELECT message,json FROM message_projections WHERE message IN (" + placeholders + ")", chunk.map(Value.text))
+            values += scan.values
+            let found = Set(scan.values.map(\.id))
+            for id in chunk where !found.contains(id) {
+                if let full = try message(id) { try writeProjection(full); values.append(MailMessageSummary(message: full)) }
+            }
+        }
+        return values
     }
     public func rememberIndexInput(_ mail: MailMessage, attachments: Bool, model: String, hash: String) throws {
         guard let key = MailIndexInput.key(for: mail, attachments: attachments) else { return }

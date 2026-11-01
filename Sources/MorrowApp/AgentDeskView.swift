@@ -34,24 +34,13 @@ struct RootView: View {
         }.font(Theme.body).foregroundStyle(Theme.ink).background(Theme.paper)
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 12) {
-                    if let activity {
-                        Button { reveal(activity) } label: {
-                            HStack(spacing: 7) {
-                                ProgressView().controlSize(.small).frame(width: 14, height: 14)
-                                Text(L10n.t(activity.label)).font(Theme.label.weight(.medium)).lineLimit(1)
-                                if !activity.title.isEmpty { Text(activity.title).font(Theme.label).lineLimit(1).frame(maxWidth: 180) }
-                            }.foregroundStyle(Theme.secondary).padding(.horizontal, 10).frame(height: 32)
-                                .background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.controlRadius))
-                        }.buttonStyle(.plain).accessibilityIdentifier("morrow-agent-running")
-                            .accessibilityLabel(L10n.t(activity.label) + (activity.title.isEmpty ? "" : "：" + activity.title))
-                    }
                     Button { model.chatExpanded.toggle(); dragOrigin = nil } label: {
                         Image(systemName: "sidebar.right").font(Theme.actionIcon).frame(width: 36, height: 32)
                             .foregroundStyle(Theme.muted).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.controlRadius))
                     }.buttonStyle(.plain).accessibilityIdentifier("morrow-chat-toggle")
                         .accessibilityLabel(model.chatExpanded ? L10n.t("收起对话") : L10n.t("打开伙伴Chat"))
                         .help(model.chatExpanded ? L10n.t("收起对话") : L10n.t("打开伙伴Chat"))
-                }.padding(.top, 14).padding(.trailing, 16)
+                }.padding(.top, 13).padding(.trailing, 16)
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MorrowFocusMission"))) { _ in model.chatExpanded = true; model.chatFocusNonce += 1 }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MorrowFocusSearch"))) { _ in model.workspacePage = .mail; model.navigate(.inbox); model.focusMailSearch = true }
@@ -96,7 +85,10 @@ struct RootView: View {
                 }
             }
             footer
-        }.padding(.top, 56).frame(minWidth: CompanionPaneLayout.minimumWorkspace)
+        }.padding(.top, model.chatExpanded || hasMailToolbar ? 0 : 40).frame(minWidth: CompanionPaneLayout.minimumWorkspace)
+    }
+    private var hasMailToolbar: Bool {
+        model.workspacePage == .mail && model.composer == nil && model.attachmentTextPreview == nil && ![Destination.settings, .contacts, .drafts, .delegations].contains(model.destination)
     }
     private var navigation: some View {
         VStack(spacing: 12) {
@@ -136,10 +128,22 @@ struct RootView: View {
             else if model.destination == .contacts { PeopleWorkspaceView() }
             else if model.destination == .drafts { DraftsView() }
             else if model.destination == .delegations { DelegationsView() }
-            else { MailWorkspaceToolbar(); HSplitView { MailListView().frame(minWidth: 240, idealWidth: 290, maxWidth: 360); if let mail = model.selected { ReaderView(mail: mail).frame(minWidth: 330) } else { EmptyRegion(icon: "envelope.open", title: L10n.t("选择一封邮件"), detail: L10n.t("也可以直接在对话里查询当前邮箱。"), action: nil) } } }
+            else { MailWorkspaceToolbar(reservesCornerControl: !model.chatExpanded); HSplitView { MailListView().frame(minWidth: 240, idealWidth: 290, maxWidth: 360); if let mail = model.selected { ReaderView(mail: mail).frame(minWidth: 330) } else { EmptyRegion(icon: "envelope.open", title: L10n.t("选择一封邮件"), detail: L10n.t("也可以直接在对话里查询当前邮箱。"), action: nil) } } }
         }
     }
     @ViewBuilder private var footer: some View {
+        if model.syncBusy { MailSyncStatusLine() }
+        if let activity, !(model.chatExpanded && activity.kind == .currentConversation) {
+            Button { reveal(activity) } label: {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small).frame(width: 14, height: 14)
+                    Text(L10n.t(activity.label)).font(Theme.label.weight(.medium))
+                    if !activity.title.isEmpty { Text(activity.title).font(Theme.label).lineLimit(1) }
+                    Spacer(minLength: 0)
+                }.foregroundStyle(Theme.secondary).padding(.horizontal, 24).frame(height: 32)
+            }.buttonStyle(.plain).accessibilityIdentifier("morrow-agent-running")
+                .accessibilityLabel(L10n.t(activity.label) + (activity.title.isEmpty ? "" : "：" + activity.title))
+        }
         if let label = model.undoLabel {
             HStack { Image(systemName: "arrow.uturn.backward"); Text(label).lineLimit(1); Spacer(); Button(L10n.t("撤销")) { Task { await model.undo() } }.buttonStyle(.plain).foregroundStyle(Theme.accent2) }.font(Theme.label).padding(.horizontal, 24).frame(height: 36).background(Theme.sheet)
         }
@@ -250,6 +254,7 @@ struct MailWorkspaceToolbar: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @EnvironmentObject var model: AppModel
     @FocusState private var focused: Bool
+    var reservesCornerControl = false
     private var mailboxTitle: String { model.accounts.first { $0.id == model.selectedAccount }?.name ?? L10n.t("全部邮箱") }
     var body: some View {
         HStack(spacing: 12) {
@@ -262,14 +267,15 @@ struct MailWorkspaceToolbar: View {
                 ForEach(model.accounts) { account in Menu(account.name) { ForEach(model.folders.filter { $0.accountID == account.id }) { folder in Button(folder.name) { model.chooseFolder(folder) } } } }
             } label: { HStack(spacing: 6) { Text(mailboxTitle).lineLimit(1); Image(systemName: "chevron.down").font(Theme.small) } }.font(Theme.body.weight(.medium)).menuStyle(.borderlessButton).menuIndicator(.hidden).frame(maxWidth: 190, alignment: .leading)
             Spacer(minLength: 12)
-            HStack { Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted); TextField(model.searchStrategy == .keyword ? L10n.t("按关键词搜索邮件…") : L10n.t("用意思搜索邮件…"), text: $model.searchText).textFieldStyle(.plain).focused($focused).onChange(of: model.searchText) { model.search() }.accessibilityLabel(L10n.t("搜索邮件")); if !model.searchText.isEmpty { Button { model.searchText = ""; model.search() } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(Theme.muted).accessibilityLabel(L10n.t("清除搜索")) } }.font(Theme.body).padding(.horizontal, 10).frame(minWidth: 140, idealWidth: 230, maxWidth: 320, minHeight: 36).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.fieldEdge))
+            HStack { Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted); TextField(model.searchStrategy == .keyword ? L10n.t("按关键词搜索邮件…") : L10n.t("用意思搜索邮件…"), text: $model.searchText).textFieldStyle(.plain).focused($focused).onChange(of: model.searchText) { model.search() }.accessibilityLabel(L10n.t("搜索邮件")); if !model.searchText.isEmpty { Button { model.searchText = ""; model.search() } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(Theme.muted).accessibilityLabel(L10n.t("清除搜索")) }; if model.searchBusy { ProgressView().controlSize(.small).accessibilityLabel(L10n.t("正在搜索邮件")) } }.font(Theme.body).padding(.horizontal, 10).frame(minWidth: 140, idealWidth: 230, maxWidth: 320, minHeight: 36).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.fieldEdge))
             Menu {
                 Picker(L10n.t("搜索方式"), selection: $model.searchStrategy) { ForEach(MailSearchStrategy.allCases, id: \.self) { Text($0.title).tag($0) } }
                 Picker(L10n.t("搜索范围"), selection: $model.searchScope) { ForEach(MailboxSearchScope.allCases) { Text(L10n.t($0.rawValue)).tag($0) } }
             } label: { Text(model.searchStrategy.title).font(Theme.label).foregroundStyle(Theme.accent2) }.menuStyle(.borderlessButton).fixedSize().help(model.searchStrategy.title + L10n.t("搜索；") + L10n.t(model.searchScope.rawValue)).accessibilityLabel(L10n.t("搜索方式与范围"))
-            Button { let accountID = model.selectedAccount; Task { await model.sync(accountID: accountID) } } label: { if model.syncBusy { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") } }.buttonStyle(.plain).frame(width: 32, height: 36).disabled(model.syncBusy).help(L10n.t("同步当前邮箱")).accessibilityLabel(L10n.t("同步当前邮箱"))
+            MailSyncButton()
             Button { Task { await model.compose() } } label: { Label(L10n.t("写邮件"), systemImage: "square.and.pencil") }.buttonStyle(CompactButtonStyle())
-        }.padding(.horizontal, 24).frame(height: 58)
+        }.padding(.horizontal, 24).padding(.trailing, reservesCornerControl ? 44 : 0).frame(height: 58)
+        .onSubmit { model.search(preserveSelection: true) }
         .onAppear { if model.focusMailSearch { focused = true; model.focusMailSearch = false } }
         .onChange(of: model.focusMailSearch) { if model.focusMailSearch { focused = true; model.focusMailSearch = false } }
     }

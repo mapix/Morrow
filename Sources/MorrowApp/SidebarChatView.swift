@@ -20,7 +20,7 @@ struct SidebarChatView: View {
                     if model.orderedChatSessions(archived: false).count > 20 { Button(L10n.t("搜索全部对话")) { NotificationCenter.default.post(name: Notification.Name("MorrowSearchSessions"), object: nil) } }
                     Divider(); Button(L10n.t("新建对话")) { Task { _ = await model.createChatSession() } }
                 } label: { HStack(spacing: 8) { Text(model.activeSession?.title ?? L10n.t("新对话")).font(Theme.body.weight(.semibold)).lineLimit(1); Image(systemName: "chevron.down").font(Theme.small) } }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(maxWidth: .infinity, alignment: .leading)
-            }.padding(.horizontal, 20).padding(.top, 56).padding(.bottom, 20)
+            }.padding(.horizontal, 20).padding(.trailing, 44).frame(height: 58)
             ScrollViewReader { proxy in
                 ScrollView { VStack(alignment: .leading, spacing: model.compactLayout ? 22 : 30) {
                     if model.visibleChat.count > historyLimit { Button(L10n.t("查看更早的消息")) { historyLimit += 40 }.buttonStyle(QuietButtonStyle()) }

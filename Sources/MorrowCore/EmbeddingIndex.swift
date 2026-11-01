@@ -209,7 +209,7 @@ public actor EmbeddingIndex {
         return out
     }
     public func pendingMessageIDs(_ summaries: [MailMessage], store: MailStore, attachments: Bool) async throws -> [String] {
-        let verified = try await store.verifiedIndexInputs(model: modelIdentity)
+        let verified = try await store.verifiedIndexInputs(model: modelIdentity, ids: Set(summaries.map(\.id)))
         var pending: [String] = []
         for mail in summaries {
             try Task.checkCancellation()

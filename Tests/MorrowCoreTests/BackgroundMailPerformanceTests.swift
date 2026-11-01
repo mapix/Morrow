@@ -3,6 +3,19 @@ import CMail
 @testable import MorrowCore
 
 final class BackgroundMailPerformanceTests: XCTestCase {
+    func testTargetedSummariesDoNotScanOrRepairUnrelatedCorruptMail() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try MailStore(root: root)
+        let bad = try await store.upsert(MailMessage(accountID: "fixture", from: .init(email: "bad@example.invalid"), subject: "bad", text: "bad"))
+        var db: OpaquePointer?; XCTAssertEqual(sqlite3_open(root.appendingPathComponent("mail.sqlite").path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "UPDATE messages SET json=x'7b'; UPDATE message_projections SET json=x'7b'", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+        let target = try await store.upsert(MailMessage(accountID: "fixture", from: .init(email: "target@example.invalid"), subject: "target", text: "full target"))
+        let result = try await store.messageSummaries(ids: [target.id])
+        XCTAssertEqual(result.map(\.id), [target.id]); XCTAssertEqual(result[0].displayMessage.contentAvailability, .preview)
+        XCTAssertNotEqual(target.id, bad.id)
+    }
     func testRemoteFlagsPreserveSourceVectorsAndConcurrentLocalEdits() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

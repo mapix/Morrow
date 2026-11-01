@@ -84,13 +84,14 @@ extension AppModel {
     func scheduleContactRefresh() {
         contactRefreshNeeded = true
         guard contactRefreshTask == nil else { return }
-        contactRefreshTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+        contactRefreshTask = Task(priority: .utility) { [weak self] in
+            let delay: Double = self?.syncBusy == true ? 20 : 2
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
             guard let self else { return }
             while self.contactRefreshNeeded && !Task.isCancelled {
                 self.contactRefreshNeeded = false
                 await self.refreshContactProfiles()
-                if self.contactRefreshNeeded { do { try await Task.sleep(for: .seconds(3)) } catch { break } }
+                if self.contactRefreshNeeded { do { try await Task.sleep(for: .seconds(self.syncBusy ? 20 : 3)) } catch { break } }
             }
             self.contactRefreshTask = nil
         }
@@ -99,16 +100,34 @@ extension AppModel {
         guard !profileBuildBusy else { return }; profileBuildBusy = true; defer { profileBuildBusy = false }
         let accountSnapshot = accounts, manual = contacts
         do {
-            let databaseInventory = try await store.profileInventoryFingerprint()
-            let inventory = "profile-inventory-v3:" + databaseInventory + ":" + ContactProfileInventory.fingerprint(mails: [], contacts: manual, accounts: accountSnapshot)
-            guard inventory != profileInventory else { return }
-            let snapshot = try await store.contactMessages()
+            let snapshot = primaryMails
+            let inventory = "profile-inventory-v4:" + String(snapshot.count) + ":" + ContactProfileInventory.fingerprint(mails: [], contacts: manual, accounts: accountSnapshot)
             let previous = contactProfiles
-            var updated = await Task.detached(priority: .utility) { ContactProfileBuilder.build(mails: snapshot, accounts: accountSnapshot, manual: manual, previous: previous) }.value
-            let prior = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            let cache = contactMetadataIndex
+            let result = await Task.detached(priority: .utility) {
+                var cache = cache
+                let profiles = cache.build(mails: snapshot, accounts: accountSnapshot, manual: manual, previous: previous)
+                return (cache, profiles)
+            }.value
+            contactMetadataIndex = result.0
+            let affected = result.0.affectedEmails
+            guard !affected.isEmpty else { return }
+            var updated = result.1
+            let prior = Dictionary(contactProfiles.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
             let versions = Dictionary(snapshot.map { ($0.id, $0.bodyVersion) }, uniquingKeysWith: { _, last in last })
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
             for i in updated.indices {
+                if !affected.contains(updated[i].email) { if let current = prior[updated[i].id] { updated[i] = current }; continue }
+                if let current = prior[updated[i].id] {
+                    updated[i].claims = current.claims; updated[i].correction = current.correction
+                    updated[i].analyzedMailVersions = current.analyzedMailVersions
+                    updated[i].analysisFingerprint = current.analysisFingerprint
+                    updated[i].analysisStatus = current.analysisStatus; updated[i].analyzedAt = current.analyzedAt
+                    updated[i].analysisRetryAt = current.analysisRetryAt
+                    if ContactProfileBuilder.canPreserveCompletedAnalysis(current, updated[i], versions: versions) {
+                        updated[i].analysisFingerprint = "profile-ai-v2:" + updated[i].fingerprint
+                    }
+                }
                 if let old = prior[updated[i].id], old.analyzedMailVersions == nil, old.fingerprint == updated[i].fingerprint, old.analysisFingerprint == "profile-ai-v2:" + old.fingerprint {
                     updated[i].analyzedMailVersions = Dictionary(updated[i].mailIDs.compactMap { id in versions[id].map { (id, $0) } }, uniquingKeysWith: { _, last in last })
                 }
@@ -116,7 +135,7 @@ extension AppModel {
                 try await store.save(updated[i], kind: "contact-profile", id: updated[i].id)
             }
             let updatedIDs = Set(updated.map(\.id))
-            for removed in previous where !updatedIDs.contains(removed.id) { try await store.remove(kind: "contact-profile", id: removed.id) }
+            for removed in previous where affected.contains(removed.email) && !updatedIDs.contains(removed.id) { try await store.remove(kind: "contact-profile", id: removed.id) }
             contactProfiles = updated; profileInventory = inventory
             try await store.save(inventory, kind: "profile-inventory", id: "current")
             profileStatus = "\(updated.count)位联系人，已整理全部\(mailCount)封本机历史邮件"
@@ -136,7 +155,7 @@ extension AppModel {
             contactProfiles[i].analysisFingerprint = ""; contactProfiles[i].analyzedMailVersions = [:]; contactProfiles[i].analysisRetryAt = nil
         }
         guard profileTask == nil, settings.enabled, settings.autoAnalyze else { return }
-        profileTask = Task { [weak self] in
+        profileTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
             defer { self.profileTask = nil; if !Task.isCancelled && self.settings.enabled && self.contactProfiles.contains(where: self.profileNeedsAnalysis) { self.scheduleProfileAnalysis() } }
             let queued = self.contactProfiles.filter(self.profileNeedsAnalysis).map(\.email)

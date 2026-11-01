@@ -14,7 +14,7 @@ struct UnifiedSidebar: View {
     private var sessions: [ChatSession] { model.orderedChatSessions(archived: showArchived).filter { sessionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(sessionQuery) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Morrow").font(Theme.wordmark).padding(.horizontal, 22).padding(.top, 48).padding(.bottom, 22)
+            Text("Morrow").font(Theme.wordmark).padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 22)
             VStack(alignment: .leading, spacing: 4) {
                     ForEach([WorkspacePage.desk, .mail, .people, .attachments]) { page in
                         SidebarRow(title: page == .desk ? L10n.t("工作") : L10n.t(page.rawValue), icon: page == .desk && (model.partnerBusy || model.delegationBusy) ? "hourglass" : icon(page), selected: model.workspacePage == page && (page != .mail || (model.selectedAccount == nil && model.destination != .settings)), count: page == .mail ? model.inboxUnreadCount(nil) : page == .desk ? model.pendingDecisions.count : 0, compact: model.compactLayout) { model.openWorkspace(page) }.help(page == .desk && (model.partnerBusy || model.delegationBusy) ? L10n.t("伙伴正在处理委托") : L10n.t(page.rawValue))

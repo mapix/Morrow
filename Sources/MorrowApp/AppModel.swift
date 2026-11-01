@@ -33,6 +33,10 @@ enum Destination: String, CaseIterable, Identifiable {
     private var localMutationEpoch = 0
     private var localMutationVersions: [String: Int] = [:]
     private var bulkSeenOverrides: [BulkSeenKey: (Bool, Date)] = [:]
+    private var indexPending: [String: Int] = [:]
+    private var indexPendingEpoch = 0
+    private var indexBootstrappedConfiguration: String?
+    private var lastIndexCountRead = Date.distantPast
     @Published var drafts: [ComposeDraft] = []
     @Published var delegations: [Delegation] = []
     @Published var responders: [MailResponder] = []
@@ -84,6 +88,7 @@ enum Destination: String, CaseIterable, Identifiable {
     var contactRefreshNeeded = false
     var profileBuildBusy = false
     var profileInventory = ""
+    var contactMetadataIndex = ContactProfileMetadataIndex()
     @Published var agentRuns: [AgentRun] = []
     @Published var agentArtifacts: [AgentArtifact] = []
     @Published var agentDecisions: [AgentDecision] = []
@@ -120,6 +125,8 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var unreadOnly = false { didSet { if oldValue != unreadOnly { mailPageIndex = 0; if searchMode { search() } } } }
     @Published var category: MailCategory? { didSet { if oldValue != category { mailPageIndex = 0; if searchMode { search() } } } }
     @Published var syncBusy = false
+    @Published var mailSyncProgress: MailSyncProgress?
+    private var mailboxSyncTask: Task<Void, Never>?
     @Published var syncStatus = "尚未连接邮箱"
     @Published var indexStatus = "等待邮件"
     @Published var indexCount = 0
@@ -214,6 +221,12 @@ enum Destination: String, CaseIterable, Identifiable {
         if let cached = visibleProjection, cached.0 == key { return cached.1 }
         if searchMode { let result = searchHits.map(\.message); visibleProjection = (key, result); visiblePositions = Dictionary(result.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first }); return result }
         let scope = currentMailListScope
+        if destination == .inbox && (selectedFolder == nil || selectedFolder?.uppercased() == "INBOX") {
+            let result = mailProjection.primary.filter(scope.matches)
+            visibleProjection = (key, result)
+            visiblePositions = Dictionary(result.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+            return result
+        }
         let filtered = mails.filter(scope.matches)
         var unique: [String: MailMessage] = [:]
         for mail in filtered { if unique[mail.canonicalID] == nil || mail.folder == "INBOX" { unique[mail.canonicalID] = mail } }
@@ -295,12 +308,21 @@ enum Destination: String, CaseIterable, Identifiable {
             }
         } catch { self.error = error.localizedDescription }
     }
-    func reload() async {
+    func reload(incoming: [MailMessage]? = nil) async {
         reloadEpoch += 1; let request = reloadEpoch, mutationAtStart = localMutationEpoch
         do {
-            let cache = mailProjection, store = store
+            let cache = mailProjection, store = store, current = mails
             let worker = Task.detached(priority: .utility) { () async throws -> ([MailMessage], MailProjectionCache) in
-                let loaded = try await store.messageSummaries().map { Self.validatedMail($0.displayMessage) }
+                let loaded: [MailMessage]
+                if let incoming {
+                    var merged = current
+                    var positions = cache.positions
+                    for mail in incoming {
+                        let header = Self.validatedMail(mail)
+                        if let position = positions[mail.id] { merged[position] = header } else { positions[mail.id] = merged.count; merged.append(header) }
+                    }
+                    loaded = merged
+                } else { loaded = try await store.messageSummaries().map { Self.validatedMail($0.displayMessage) } }
                 try Task.checkCancellation()
                 var projection = cache; projection.rebuild(loaded)
                 return (loaded, projection)
@@ -312,15 +334,23 @@ enum Destination: String, CaseIterable, Identifiable {
                 if (localMutationVersions[loaded[i].id] ?? 0) > mutationAtStart, let current = mailProjection.byID[loaded[i].id] { loaded[i] = current; overrides.append(current) }
             }
             guard projection.applyMetadataUpdates(overrides) else { Task { await self.reload() }; return }
+            for mail in loaded where Self.indexInputsChanged(cache.byID[mail.id], mail) { enqueueIndex(mail.id) }
             // Mutating a @Published array element republishes and copies the
             // entire array. Prepare locally, then publish one validated snapshot.
             preparedMailProjection = projection
-            mails = loaded; indexCount = try await store.indexCount(); isDemo = !accounts.isEmpty && accounts.allSatisfy(\.isDemo)
+            mails = loaded
+            if incoming == nil { await refreshIndexCount(force: true) }
+            isDemo = !accounts.isEmpty && accounts.allSatisfy(\.isDemo)
             scheduleContactRefresh()
             if isDemo { syncStatus = "示例工作区，未连接真实邮箱" }
             if processingTask == nil && indexCount > 0 && indexFailure == nil { indexStatus = "\(indexCount) 封邮件已建立向量索引" }
             if analysisTask == nil && !mails.isEmpty && primaryMails.allSatisfy({ $0.analysis != nil && $0.analysis?.source != "规则分析" }) { partnerStatus = "已整理，等待新邮件或你的委托" }
         } catch { self.error = error.localizedDescription }
+    }
+    private func refreshIndexCount(force: Bool = false) async {
+        guard force || Date().timeIntervalSince(lastIndexCountRead) >= 15 else { return }
+        lastIndexCountRead = Date()
+        if let count = try? await store.indexCount(), count != indexCount { indexCount = count }
     }
     private nonisolated static func validatedMail(_ original: MailMessage) -> MailMessage {
         if original.contentAvailability == .preview { return original }
@@ -359,9 +389,30 @@ enum Destination: String, CaseIterable, Identifiable {
         do { try await store.deleteAccount(account.id); SecretStore.delete(accountID: account.id); accounts.removeAll { $0.id == account.id }; folders.removeAll { $0.accountID == account.id }; await reload() } catch { self.error = error.localizedDescription }
     }
     func sync(accountID: String? = nil) async {
-        guard !syncBusy, !realAccounts.isEmpty else { return }; syncBusy = true; defer { syncBusy = false }
+        guard !realAccounts.isEmpty else { return }
+        await runMailSynchronization { await self.performMailboxSync(accountID: accountID) }
+    }
+    func runMailSynchronization(_ operation: @escaping @MainActor () async -> Void) async {
+        guard mailboxSyncTask == nil else { return }
+        let task = Task(priority: .utility) { await operation() }
+        mailboxSyncTask = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        mailboxSyncTask = nil
+    }
+    func stopMailSynchronization() {
+        guard let task = mailboxSyncTask else { return }
+        syncStatus = L10n.t("正在停止本次同步…")
+        task.cancel()
+    }
+    private func performMailboxSync(accountID: String?) async {
+        guard !syncBusy, !realAccounts.isEmpty else { return }; syncBusy = true; defer { syncBusy = false; if searchNeedsRefresh { scheduleSearchRefresh() } }
+        mailSyncProgress = MailSyncProgress()
+        defer { mailSyncProgress = nil }
         var failures: [String] = []; var newCount = 0
+        var incoming: [MailMessage] = []
+        var lastPublication = Date()
         for account in realAccounts where account.enabled && (accountID == nil || account.id == accountID) {
+            if Task.isCancelled { break }
             let failureStart = failures.count; await setAccountSyncState(account, syncing: true)
             do {
                 let secret = try await credentials.credential(account)
@@ -370,42 +421,72 @@ enum Destination: String, CaseIterable, Identifiable {
                 let remoteFolders = try await transport.folders(account, password: secret)
                 folders.removeAll { $0.accountID == account.id }; folders += remoteFolders
                 for folder in remoteFolders {
+                    try Task.checkCancellation()
                     try await store.save(folder, kind: "folder", id: folder.id)
                     syncStatus = "正在同步 \(account.name) / \(folder.name)"
+                    mailSyncProgress = .init(downloaded: newCount)
                     let inventoryStarted = Date()
                     let (validity, flags) = try await transport.inventory(account, folder: folder.path, password: secret)
                     bulkSeenOverrides = bulkSeenOverrides.filter { key, value in key.account != account.id || key.folder != folder.path || (key.validity == validity && value.1 > inventoryStarted) }
                     let existing = try await store.syncRecords(account: account.id, folder: folder.path)
-                    let summaries = try await store.messageSummaries(account: account.id, folder: folder.path)
-                    let localFlags = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.displayMessage) })
+                    let localFlags = mailProjection.byID
                     var flagUpdates: [MailRemoteFlagUpdate] = []
                     let byUID = Dictionary(uniqueKeysWithValues: existing.filter { $0.uidValidity == validity && $0.uid > 0 }.map { ($0.uid, $0) })
-                    for (uid, flag) in flags.sorted(by: { $0.key > $1.key }) {
+                    let ordered = flags.sorted(by: { $0.key > $1.key })
+                    var lastProgress = Date.distantPast
+                    for (position, entry) in ordered.enumerated() {
+                        try Task.checkCancellation()
+                        let (uid, flag) = entry
+                        if Date().timeIntervalSince(lastProgress) >= 0.25 {
+                            mailSyncProgress = .init(processed: position, total: ordered.count, downloaded: newCount)
+                            lastProgress = Date()
+                        }
                         if let old = byUID[uid] {
-                            guard let mail = localFlags[old.id] else { continue }
+                            let missing = localFlags[old.id] == nil ? try await store.messageSummaries(ids: [old.id]).first?.displayMessage : nil
+                            guard let mail = localFlags[old.id] ?? missing else { continue }
                             if mail.localFlagModifiedAt.map({ $0 > inventoryStarted }) == true { continue }
                             let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
                             if mail.isRead != (seen?.0 ?? flag.read) || mail.isStarred != flag.starred {
                                 flagUpdates.append(.init(id: mail.id, read: seen?.0 ?? flag.read, starred: flag.starred, overrideModifiedAt: seen?.1))
-                                if flagUpdates.count == 128 { _ = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted); flagUpdates.removeAll(keepingCapacity: true) }
+                                if flagUpdates.count == 128 {
+                                    _ = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
+                                    replaceCachedMails(try await store.messageSummaries(ids: Set(flagUpdates.map(\.id))).map(\.displayMessage))
+                                    flagUpdates.removeAll(keepingCapacity: true)
+                                }
                             }
                         } else {
                             do {
                                 var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
                                 let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
                                 mail.isRead = seen?.0 ?? flag.read; mail.isStarred = flag.starred; if let seen { mail.localFlagModifiedAt = seen.1 }; mail.analysis = PartnerEngine.baseline(mail)
-                                try await store.upsert(mail); newCount += 1
-                                if newCount % 10 == 0 { await reload(); process() }
-                            } catch { failures.append(account.name + " / " + folder.name + " / UID \(uid)：" + error.localizedDescription) }
+                                mail = try await store.upsert(mail); newCount += 1
+                                incoming.append(Self.validatedMail(mail))
+                                if incoming.count >= 32 || Date().timeIntervalSince(lastPublication) >= 3 {
+                                    await reload(incoming: incoming); incoming.removeAll(keepingCapacity: true); process(); lastPublication = Date()
+                                }
+                            } catch { if Task.isCancelled { throw CancellationError() }; failures.append(account.name + " / " + folder.name + " / UID \(uid)：" + error.localizedDescription) }
                         }
                     }
+                    mailSyncProgress = .init(processed: ordered.count, total: ordered.count, downloaded: newCount)
                     _ = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
-                    for old in existing where old.uid > 0 && (old.uidValidity != validity || flags[old.uid] == nil) { try await store.deleteMessage(old.id) }
+                    replaceCachedMails(try await store.messageSummaries(ids: Set(flagUpdates.map(\.id))).map(\.displayMessage))
+                    var deleted = false
+                    for old in existing where old.uid > 0 && (old.uidValidity != validity || flags[old.uid] == nil) { try Task.checkCancellation(); try await store.deleteMessage(old.id); deleted = true; indexPending.removeValue(forKey: old.id) }
+                    if deleted { await reload(); incoming.removeAll(keepingCapacity: true) }
                 }
-            } catch { failures.append(account.name + "：" + error.localizedDescription) }
+            } catch {
+                if Task.isCancelled { await setAccountSyncState(account, syncing: false, completed: false); break }
+                failures.append(account.name + "：" + error.localizedDescription)
+            }
             let ownFailures = Array(failures.dropFirst(failureStart)); await setAccountSyncState(account, syncing: false, error: ownFailures.isEmpty ? nil : ownFailures.joined(separator: "\n"))
         }
-        await reload(); process()
+        if Task.isCancelled {
+            syncStatus = L10n.t("已停止本次同步，已下载的邮件已保留。")
+            let pending = incoming
+            Task { if !pending.isEmpty { await self.reload(incoming: pending) }; self.process() }
+            return
+        }
+        if !incoming.isEmpty { await reload(incoming: incoming) }; process()
         syncStatus = failures.isEmpty ? "同步于 " + Date().uiFormatted(date: .omitted, time: .shortened) : failures.joined(separator: "\n")
         if newCount > 0 { await log("收到 \(newCount) 封邮件", detail: "已存入本地邮件库，正在索引和整理。", kind: "sync") }
         if !failures.isEmpty { if syncStatus != lastSyncFailure { error = syncStatus }; lastSyncFailure = syncStatus } else { lastSyncFailure = nil }
@@ -416,10 +497,14 @@ enum Destination: String, CaseIterable, Identifiable {
         let inventory = try await transport.popInventory(account, password: secret)
         let known = Set(try await store.syncRecords(account: account.id).compactMap(\.popUID))
         var added = 0; var failures: [String] = []
-        for (uid, number) in inventory.sorted(by: { $0.value > $1.value }) where !known.contains(uid) {
+        let pending = inventory.filter { !known.contains($0.key) }.sorted(by: { $0.value > $1.value })
+        for (position, entry) in pending.enumerated() {
+            try Task.checkCancellation()
+            let (uid, number) = entry
+            mailSyncProgress = .init(processed: position, total: pending.count, downloaded: added)
             syncStatus = "正在下载 \(account.name) / 邮件\(number)"
             do { var mail = try await transport.popFetch(account, uid: uid, number: number, password: secret); mail.analysis = PartnerEngine.baseline(mail); try await store.upsert(mail); added += 1; if added % 10 == 0 { await reload(); process() } }
-            catch { failures.append(account.name + " / 邮件\(number)：" + error.localizedDescription) }
+            catch { if Task.isCancelled { throw CancellationError() }; failures.append(account.name + " / 邮件\(number)：" + error.localizedDescription) }
         }
         // POP3 has no server folders or read flags. Local mail remains after remote deletion.
         await transport.closePOP(account)
@@ -436,15 +521,22 @@ enum Destination: String, CaseIterable, Identifiable {
         scheduleProfileAnalysis()
         Task { await runResponders() }
         analyzeNew()
-        guard processingTask == nil else { return }
-        processingTask = Task { [weak self] in
+        let configuration = settings.embeddingDirectory + ":" + String(settings.indexAttachments)
+        guard processingTask == nil, indexBootstrappedConfiguration != configuration || !indexPending.isEmpty else { return }
+        processingTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
-            var continueBacklog = false
-            defer { self.processingTask = nil; if continueBacklog && !Task.isCancelled { self.process() } }
+            var completedPass = false
+            defer { self.processingTask = nil; if completedPass && !self.indexPending.isEmpty && !Task.isCancelled { self.process() } }
             do { try await index.load(directory: settings.embeddingDirectory) }
             catch { indexFailure = error.localizedDescription; indexStatus = error.localizedDescription; return }
             let snapshot: [String]
-            do { snapshot = try await index.pendingMessageIDs(mails, store: store, attachments: settings.indexAttachments) }
+            let pending = indexPending
+            let candidates = indexBootstrappedConfiguration == configuration ? pending.keys.compactMap { mailProjection.byID[$0] } : mails
+            do {
+                snapshot = try await index.pendingMessageIDs(candidates, store: store, attachments: settings.indexAttachments)
+                indexBootstrappedConfiguration = configuration
+                for (id, version) in pending where indexPending[id] == version { indexPending.removeValue(forKey: id) }
+            }
             catch { indexFailure = error.localizedDescription; indexStatus = error.localizedDescription; return }
             var lastRefresh = Date.distantPast
             var lastProgressUpdate = Date.distantPast
@@ -456,18 +548,18 @@ enum Destination: String, CaseIterable, Identifiable {
                 do {
                     let changed = try await index.index(mail, store: store, attachments: settings.indexAttachments)
                     if changed { indexFailure = nil }
-                    if changed && Date().timeIntervalSince(lastRefresh) >= 1 { indexCount = try await store.indexCount(); scheduleSearchRefresh(); lastRefresh = Date() }
-                } catch { indexFailure = error.localizedDescription; indexStatus = error.localizedDescription; return }
+                    if changed && Date().timeIntervalSince(lastRefresh) >= 1 { await refreshIndexCount(); scheduleSearchRefresh(); lastRefresh = Date() }
+                } catch { indexFailure = error.localizedDescription; indexStatus = error.localizedDescription; indexBootstrappedConfiguration = nil; return }
             }
-            await reload()
+            await refreshIndexCount(force: !syncBusy)
             if indexFailure == nil { indexStatus = "\(indexCount) 封邮件已建立向量索引" }
             await runDelegations()
-            continueBacklog = indexCount < mailCount
+            completedPass = true
         }
     }
     private func analyzeNew() {
         guard analysisTask == nil, settings.enabled, settings.autoAnalyze else { return }
-        analysisTask = Task { [weak self] in
+        analysisTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }; defer { self.analysisTask = nil }
             let pendingIDs = mails.filter { $0.analysis == nil || $0.analysis?.source == "规则分析" || $0.analysis?.evidenceVersion != MailEvidence.version }.map(\.id)
             for id in pendingIDs {
@@ -501,16 +593,17 @@ enum Destination: String, CaseIterable, Identifiable {
         // it on every new snapshot. Existing hits resolve against current mail.
         guard searchMode else { return }
         searchNeedsRefresh = true
-        guard !searchBusy, searchRefreshTask == nil else { return }
+        guard !syncBusy, !searchBusy, searchRefreshTask == nil else { return }
         let query = searchText
         searchRefreshTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
             guard let self, !Task.isCancelled else { return }
             self.searchRefreshTask = nil
-            guard self.searchMode, self.searchText == query, !self.searchBusy else { return }
+            guard !self.syncBusy, self.searchMode, self.searchText == query, !self.searchBusy else { return }
             self.search(preserveSelection: true)
         }
     }
+    var searchUpdatesAvailable: Bool { searchMode && searchNeedsRefresh && !searchBusy }
     func search(preserveSelection: Bool = false) {
         searchRefreshTask?.cancel(); searchRefreshTask = nil
         searchNeedsRefresh = false; searchGeneration += 1
@@ -570,10 +663,17 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     private func replaceCachedMails(_ updates: [MailMessage]) {
         guard !updates.isEmpty else { return }
+        let pendingEpoch = indexPendingEpoch
         var updated = mails
         localMutationEpoch += 1
-        for mail in updates { if let position = mailProjection.positions[mail.id], updated.indices.contains(position) { updated[position] = Self.validatedMail(mail); localMutationVersions[mail.id] = localMutationEpoch } }
+        for mail in updates { if let position = mailProjection.positions[mail.id], updated.indices.contains(position) { let header = Self.validatedMail(mail); if Self.indexInputsChanged(updated[position], header) { enqueueIndex(mail.id) }; updated[position] = header; localMutationVersions[mail.id] = localMutationEpoch } }
         publishMetadataSnapshot(updated, ids: Set(updates.map(\.id)))
+        if started && indexPendingEpoch != pendingEpoch { process() }
+    }
+    private func enqueueIndex(_ id: String) { indexPendingEpoch += 1; indexPending[id] = indexPendingEpoch }
+    private nonisolated static func indexInputsChanged(_ old: MailMessage?, _ new: MailMessage) -> Bool {
+        guard let old else { return true }
+        return old.contentRevision != new.contentRevision || old.subject != new.subject || old.from != new.from || old.date != new.date || old.note != new.note || old.labels != new.labels || old.attachments != new.attachments
     }
     private func publishMetadataSnapshot(_ updated: [MailMessage], ids: Set<String>) {
         let changes = ids.compactMap { id in mailProjection.positions[id].flatMap { updated.indices.contains($0) ? updated[$0] : nil } }
@@ -601,7 +701,9 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     func cacheLabelAddition(_ ids: Set<String>, label: String) {
         guard !ids.isEmpty else { return }; var updated = mails; localMutationEpoch += 1
-        for id in ids { if let position = mailProjection.positions[id], updated.indices.contains(position) { if !updated[position].labels.contains(label) { updated[position].labels.append(label) }; localMutationVersions[id] = localMutationEpoch } }; publishMetadataSnapshot(updated, ids: ids)
+        let pendingEpoch = indexPendingEpoch
+        for id in ids { if let position = mailProjection.positions[id], updated.indices.contains(position) { if !updated[position].labels.contains(label) { updated[position].labels.append(label); enqueueIndex(id) }; localMutationVersions[id] = localMutationEpoch } }; publishMetadataSnapshot(updated, ids: ids)
+        if started && indexPendingEpoch != pendingEpoch { process() }
     }
     func noteBulkSeen(account: String, folder: String, validity: UInt64, uids: [UInt64], value: Bool, modifiedAt: Date) {
         for uid in uids { bulkSeenOverrides[.init(account: account, folder: folder, validity: validity, uid: uid)] = (value, modifiedAt) }

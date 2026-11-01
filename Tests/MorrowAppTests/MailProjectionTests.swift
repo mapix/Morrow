@@ -1,8 +1,38 @@
 import XCTest
 import MorrowCore
+import CMail
 @testable import MorrowApp
 
 final class MailProjectionTests: XCTestCase {
+    @MainActor func testInboxProjectionUsesInboxRepresentativeAndKeepsExplicitFolderAliases() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = AppModel(root: root); defer { try? FileManager.default.removeItem(at: root) }
+        var inbox = MailMessage(accountID: "fixture", from: .init(email: "sender@example.invalid"), subject: "same", text: "preview")
+        inbox.id = "inbox"; inbox.messageID = "same@example.invalid"
+        var archive = inbox; archive.id = "archive"; archive.folder = "Archive"
+        model.folders = [.init(accountID: "fixture", path: "INBOX", role: "inbox"), .init(accountID: "fixture", path: "Archive", role: "archive")]
+        model.mails = [archive, inbox]; model.destination = .inbox
+        XCTAssertEqual(model.visibleMails.map(\.id), [inbox.id])
+        model.selectedFolder = "INBOX"
+        XCTAssertEqual(model.visibleMails.map(\.id), [inbox.id])
+        model.selectedFolder = "Archive"
+        XCTAssertEqual(model.visibleMails.map(\.id), [archive.id])
+    }
+    @MainActor func testIncomingBatchMergesCacheWithoutScanningOtherStoredBodies() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = AppModel(root: root); defer { try? FileManager.default.removeItem(at: root) }
+        model.settings.enabled = false
+        let original = try await model.store.upsert(MailMessage(accountID: "fixture", from: .init(email: "sender@example.invalid"), subject: "original", text: "original"))
+        await model.reload()
+        var db: OpaquePointer?; XCTAssertEqual(sqlite3_open(root.appendingPathComponent("mail.sqlite").path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "UPDATE messages SET json=x'7b'; UPDATE message_projections SET json=x'7b'", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+        let incoming = try await model.store.upsert(MailMessage(accountID: "fixture", from: .init(email: "new@example.invalid"), subject: "new", text: "new body"))
+        await model.reload(incoming: [incoming])
+        XCTAssertNil(model.error); XCTAssertEqual(model.mailCount, 2)
+        XCTAssertEqual(model.mailByID(original.id)?.subject, original.subject)
+        XCTAssertEqual(model.mailByID(incoming.id)?.subject, incoming.subject)
+    }
     @MainActor func testIncrementalFlagsNeverReuseAnotherDestinationCache() {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = AppModel(root: root); defer { try? FileManager.default.removeItem(at: root) }

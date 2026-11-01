@@ -62,8 +62,9 @@ public enum ContactProfileBuilder {
                 let bytes = value.utf8; var start = bytes.startIndex
                 while start < bytes.endIndex { let end = bytes.index(start, offsetBy: 64 * 1024, limitedBy: bytes.endIndex) ?? bytes.endIndex; digest.update(data: Data(bytes[start..<end])); start = end }
             }
+            append("profile-metadata-v1")
             for mail in mails.sorted(by: { $0.canonicalID < $1.canonicalID }) {
-                append(mail.canonicalID); append(mail.subject); append(mail.text)
+                append(mail.canonicalID); append(mail.subject); append(mail.contentRevision ?? MailStore.hash(mail.text))
                 for participant in participants(mail) { append(participant.name); append(participant.email) }
             }
             append(name)
@@ -72,6 +73,11 @@ public enum ContactProfileBuilder {
             if let old = prior[email] { p.claims = old.claims; p.analysisFingerprint = old.analysisFingerprint; p.analysisStatus = old.analysisStatus; p.analyzedAt = old.analyzedAt; p.analyzedMailVersions = old.analyzedMailVersions; p.analysisRetryAt = old.analysisRetryAt; p.correction = old.correction; if p.fingerprint != old.fingerprint { p.analysisStatus = "历史往来已更新，等待重新整理线索" } }
             return p
         }.sorted { ($0.lastSeen ?? .distantPast) > ($1.lastSeen ?? .distantPast) }
+    }
+    public static func canPreserveCompletedAnalysis(_ old: ContactProfile, _ updated: ContactProfile, versions: [String: String]) -> Bool {
+        guard old.analysisFingerprint == "profile-ai-v2:" + old.fingerprint, let analyzed = old.analyzedMailVersions,
+              Set(old.mailIDs) == Set(updated.mailIDs), updated.mailIDs.allSatisfy({ analyzed[$0] == versions[$0] && versions[$0] != nil }) else { return false }
+        return old.name == updated.name && old.aliases == updated.aliases && old.accountIDs == updated.accountIDs && old.received == updated.received && old.sent == updated.sent && old.copied == updated.copied && old.firstSeen == updated.firstSeen && old.lastSeen == updated.lastSeen && old.topics == updated.topics
     }
     public static func validatedClaims(_ claims: [ProfileClaim], mails: [MailMessage]) -> [ProfileClaim] {
         claims.filter { claim in guard let mail = mails.first(where: { $0.id == claim.mailID }), !claim.quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }; return (mail.subject + "\n" + mail.text).contains(claim.quote) }

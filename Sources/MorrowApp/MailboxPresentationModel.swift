@@ -21,10 +21,10 @@ extension AppModel {
             try await store.upsert(unread); try await store.upsert(read); await reload(); process()
         } catch { self.error = error.localizedDescription }
     }
-    func setAccountSyncState(_ account: MailAccount, syncing: Bool, error: String? = nil) async {
+    func setAccountSyncState(_ account: MailAccount, syncing: Bool, error: String? = nil, completed: Bool = true) async {
         var status = accountSyncStates[account.id] ?? AccountSyncState(accountID: account.id)
         status.syncing = syncing; status.error = error
-        if !syncing && error == nil { status.lastSyncAt = Date() }
+        if !syncing && error == nil && completed { status.lastSyncAt = Date() }
         accountSyncStates[account.id] = status; try? await store.save(status, kind: "account-sync-state", id: account.id)
     }
 }
