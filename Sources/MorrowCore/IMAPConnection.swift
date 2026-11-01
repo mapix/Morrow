@@ -74,13 +74,17 @@ public actor IMAPConnection {
         let result = try await command("UID FETCH \(uid) (UID BODY.PEEK[])")
         guard let data = result.literals.first, !data.isEmpty else { throw MailError.message("服务器未返回邮件正文。") }; return data
     }
-    public func fetchMany(folder: String, uids: [UInt64], expectedValidity: UInt64) async throws -> [UInt64: Data] {
-        guard !uids.isEmpty, uids.count <= 8, Set(uids).count == uids.count,
+    public struct DownloadTiming: Sendable { public var sizeSeconds: Double = 0; public var bodySeconds: Double = 0; public var bytes = 0; public var count = 0 }
+    public private(set) var downloadTiming = DownloadTiming()
+    public func fetchMany(folder: String, uids: [UInt64], expectedValidity: UInt64, maximumBatchBytes: UInt64 = 64 * 1024 * 1024 - 128 * 1024) async throws -> [UInt64: Data] {
+        guard !uids.isEmpty, uids.count <= 64, Set(uids).count == uids.count,
               uids.allSatisfy({ $0 > 0 && $0 <= UInt64(UInt32.max) }) else { throw MailError.message("批量读取的 UID 无效。") }
         let current = try await select(folder)
         guard current == expectedValidity else { throw MailError.message("文件夹已在服务器重建，请重新同步。") }
         let set = uids.map(String.init).joined(separator: ",")
+        let sizeStarted = ProcessInfo.processInfo.systemUptime
         let metadata = try await command("UID FETCH \(set) (UID RFC822.SIZE)")
+        downloadTiming.sizeSeconds = ProcessInfo.processInfo.systemUptime - sizeStarted
         var sizes: [UInt64: UInt64] = [:]
         for line in metadata.lines {
             guard let rawUID = MIMEParser.capture(#"(?i)\bUID\s+(\d+)\b"#, line), let uid = UInt64(rawUID),
@@ -88,11 +92,15 @@ public actor IMAPConnection {
             if let old = sizes[uid], old != size { throw MailError.message("批量邮件大小响应不一致。") }
             sizes[uid] = size
         }
-        let eligible = Self.boundedBodyBatch(uids: uids, sizes: sizes)
+        let eligible = Self.boundedBodyBatch(uids: uids, sizes: sizes, maximumBytes: maximumBatchBytes)
         guard !eligible.isEmpty else { return [:] }
         let bodySet = eligible.map(String.init).joined(separator: ",")
+        let bodyStarted = ProcessInfo.processInfo.systemUptime
         let reply = try await command("UID FETCH \(bodySet) (UID BODY.PEEK[])")
-        return try Self.fetchedBodies(lines: reply.lines, literals: reply.literals, allowed: Set(eligible))
+        let bodies = try Self.fetchedBodies(lines: reply.lines, literals: reply.literals, allowed: Set(eligible))
+        downloadTiming.bodySeconds = ProcessInfo.processInfo.systemUptime - bodyStarted
+        downloadTiming.bytes = bodies.values.reduce(0) { $0 + $1.count }; downloadTiming.count = bodies.count
+        return bodies
     }
     static func boundedBodyBatch(uids: [UInt64], sizes: [UInt64: UInt64], maximumBytes: UInt64 = 64 * 1024 * 1024) -> [UInt64] {
         var selected: [UInt64] = [], used: UInt64 = 0

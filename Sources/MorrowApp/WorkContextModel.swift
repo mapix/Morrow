@@ -4,6 +4,7 @@ import MorrowCore
 extension AppModel {
     func workContextLimit(_ context: WorkspaceContext?, instruction: String) throws -> WorkContextLimit? {
         guard let context else { return nil }
+        guard context.scopeMode != "hint" else { return nil }
         if context.page == "materials" { throw MailError.message("仅带入资料暂不支持持续邮箱委托。资料已保留在这条对话中；切回普通对话可先分析资料，或选择原邮件再形成委托。") }
         if context.page == "attachments" || !context.attachmentIDs.isEmpty { throw MailError.message("所选附件可以先在普通对话中分析。持续邮箱委托会读取原邮件，目前不能只关注附件；请打开所需原邮件后再形成委托。你的要求和资料已保留。") }
         if context.draftID != nil { throw MailError.message("当前是草稿范围，可以直接要求润色或修改。持续邮箱委托请先选择相关原邮件；本次要求已保留。") }

@@ -18,7 +18,7 @@ extension AppModel {
     }
     func beginSidebarChat() {
         guard !partnerBusy, sidebarTask == nil, !materialBusy, !chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chatMaterials.isEmpty else { return }
-        let snapshot = ChatSubmission(sessionID: activeSessionID, instruction: chatInput, materials: chatMaterials, context: chatPinnedContext ?? currentContext, newWork: newChatWork)
+        let snapshot = ChatSubmission(sessionID: activeSessionID, instruction: chatInput, materials: chatMaterials, context: resolvedChatContext, newWork: newChatWork)
         chatInput = ""; chatMaterials = []; newChatWork = false
         if chatPinnedContext?.page == "materials" { chatPinnedContext = nil }
         persistCurrentSessionDraft(); executingSessionID = snapshot.sessionID
@@ -28,7 +28,7 @@ extension AppModel {
     func submitSidebarChat(_ submission: ChatSubmission? = nil) async {
         let instruction = (submission?.instruction ?? chatInput).trimmingCharacters(in: .whitespacesAndNewlines)
         let materials = submission?.materials ?? chatMaterials
-        let context = submission?.context ?? chatPinnedContext ?? currentContext
+        let context = submission?.context ?? resolvedChatContext
         let formingWork = submission?.newWork ?? newChatWork
         guard !partnerBusy, !materialBusy, !instruction.isEmpty || !materials.isEmpty else { return }
         if submission == nil { chatInput = ""; chatMaterials = []; newChatWork = false; persistCurrentSessionDraft() }
@@ -73,20 +73,20 @@ extension AppModel {
         throw MailError.message("没有这个页面：" + text)
     }
     func sidebarQuery(_ operation: PartnerOperation, context: WorkspaceContext?) async throws -> String {
-        if context?.page == "materials" { throw MailError.message("本轮范围仅限带入资料，未读取邮箱索引。") }
+        if context?.enforcesMailScope == true && context?.page == "materials" { throw MailError.message("本轮范围仅限带入资料，未读取邮箱索引。") }
         switch operation.type {
         case "contacts":
             let inventory = contactProfiles.filter { p in
-                if let contact = context?.contactEmail { return p.email.caseInsensitiveCompare(contact) == .orderedSame }
-                if let context, context.hasMailScope { return !Set(p.mailIDs).isDisjoint(with: context.mailIDs) }
+                if context?.enforcesMailScope == true, let contact = context?.contactEmail { return p.email.caseInsensitiveCompare(contact) == .orderedSame }
+                if let context, context.enforcesMailScope { return !Set(p.mailIDs).isDisjoint(with: context.mailIDs) }
                 return true
             }
             let matching = inventory.filter { (operation.text ?? "").isEmpty || ($0.display + $0.email + $0.topics.joined()).localizedCaseInsensitiveContains(operation.text!) }
             return "当前范围联系人：\(inventory.count)，查询匹配：\(matching.count)，下列最多60项：\n" + matching.prefix(60).map { p in "\(p.display)<\(p.email)>；往来\(p.mailCount)封；对方发来\(p.received)封、用户发给对方\(p.sent)封；主题：\(p.topics.prefix(8).joined(separator: "、"))；来源ID：\(p.mailIDs.prefix(12).joined(separator: ","))" }.joined(separator: "\n")
         case "attachments":
             let records = attachmentRecords.filter { record in
-                if let context, context.hasMailScope, context.page != "attachments", !submittedMailIDs(context).contains(record.mail.id) { return false }
-                if context?.page == "attachments" {
+                if let context, context.enforcesMailScope, context.page != "attachments", !submittedMailIDs(context).contains(record.mail.id) { return false }
+                if context?.enforcesMailScope == true && context?.page == "attachments" {
                     if let ids = context?.attachmentIDs, !ids.isEmpty, !ids.contains(record.id) { return false }
                     if let kind = context?.filter, kind != "全部", record.kind != kind { return false }
                     if let query = context?.query, !query.isEmpty, !(record.attachment.name + record.mail.subject + record.mail.from.display).localizedCaseInsensitiveContains(query) { return false }
@@ -96,7 +96,7 @@ extension AppModel {
         case "readAttachment":
             guard let entry = attachmentRecords.first(where: { $0.id == operation.text }) else { throw MailError.message("附件不存在。") }
             try validateChatOperation(operation, context: context)
-            if let context, !context.attachmentIDs.isEmpty, !context.attachmentIDs.contains(entry.id) { throw MailError.message("附件不在本轮选择范围内。") }
+            if let context, context.enforcesMailScope, !context.attachmentIDs.isEmpty, !context.attachmentIDs.contains(entry.id) { throw MailError.message("附件不在本轮选择范围内。") }
             let result = try await AttachmentTextExtractor.shared.extract(entry.attachment, store: store)
             return "附件：\(entry.attachment.name)；邮件来源ID：\(entry.mail.id)；方式：\(result.source)\n" + result.text + (result.failure.map { "\n未读部分：" + $0 } ?? "") + (result.truncated ? "\n提取有截断，不能声称读完全文。" : "")
         default: throw MailError.message("未知读取工具。")

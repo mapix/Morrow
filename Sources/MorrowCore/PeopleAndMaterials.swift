@@ -159,6 +159,9 @@ public struct MailListContextDescriptor: Codable, Sendable, Equatable {
 }
 
 public struct WorkspaceContext: Codable, Sendable, Equatable {
+    /// Browsing supplies referents and optional evidence, never authority.
+    /// "scope" is only set for an intentional user restriction.
+    public var scopeMode: String?
     public var page: String
     public var label: String
     public var mailIDs: [String]

@@ -44,6 +44,9 @@ extension AppModel {
     }
     var selectedProfile: ContactProfile? { contactProfiles.first { $0.email == selectedContactEmail } }
     var currentContext: WorkspaceContext {
+        var value = currentContextSnapshot; value.scopeMode = "hint"; return value
+    }
+    private var currentContextSnapshot: WorkspaceContext {
         if let preview = attachmentTextPreview, let record = attachmentRecords.first(where: { $0.attachment.id == preview.id }) { return .init(page: "attachments", label: preview.name, mailIDs: [record.mail.id], attachmentIDs: [record.id]) }
         if let draft = composer { var c = WorkspaceContext(page: "compose", label: draft.subject.isEmpty ? "正在编辑邮件草稿" : draft.subject); c.draftID = draft.id; c.accountID = draft.accountID; return c }
         if workspacePage == .mail && destination == .drafts { return WorkspaceContext(page: "drafts", label: "草稿箱") }

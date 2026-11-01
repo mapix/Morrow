@@ -133,6 +133,7 @@ struct RootView: View {
     }
     @ViewBuilder private var footer: some View {
         if model.syncBusy { MailSyncStatusLine() }
+        if model.mailProcessingBusy || model.mailProcessingFailure != nil { MailProcessingStatusLine() }
         if let activity, !(model.chatExpanded && activity.kind == .currentConversation) {
             Button { reveal(activity) } label: {
                 HStack(spacing: 7) {

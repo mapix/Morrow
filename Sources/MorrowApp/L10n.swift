@@ -57,6 +57,17 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}", "决策复核 {0}/{1} · {2}"]
     static let catalog: [String: (String, String)] = [
+        "核对 {0}/{1} · 已保存原文 {2}": ("Checked {0}/{1} · Raw messages saved: {2}", "照合 {0}/{1}・原文保存済み：{2}件"),
+        "重试后台加工": ("Retry processing", "後処理を再試行"),
+        "服务器大小查询 {0} 秒 · 正文下载 {1} 秒": ("Server size query: {0}s · Body download: {1}s", "サーバーのサイズ照会：{0}秒・本文取得：{1}秒"),
+        "最近解析 {0} 秒 · 写入 {1} 秒": ("Last parse: {0}s · Store: {1}s", "直近の解析：{0}秒・保存：{1}秒"),
+        "最近下载：{0} 封 / {1} 秒": ("Last download: {0} messages / {1}s", "直近のダウンロード：{0}件 / {1}秒"),
+        "后台加工：已整理 {0} · 等待 {1}": ("Processing: {0} ready · {1} pending", "後処理：{0}件完了・{1}件待機"),
+        "界面内容仅帮助理解指代，不限制任务或邮件检索。": ("UI content helps resolve references; it does not restrict tasks or searches.", "画面は参照対象のヒントであり、タスクや検索範囲を制限しません。"),
+        "恢复跟随界面提示": ("Follow UI hints again", "画面ヒントの追従に戻る"),
+        "明确限定为当前内容": ("Restrict to current content", "現在の内容に範囲を限定"),
+        "已限定：": ("Restricted to: ", "明示された範囲："),
+        "界面提示：": ("UI hint: ", "画面のヒント："),
         "自己写的、伙伴生成的，以及等待投递的邮件集中保存在这里。": ("Your drafts, AI drafts, and queued messages are kept here.", "自分で書いた下書き、AIの下書き、送信待ちメールをまとめて表示します。"),
         "搜索主题、收件人或正文": ("Search subject, recipient, or message", "件名・宛先・本文を検索"),
         "编辑与预览": ("Edit and preview", "編集とプレビュー"),

@@ -2,8 +2,13 @@ import Foundation
 import MorrowCore
 
 extension AppModel {
-    /// A list supplies a search boundary. Selected content is the only mail
-    /// evidence supplied before the agent requests a reading tool.
+    var resolvedChatContext: WorkspaceContext {
+        if var pinned = chatPinnedContext { if pinned.scopeMode == nil { pinned.scopeMode = "scope" }; return pinned }
+        return currentContext
+    }
+    func pinCurrentChatScope() { var context = currentContext; context.scopeMode = "scope"; chatPinnedContext = context }
+    /// Browsing supplies referents; only intentional scopes constrain searches.
+    /// Selected content is the only initial mail evidence before a reading tool.
     func initialChatEvidence(_ context: WorkspaceContext?) async throws -> [MailMessage] {
         guard let context, context.hasExplicitMailSelection else { return [] }
         var seen = Set<String>(), result: [MailMessage] = []
@@ -23,7 +28,8 @@ extension AppModel {
         return value
     }
     func chatScopeLabel(_ context: WorkspaceContext) -> String {
+        if context.scopeMode == "hint" { return L10n.t("界面提示：") + context.label }
         if context.page == "mail-list", context.mailList == nil { return L10n.t("已固定的邮件检索范围") }
-        return context.label
+        return L10n.t("已限定：") + context.label
     }
 }

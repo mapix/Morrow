@@ -553,11 +553,37 @@ public actor MailStore {
         try execute("DELETE FROM messages WHERE id=?", [.text(id)])
     }
     public func deleteAccount(_ id: String) throws {
+        for job in try queuedMailDownloads() where job.accountID == id { try discardQueuedMailDownload(job) }
         for record in try syncRecords(account: id, folder: nil) { try deleteMessage(record.id) }
         try remove(kind: "account", id: id)
         for f in try load(MailFolder.self, kind: "folder") where f.accountID == id { try remove(kind: "folder", id: f.id) }
     }
     public func rawData(_ message: MailMessage) throws -> Data { message.raw.isEmpty ? try Data(contentsOf: rawURL(message.id)) : message.raw }
+    public func queuedMailDownloads() throws -> [MailDownloadJob] {
+        try load(MailDownloadJob.self, kind: "mail-download").sorted { $0.downloadedAt < $1.downloadedAt }
+    }
+    public func mailDownloadQueueState() throws -> MailDownloadQueueState {
+        let jobs = try queuedMailDownloads(); return .init(count: jobs.count, bytes: jobs.reduce(0) { $0 + $1.byteCount })
+    }
+    @discardableResult public func queueMailDownload(_ raw: Data, job: MailDownloadJob) throws -> Bool {
+        guard raw.count == job.byteCount, raw.count > 0, raw.count <= 64 * 1024 * 1024, job.uid > 0 else { throw MailError.message("下载邮件数据与任务不一致。") }
+        if try object(MailDownloadJob.self, kind: "mail-download", id: job.id) != nil || !messageSummaries(ids: [job.id]).isEmpty { return false }
+        let state = try mailDownloadQueueState()
+        guard state.count < MailDownloadJob.maximumPending, raw.count <= MailDownloadJob.maximumPendingBytes - state.bytes else { throw MailError.message("邮件加工队列已达到缓存预算。") }
+        try privateWrite(raw, to: rawURL(job.id)); try save(job, kind: "mail-download", id: job.id); return true
+    }
+    public func commitDownloadedMail(_ value: MailMessage, job: MailDownloadJob) throws -> MailMessage? {
+        guard value.id == job.id, value.accountID == job.accountID, value.folder == job.folder, value.uid == job.uid, value.uidValidity == job.validity else { throw MailError.message("加工结果不属于下载来源。") }
+        guard try object(MailDownloadJob.self, kind: "mail-download", id: job.id) != nil else { return nil }
+        var mail = value; mail.raw = Data()
+        try execute("BEGIN IMMEDIATE")
+        do { let saved = try upsert(mail); try remove(kind: "mail-download", id: job.id); try execute("COMMIT"); return saved }
+        catch { try? execute("ROLLBACK"); throw error }
+    }
+    public func discardQueuedMailDownload(_ job: MailDownloadJob) throws {
+        try remove(kind: "mail-download", id: job.id)
+        if try messageSummaries(ids: [job.id]).isEmpty { try? FileManager.default.removeItem(at: rawURL(job.id)) }
+    }
     public func rawHeader(_ message: MailMessage) throws -> Data {
         if !message.raw.isEmpty { return Data(message.raw.prefix(65536)) }
         let handle = try FileHandle(forReadingFrom: rawURL(message.id)); defer { try? handle.close() }

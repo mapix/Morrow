@@ -13,7 +13,7 @@ struct SidebarChatView: View {
     @State private var voiceBase = ""
     @State private var voiceSessionID = ""
     @State private var historyLimit = 60
-    private var context: WorkspaceContext { model.chatPinnedContext ?? model.currentContext }
+    private var context: WorkspaceContext { model.resolvedChatContext }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
@@ -66,14 +66,14 @@ struct SidebarChatView: View {
     }
     private var scopeAnchor: some View {
         Menu {
-            Button(model.chatPinnedContext == nil ? L10n.t("固定此范围") : L10n.t("跟随左侧内容")) { model.chatPinnedContext = model.chatPinnedContext == nil ? model.currentContext : nil }
+            Button(model.chatPinnedContext == nil ? L10n.t("明确限定为当前内容") : L10n.t("恢复跟随界面提示")) { if model.chatPinnedContext == nil { model.pinCurrentChatScope() } else { model.chatPinnedContext = nil } }
             Button(L10n.t("仅使用本轮文件")) { model.newChatWork = false; model.chatPinnedContext = .init(page: "materials", label: L10n.t("本轮带入资料")) }
             Button(L10n.t("在全部邮箱中检索")) { model.newChatWork = false; model.chatPinnedContext = .init(page: "global", label: L10n.t("检索范围：全部邮箱")) }
             Divider(); Button(model.newChatWork ? L10n.t("返回普通对话") : L10n.t("形成新委托")) { model.newChatWork.toggle() }
         } label: {
             HStack(spacing: 7) { Image(systemName: model.chatPinnedContext == nil ? "link" : "pin.fill").foregroundStyle(Theme.accent2); Text(model.chatScopeLabel(context)).lineLimit(1); Spacer(minLength: 0); if model.newChatWork { Text(L10n.t("新委托")).foregroundStyle(Theme.accent2) }; Image(systemName: "chevron.down").font(Theme.small).foregroundStyle(Theme.muted) }.font(Theme.context).padding(.leading, 10).frame(minHeight: 28)
         }.menuStyle(.borderlessButton).menuIndicator(.hidden).overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 1).fill(Theme.accent2).frame(width: 2, height: 20) }
-            .help(L10n.t("邮件在此范围内按需检索。") + " " + model.chatScopeLabel(context)).accessibilityLabel((model.newChatWork ? L10n.t("新委托，") : "") + model.chatScopeLabel(context))
+            .help(context.scopeMode == "hint" ? L10n.t("界面内容仅帮助理解指代，不限制任务或邮件检索。") : L10n.t("这是你明确限定的资料范围，可在菜单中恢复界面提示。")).accessibilityLabel((model.newChatWork ? L10n.t("新委托，") : "") + model.chatScopeLabel(context))
     }
     private var composer: some View {
         let sessionID = model.activeSessionID

@@ -39,7 +39,7 @@ final class MailListContextTests: XCTestCase {
         var inbox = original; inbox.messageID = "<same-synthetic-mail>"; archive.messageID = inbox.messageID
         model.mails = [inbox, read, archive, other]
         model.selectedAccount = "a"; model.unreadOnly = true; model.category = .work
-        let captured = model.currentContext
+        var captured = model.currentContext; captured.scopeMode = "scope"
         var added = MailAccount(); added.id = "new"; added.email = "new@example.invalid"; model.accounts.append(added)
         model.mails.append(mail(account: "new"))
         model.selectedAccount = "b"; model.selectedFolder = "Archive"; model.destination = .trash; model.unreadOnly = false; model.category = .finance
@@ -53,7 +53,7 @@ final class MailListContextTests: XCTestCase {
         let model = model(); defer { try? FileManager.default.removeItem(at: model.store.root) }
         let a = mail(account: "a"), b = mail(account: "b")
         model.mails = [a, b]
-        let captured = model.currentContext
+        var captured = model.currentContext; captured.scopeMode = "scope"
         var added = MailAccount(); added.id = "new"; model.accounts.append(added)
         let newest = mail(account: "new"); model.mails.append(newest)
         XCTAssertEqual(model.submittedMailIDs(captured), [a.id, b.id])
@@ -86,7 +86,7 @@ final class MailListContextTests: XCTestCase {
         try await model.store.upsert(inbox); try await model.store.upsert(archive)
         try await model.store.putVectors(messageID: inbox.id, chunks: ["Inbox source"], vectors: [[1, 0]], model: "scope-fixture", hash: "inbox")
         try await model.store.putVectors(messageID: archive.id, chunks: ["Archive source"], vectors: [[1, 0]], model: "scope-fixture", hash: "archive")
-        let captured = model.currentContext
+        var captured = model.currentContext; captured.scopeMode = "scope"
         let hits = try await model.store.vectorSearch([1, 0], model: "scope-fixture", allowedIDs: model.submittedMailIDs(captured))
         XCTAssertEqual(hits.map(\.message.id), [inbox.id])
         XCTAssertNoThrow(try model.validateChatOperation(.init(type: "markRead", messageID: hits.first?.message.id), context: captured))

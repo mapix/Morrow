@@ -21,6 +21,7 @@ public actor MailTransport {
     private struct POPSession { var fingerprint: String; let connection: POP3Client; let gate: NetworkOperationGate }
     private var sessions: [String: IMAPSession] = [:]
     private var popSessions: [String: POPSession] = [:]
+    public private(set) var downloadTiming = IMAPConnection.DownloadTiming()
     public init() {}
     // Test fixtures may use loopback plaintext. Production account URLs are always TLS.
     public func request(url: String, username: String, password: String, command: String = "", upload: Data? = nil, from: String? = nil, recipients: [String] = [], startTLS: Bool = false, testOnly: Bool = false, oauth: Bool = false) async throws -> TransportReply {
@@ -101,6 +102,16 @@ public actor MailTransport {
             messages[uid] = MIMEParser.parse(data, accountID: account.id, folder: folder, uid: uid, validity: validity)
         }
         return messages
+    }
+    public func fetchRawMany(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String) async throws -> [UInt64: Data] {
+        let (bodies, timing) = try await withSession(account, password: password) { connection in
+            let bodies = try await connection.fetchMany(folder: folder, uids: uids, expectedValidity: validity, maximumBatchBytes: 16 * 1024 * 1024)
+            return (bodies, await connection.downloadTiming)
+        }
+        downloadTiming = timing; return bodies
+    }
+    public func fetchRaw(_ account: MailAccount, folder: String, uid: UInt64, validity: UInt64, password: String) async throws -> Data {
+        try await withSession(account, password: password) { try await $0.fetch(folder: folder, uid: uid, expectedValidity: validity) }
     }
     public func setFlag(_ account: MailAccount, message: MailMessage, flag: String, enabled: Bool, password: String) async throws {
         guard ["\\Seen", "\\Flagged", "\\Deleted"].contains(flag), message.uid > 0 else { throw MailError.message("邮件标记无效。") }

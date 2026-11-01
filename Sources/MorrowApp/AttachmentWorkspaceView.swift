@@ -124,6 +124,7 @@ struct AttachmentWorkspaceView: View {
         previewRecord = nil
         finishFocusedChatComposition()
         model.chatPinnedContext = WorkspaceContext(page: "attachments", label: displayName(entry), mailIDs: [entry.mail.id], attachmentIDs: [entry.id])
+        model.chatPinnedContext?.scopeMode = "hint"
         model.chatExpanded = true
         model.chatInput = AttachmentPreviewWords.text("分析当前附件，列出关键事实、需要核对的事项，并引用此附件的来源。", "Analyze this attachment, list key facts and items to verify, and cite this attachment's source.", "この添付ファイルを分析し、重要な事実と確認事項を挙げ、このファイルの出典を引用してください。")
         model.beginSidebarChat()

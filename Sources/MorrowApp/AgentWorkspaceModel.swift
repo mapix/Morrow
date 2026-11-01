@@ -13,7 +13,7 @@ extension AppModel {
             let authority = userInstruction ?? text
             let limit = try workContextLimit(context, instruction: authority)
             if isResponderSetup(authority) {
-                guard context == nil || context?.page == "global" else { throw MailError.message("当前固定范围不会自动变成响应器条件。请到“响应器”独立设置，或先选择“使用整个邮箱”再明确设置邮箱、发件人和条件；本次没有启用规则。") }
+                guard context == nil || context?.scopeMode == "hint" || context?.page == "global" else { throw MailError.message("当前固定范围不会自动变成响应器条件。请到“响应器”独立设置，或先选择“使用整个邮箱”再明确设置邮箱、发件人和条件；本次没有启用规则。") }
                 partnerBusy = false; await proposeResponderInteraction(text); return
             }
             let inventory = limit.map { ceiling in primaryMails.filter(CompiledWorkContext(ceiling).containsExisting) } ?? primaryMails
