@@ -32,7 +32,16 @@ enum ContactProfileInventory {
 
 extension AppModel {
     var attachmentRecords: [MailAttachmentRecord] { attachmentProjection }
-    var filteredAttachments: [MailAttachmentRecord] { attachmentRecords.filter { (attachmentKind == "全部" || $0.kind == attachmentKind) && (attachmentQuery.isEmpty || ($0.attachment.name + $0.mail.subject + $0.mail.from.display).localizedCaseInsensitiveContains(attachmentQuery)) } }
+    var filteredAttachments: [MailAttachmentRecord] {
+        let revision = mailRevision, kind = attachmentKind, query = attachmentQuery
+        if let cached = attachmentFilterProjection, cached.0 == revision, cached.1 == kind, cached.2 == query { return cached.3 }
+        let records = attachmentRecords
+        let filtered = kind == "全部" && query.isEmpty ? records : records.filter {
+            (kind == "全部" || $0.kind == kind) && (query.isEmpty || ($0.attachment.name + $0.mail.subject + $0.mail.from.display).localizedCaseInsensitiveContains(query))
+        }
+        attachmentFilterProjection = (revision, kind, query, filtered)
+        return filtered
+    }
     var selectedProfile: ContactProfile? { contactProfiles.first { $0.email == selectedContactEmail } }
     var currentContext: WorkspaceContext {
         if let preview = attachmentTextPreview, let record = attachmentRecords.first(where: { $0.attachment.id == preview.id }) { return .init(page: "attachments", label: preview.name, mailIDs: [record.mail.id], attachmentIDs: [record.id]) }

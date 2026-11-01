@@ -89,6 +89,7 @@ enum Destination: String, CaseIterable, Identifiable {
     var profileBuildBusy = false
     var profileInventory = ""
     var contactMetadataIndex = ContactProfileMetadataIndex()
+    var attachmentFilterProjection: (Int, String, String, [MailAttachmentRecord])?
     @Published var agentRuns: [AgentRun] = []
     @Published var agentArtifacts: [AgentArtifact] = []
     @Published var agentDecisions: [AgentDecision] = []
@@ -456,10 +457,14 @@ enum Destination: String, CaseIterable, Identifiable {
                             }
                         } else {
                             do {
+                                let fetchStarted = ProcessInfo.processInfo.systemUptime
                                 var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
+                                MailReaderMetrics.record("sync_fetch_and_parse", since: fetchStarted)
                                 let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
                                 mail.isRead = seen?.0 ?? flag.read; mail.isStarred = flag.starred; if let seen { mail.localFlagModifiedAt = seen.1 }; mail.analysis = PartnerEngine.baseline(mail)
+                                let writeStarted = ProcessInfo.processInfo.systemUptime
                                 mail = try await store.upsert(mail); newCount += 1
+                                MailReaderMetrics.record("sync_store_write", since: writeStarted)
                                 incoming.append(Self.validatedMail(mail))
                                 if incoming.count >= 32 || Date().timeIntervalSince(lastPublication) >= 3 {
                                     await reload(incoming: incoming); incoming.removeAll(keepingCapacity: true); process(); lastPublication = Date()
