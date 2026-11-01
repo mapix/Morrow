@@ -16,7 +16,7 @@ ollama pull nimble
 
 Older Clef GGUFs with the `qwen35` architecture are rejected by current Ollama; the current model needs the `clef` architecture and converted decision head. Reimporting the old weights does not convert that head.
 
-In Morrow settings, configure **Retrieval decision model** separately from the thinking model. A remote service receives the selected passages. On iPhone, the address must refer to a reachable service; there is no bundled 9B Nimble model on the phone.
+In Morrow settings, configure **Retrieval decision model** separately from the thinking model. A remote service receives the selected passages. The service address must be reachable from your Mac; the Nimble model is provided by the serving runtime rather than the app bundle.
 
 ## Limits and failures
 

@@ -89,7 +89,7 @@ def path_category(path: str, policy: dict) -> str | None:
     if p.suffix.lower() in FORBIDDEN_SUFFIXES or p.name.lower().endswith((".sqlite-wal", ".sqlite-shm", ".db-wal", ".db-shm")):
         return "runtime-or-sensitive-file"
     if p.suffix.lower() in RASTER_SUFFIXES:
-        reviewed_location = path.startswith("assets/") or path.startswith("website/assets/") or path.startswith("iOS/MorrowMobile/Assets.xcassets/")
+        reviewed_location = path.startswith("assets/") or path.startswith("website/assets/")
         if not reviewed_location or path not in policy.get("reviewed_assets", {}):
             return "unreviewed-binary-asset"
         return None
@@ -98,8 +98,7 @@ def path_category(path: str, policy: dict) -> str | None:
         return "outside-public-allowlist"
     if p.suffix.lower() == ".conf" and path not in policy["allowed_exact"]:
         return "unapproved-configuration-file"
-    third_party_notice = str(p.parent) == "iOS/MorrowMobile/Resources/Notices" and p.name.endswith("-LICENSE")
-    if p.suffix.lower() not in policy["text_suffixes"] and p.name not in {"LICENSE", "NOTICE", ".gitignore", ".gitattributes", "Dockerfile", ".dockerignore"} and not third_party_notice:
+    if p.suffix.lower() not in policy["text_suffixes"] and p.name not in {"LICENSE", "NOTICE", ".gitignore", ".gitattributes", "Dockerfile", ".dockerignore"}:
         return "unapproved-file-type"
     return None
 

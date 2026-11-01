@@ -22,7 +22,7 @@ flowchart LR
 
 ## Tools
 
-The native catalog currently contains70tools. `find_tools` discovers and loads
+The native catalog exposes mail and workspace tools. `find_tools` discovers and loads
 descriptions by purpose so the model does not receive every schema on every
 request. Registered handlers remain available, subject to native checks.
 Discovery controls the schemas shown to the model, while all registered handlers
@@ -42,7 +42,7 @@ with the session; older checkpoints recover names from actual tool invocations.
   uncertainties and bounded tables. Tables use the native OpenUI renderer.
   Saving an output does not certify completion of the underlying task.
 - Virtual file tools, structured planning and SDK specialist agents.
-- Shell analysis through SRT with staged source evidence and no default network.
+- Python and shell analysis through SRT, with scoped mail-data queries and no default network.
 
 `review_send` opens a real draft for user review. It does not bypass the native
 send workflow. Responders retain their separate exact-sender, account, folder,
@@ -65,15 +65,64 @@ unfinished sync/indexing is not presented as complete coverage.
 Mail body pages default to6,000characters and clamp to4,000–8,000characters,
 so the model cannot accidentally spend many turns reading tiny fragments.
 
+Chat starts with a compact directory of the top 20 contacts ranked by direct
+correspondence, plus the total count and remaining page offset. `list_contacts`
+provides pages, direct sent/received counts and representative sources.
+Correspondence counts and address names are evidence for choosing candidates,
+not proof of human identity. `read_mails` reads up to 12 selected messages in
+one call, with a 24,000-character batch limit and explicit per-message offsets.
+
+## Coding data access
+
+`run_code` accepts Python source in `python`, or a shell command in `command`.
+Python can import `maildata` and call `maildata.query(sql, max_rows=1000)`.
+Code can filter, join, group and aggregate the entire permitted local mail
+range, then return concise findings and source IDs to the model.
+
+- `mail_index`: scoped metadata, recipients, subject, snippets, analysis summary,
+  read/star flags, labels and dates.
+- `mail`: the same fields plus lazily read full `text`.
+- `contacts`: names, addresses, correspondence counts and representative IDs.
+- `accounts`: nonsecret IDs, addresses and names.
+
+The host keeps a derived metadata index in memory and opens the original
+database read-only. The query connection never attaches the private database;
+a body function independently checks permitted IDs. Scripts receive a private
+query socket, not database files or credentials. Explicit upload-only scopes
+receive no mail data client. Metadata reflects coding startup; bodies are read
+on demand from the local store.
+
+SQL accepts read queries and selected functions only. Each query has a
+five-second execution budget, a two-MiB SQLite value limit, at most 2000 returned
+rows, 64 KiB per returned cell and 512 KiB per response. `truncated=true` requires
+paging or aggregation; it is not complete coverage. Python requires an existing
+Xcode, Command Line Tools, Homebrew or local interpreter. Scratch output is
+temporary; use report tools for persistent delivery.
+
 ## Storage and performance
 
 - Model and mailbox credentials remain in Swift/Keychain, outside the SDK process.
 - Hosted tracing is disabled; model traffic uses the user's selected provider.
 - SDK checkpoints share the existing mail database, with a128MiB budget.
 - Node's JavaScript heap is limited to256MiB; protocol and tool payloads are bounded.
-- Default budgets are128model turns per agent segment,1,024shared tool calls,
+- Default hard budgets are128shared model turns,1,024shared tool calls,
   and60minutes per run. Settings allow up to512turns,4,096tools and240minutes.
-  Specialist agents use the same turn allowance; their tools share the run budget.
+  Specialist model calls and tools share the run allowance.
+- Ad hoc Chat checks for an answer after20model calls,48tool invocations or
+  90seconds, before its next model request. It then returns the available
+  evidence and outstanding coverage; the current operation may extend elapsed
+  time. Accepted ongoing work keeps its configured hard budgets.
+- Independent tool calls share a model turn and execute at most four at a time.
+  Identical in-flight reads are coalesced; mutations invalidate read caches.
+  Multi-call assistant messages preserve their shared tool-call list.
+- The model-facing context is bounded to196KiB and224messages, with a conservative
+  token/text estimate based on the configured context window. Older tool bodies
+  may be shortened with explicit `contextTruncated` metadata; status, source IDs,
+  offsets and coverage remain distinct from omitted evidence. Complete old
+  exchanges may be replaced by bounded receipt summaries. System authority,
+  the current user request and current authentication replay stay intact. The
+  SDK's original history and saved run state are not rewritten by this view
+  reduction; the separate two-MiB per-state-record budget remains.
 - Turn exhaustion and tool failures save SDK state when available and ask the
   user before continuing. Timeouts preserve session material, the original task
   and its source constraints; a terminated in-flight operation has no guaranteed
@@ -85,8 +134,7 @@ so the model cannot accidentally spend many turns reading tiny fragments.
 - Gateway and Ollama presets retain their own endpoint and model settings.
 - SDK virtual files are not copies of the mailbox or a database backup.
 
-The local macOS engine uses Node22.12or newer, installed or bundled. iOS retains
-its Swift planner until a supported SDK execution host is configured. Apple
+The local macOS engine uses Node22.12or newer, installed or bundled. Apple
 Intelligence continues to support native analysis; this SDK tool engine requires
 a model with tool calling.
 

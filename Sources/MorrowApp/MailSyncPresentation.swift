@@ -1,10 +1,24 @@
 import SwiftUI
+import MorrowCore
 
 struct MailSyncProgress: Equatable {
     var processed = 0
     var total = 0
     var downloaded = 0
+    var reused = 0
+    var serverTotal: Int?
     var fraction: Double? { total > 0 ? min(1, max(0, Double(processed) / Double(total))) : nil }
+    var summary: String {
+        if serverTotal != nil && total == 0 { return L10n.format("本地复用 {0} 封，本轮没有待下载正文", "\(reused)") }
+        return L10n.format("本轮进度 {0}/{1} · 本地复用 {2} · 新下载 {3}", "\(processed)", "\(total)", "\(reused)", "\(downloaded)")
+    }
+    init(processed: Int = 0, total: Int = 0, downloaded: Int = 0, reused: Int = 0, serverTotal: Int? = nil) {
+        self.processed = processed; self.total = total; self.downloaded = downloaded; self.reused = reused; self.serverTotal = serverTotal
+    }
+    init(plan: MailSyncDownloadPlan, processed: Int = 0, downloaded: Int = 0, reusedBodies: Int = 0) {
+        self.init(processed: processed, total: plan.remainingUIDs.count, downloaded: downloaded,
+                  reused: plan.reusedCount + reusedBodies, serverTotal: plan.serverCount)
+    }
 }
 
 struct MailSyncButton: View {
@@ -27,7 +41,7 @@ struct MailSyncButton: View {
                     Text(L10n.status(model.syncStatus)).font(Theme.label).textSelection(.enabled)
                     if let progress = model.mailSyncProgress {
                         if let fraction = progress.fraction { ProgressView(value: fraction).progressViewStyle(.linear) }
-                        if progress.total > 0 { Text(L10n.format("下载 {0}/{1} · 本轮已保存原文 {2}", "\(progress.processed)", "\(progress.total)", "\(progress.downloaded)")).font(Theme.label) }
+                        if progress.total > 0 || progress.serverTotal != nil { Text(progress.summary).font(Theme.label) }
                     }
                     let processing = model.mailProcessingProgress
                     Text(L10n.format("后台加工：已整理 {0} · 等待 {1}", "\(processing.completed)", "\(processing.pending)")).font(Theme.label)
@@ -47,9 +61,9 @@ struct MailSyncStatusLine: View {
         HStack(spacing: 10) {
             Image(systemName: "arrow.down.circle").foregroundStyle(Theme.accent2)
             Text(L10n.status(model.syncStatus)).lineLimit(1).help(L10n.status(model.syncStatus))
-            if let progress = model.mailSyncProgress, let fraction = progress.fraction {
-                ProgressView(value: fraction).progressViewStyle(.linear).frame(width: 80)
-                Text(L10n.format("下载 {0}/{1} · 本轮已保存原文 {2}", "\(progress.processed)", "\(progress.total)", "\(progress.downloaded)")).monospacedDigit().lineLimit(1)
+            if let progress = model.mailSyncProgress {
+                if let fraction = progress.fraction { ProgressView(value: fraction).progressViewStyle(.linear).frame(width: 80) }
+                if progress.total > 0 || progress.serverTotal != nil { Text(progress.summary).monospacedDigit().lineLimit(1) }
             }
             Spacer(minLength: 0)
             Button(L10n.t("停止本次同步")) { model.stopMailSynchronization() }.buttonStyle(.link)

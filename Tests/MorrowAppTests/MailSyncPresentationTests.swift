@@ -17,6 +17,14 @@ final class MailSyncPresentationTests: XCTestCase {
         XCTAssertEqual(MailSyncProgress(processed: 50, total: 200).fraction, 0.25)
         XCTAssertEqual(MailSyncProgress(processed: 201, total: 200).fraction, 1)
     }
+    func testResumedProgressSeparatesLocalReuseFromThisRun() {
+        let plan = MailSyncDownloadPlan(presentUIDs: [1, 2, 3, 4], savedUIDs: [1, 2], queuedUIDs: [3])
+        let progress = MailSyncProgress(plan: plan, downloaded: 0)
+        XCTAssertEqual(progress.reused, 3); XCTAssertEqual(progress.total, 1); XCTAssertEqual(progress.serverTotal, 4)
+        XCTAssertTrue(progress.summary.contains("3")); XCTAssertTrue(progress.summary.contains("0/1"))
+        let complete = MailSyncProgress(plan: .init(presentUIDs: [1, 2], savedUIDs: [1, 2], queuedUIDs: []))
+        XCTAssertTrue(complete.summary.contains("2")); XCTAssertNil(complete.fraction)
+    }
     @MainActor func testSyncHasOneOwnerAndCanStopThenStartAgain() async {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = AppModel(root: root); defer { try? FileManager.default.removeItem(at: root) }

@@ -70,10 +70,12 @@ public struct MailFolder: Codable, Identifiable, Hashable, Sendable {
 public struct MailMoveReceipt: Sendable {
     public var destinationValidity: UInt64?
     public var destinationUID: UInt64?
+    public var sourceUID: UInt64? = nil
     public static func parse(_ response: String) -> MailMoveReceipt {
         let validity = MIMEParser.capture(#"COPYUID\s+(\d+)\s+\S+\s+\d+"#, response).flatMap(UInt64.init)
         let uid = MIMEParser.capture(#"COPYUID\s+\d+\s+\S+\s+(\d+)\]"#, response).flatMap(UInt64.init)
-        return MailMoveReceipt(destinationValidity: validity, destinationUID: uid)
+        let source = MIMEParser.capture(#"COPYUID\s+\d+\s+(\d+)\s+\d+\]"#, response).flatMap(UInt64.init)
+        return MailMoveReceipt(destinationValidity: validity, destinationUID: uid, sourceUID: source)
     }
 }
 

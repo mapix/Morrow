@@ -246,7 +246,7 @@ struct MailListView: View {
                     HStack { TextField(L10n.t("标签"), text: $label).textFieldStyle(PaperFieldStyle()); Button(L10n.t("添加")) { run(.label(label)) }.buttonStyle(.link).disabled(selectedIDs.isEmpty || model.batchBusy) }
                 }.padding(16)
             }
-            if let status = model.batchStatus { HStack(spacing: 8) { if model.batchBusy { ProgressView().controlSize(.small) }; Text(status).font(Theme.small).lineLimit(2); Spacer(minLength: 0) }.foregroundStyle(Theme.secondary).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Theme.sheet).accessibilityIdentifier("mail.batch.status") }
+            if let status = model.batchStatus { HStack(spacing: 8) { if model.batchBusy || model.pendingMailMoves.values.contains(where: { !$0.awaitingSync }) { ProgressView().controlSize(.small) }; Text(status).font(Theme.small).lineLimit(2); Spacer(minLength: 0) }.foregroundStyle(Theme.secondary).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Theme.sheet).accessibilityIdentifier("mail.batch.status") }
         }.background(Theme.paper)
             .onChange(of: model.pagedMails.map(\.id)) { selectedIDs.formIntersection(Set(model.pagedMails.map(\.id))) }
     }

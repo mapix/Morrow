@@ -1,6 +1,6 @@
 # Morrow website
 
-Static zh/en landing page. No analytics, email form, user mailbox access, or private product screenshots. Interactive scenes use fixed fictional content and never execute mail actions.
+Static zh/en landing page for the macOS desktop app. No analytics, email form, user mailbox access, or private product screenshots. Interactive scenes use fixed fictional content and never execute mail actions.
 
 ## Files and assets
 

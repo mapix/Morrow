@@ -1,6 +1,6 @@
 # Configuration
 
-Copy `configuration/oauth-clients.example.json` to the ignored `configuration/oauth-clients.json`. It contains public provider client IDs only. Keep provider client secrets and account tokens in Keychain; never commit them. Google desktop and iOS registrations are distinct. The iOS reverse callback scheme is derived during the build from the configured iOS client ID.
+Copy `configuration/oauth-clients.example.json` to the ignored `configuration/oauth-clients.json`. It contains public desktop provider client IDs only. Keep provider client secrets and account tokens in Keychain; never commit them. Configure a desktop OAuth registration for the macOS app.
 
 In the app settings, choose local Ollama/Apple Intelligence, a compatible HTTPS endpoint and model, or ChatGPT login. API keys are retained in Keychain. Remote model settings change where mail evidence is sent; configure a trusted endpoint.
 

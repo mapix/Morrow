@@ -33,7 +33,13 @@ extension AppModel {
     }
     func markFoldersRead(_ folderTargets: [(MailAccount, String)]) async {
         guard !batchBusy, !folderTargets.isEmpty else { return }
-        batchBusy = true; defer { batchBusy = false }
+        let snapshot = mails
+        let ids = Set(snapshot.filter { mail in folderTargets.contains { $0.0.id == mail.accountID && $0.1 == mail.folder } }.map(\.id))
+        await withReadBatchFeedback(ids: ids, value: true) {
+            await self.performMarkFoldersRead(folderTargets, snapshot: snapshot)
+        }
+    }
+    private func performMarkFoldersRead(_ folderTargets: [(MailAccount, String)], snapshot: [MailMessage]) async {
         let known = Dictionary(accounts.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         var changes: [MailReadStateChange] = [], undoGroups: [ReadUndoGroup] = []
         var localOnly = Set<String>(), failures: [String] = []; var confirmed = 0
@@ -43,7 +49,7 @@ extension AppModel {
             do {
                 try Task.checkCancellation()
                 if account.isDemo || account.usesPOP {
-                    let ids = Set(mails.filter { $0.accountID == account.id && $0.folder == folder && !$0.isRead }.map(\.id))
+                    let ids = Set(snapshot.filter { $0.accountID == account.id && $0.folder == folder && !$0.isRead }.map(\.id))
                     let updated = try await store.setReadState(ids: ids, read: true, includeCanonicalCopies: true)
                     changes += updated; localOnly.formUnion(updated.map(\.id)); confirmed += ids.count
                 } else {
@@ -59,7 +65,7 @@ extension AppModel {
                     if !receipt.uids.isEmpty { undoGroups.append(.init(account: known[account.id] ?? account, folder: folder, validity: receipt.uidValidity, uids: receipt.uids, value: false, changedIDs: Set(updated.map(\.id)))) }
                     if let failure = receipt.failure { failures.append(account.name + "：" + failure) }
                     // Imported mail without a server UID remains a local item.
-                    let local = Set(mails.filter { $0.accountID == account.id && $0.folder == folder && $0.uid == 0 && !$0.isRead }.map(\.id))
+                    let local = Set(snapshot.filter { $0.accountID == account.id && $0.folder == folder && $0.uid == 0 && !$0.isRead }.map(\.id))
                     let imported = try await store.setReadState(ids: local, read: true, includeCanonicalCopies: true)
                     changes += imported; localOnly.formUnion(imported.map(\.id)); confirmed += local.count
                 }
@@ -69,10 +75,22 @@ extension AppModel {
     }
     func bulkRead(_ ids: Set<String>, value: Bool, all: Bool = false) async {
         guard !batchBusy, !ids.isEmpty else { return }
-        batchBusy = true; defer { batchBusy = false }
+        let snapshot = mails
+        await withReadBatchFeedback(ids: ids, value: value) {
+            // A prior single-message request may have completed while this
+            // batch waited. Build its change/undo set from confirmed flags.
+            let stored = try? await self.store.messageSummaries(ids: ids)
+            let states = Dictionary((stored ?? []).map { ($0.id, $0.displayMessage.isRead) }, uniquingKeysWith: { _, last in last })
+            let confirmed = snapshot.map { original -> MailMessage in
+                var mail = original; if let read = states[mail.id] { mail.isRead = read }; return mail
+            }
+            await self.performBulkRead(ids, value: value, all: all, snapshot: confirmed)
+        }
+    }
+    private func performBulkRead(_ ids: Set<String>, value: Bool, all: Bool, snapshot: [MailMessage]) async {
         let accountSnapshot = Dictionary(accounts.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         var groups: [ReadGroupKey: [ReadTarget]] = [:], local = Set<String>()
-        for mail in mails where ids.contains(mail.id) && mail.isRead != value {
+        for mail in snapshot where ids.contains(mail.id) && mail.isRead != value {
             if let account = accountSnapshot[mail.accountID], !account.isDemo, !account.usesPOP, mail.uid > 0 {
                 groups[.init(account: mail.accountID, folder: mail.folder, validity: mail.uidValidity), default: []].append(.init(id: mail.id, uid: mail.uid))
             } else { local.insert(mail.id) }

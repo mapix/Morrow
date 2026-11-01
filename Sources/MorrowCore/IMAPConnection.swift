@@ -165,6 +165,81 @@ public actor IMAPConnection {
         let allowed = Set(uids)
         return result.filter { allowed.contains($0.key) }
     }
+    /// Small identity/header fetches can reuse Gmail bodies already cached in
+    /// another folder. PEEK headers never mark the message read.
+    public func gmailIdentities(accountID: String, folder: String, uids: [UInt64], expectedValidity: UInt64) async throws -> [UInt64: GmailMessageIdentity] {
+        guard capabilities.contains("X-GM-EXT-1") else { return [:] }
+        guard !uids.isEmpty, uids.count <= 64, Set(uids).count == uids.count,
+              uids.allSatisfy({ $0 > 0 && $0 <= UInt64(UInt32.max) }) else { throw MailError.message("邮件身份查询UID无效。") }
+        guard try await select(folder) == expectedValidity else { throw MailError.message("文件夹已重建，未复用旧正文。") }
+        let set = uids.map(String.init).joined(separator: ",")
+        let reply = try await command("UID FETCH \(set) (UID X-GM-MSGID RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])", maximumLiteralBytes: 65536)
+        return try Self.gmailIdentities(lines: reply.lines, literals: reply.literals, allowed: Set(uids), accountID: accountID, folder: folder, validity: expectedValidity)
+    }
+    /// A successful Gmail MOVE may omit COPYUID when the destination already
+    /// has its label. Only a pre-MOVE global identity can locate that alias.
+    public func resolveGmailMove(accountID: String, sourceIdentity: GmailMessageIdentity, destination: String) async -> MailMoveReceipt? {
+        guard capabilities.contains("X-GM-EXT-1"), !accountID.isEmpty, sourceIdentity.valid,
+              sourceIdentity.accountID == accountID, destination != sourceIdentity.folder else { return nil }
+        do {
+            try Task.checkCancellation()
+            selected = nil
+            let targetValidity = try await select(destination)
+            let tag = nextTag()
+            try await write(Data("\(tag) UID SEARCH X-GM-MSGID \(sourceIdentity.globalID)\r\n".utf8))
+            var uids = Set<UInt64>(), received = false, invalid = false
+            _ = try await readResponse(tag, retainLines: false, allowLiterals: false) { line in
+                let words = line.split(whereSeparator: \.isWhitespace)
+                guard words.count >= 2, words[0] == "*", words[1].uppercased() == "SEARCH" else { return }
+                if received { invalid = true }; received = true
+                for token in words.dropFirst(2) {
+                    guard let uid = UInt64(token), uid > 0, uid <= UInt64(UInt32.max) else { invalid = true; continue }
+                    uids.insert(uid)
+                }
+            }
+            guard received, !invalid, uids.count == 1, let targetUID = uids.first else { return nil }
+            // Re-select after SEARCH: a changed UIDVALIDITY must not turn a
+            // unique old UID into a receipt for a newly rebuilt folder.
+            selected = nil
+            let target = try await gmailIdentities(accountID: accountID, folder: destination, uids: [targetUID], expectedValidity: targetValidity)[targetUID]
+            guard let target, target.valid, target.accountID == accountID, target.folder == destination,
+                  target.validity == targetValidity, target.uid == targetUID,
+                  target.globalID == sourceIdentity.globalID, target.messageID == sourceIdentity.messageID,
+                  target.rawSize == sourceIdentity.rawSize else { return nil }
+            return MailMoveReceipt(destinationValidity: targetValidity, destinationUID: targetUID, sourceUID: sourceIdentity.uid)
+        } catch {
+            // MOVE has already been acknowledged. Failure or cancellation of
+            // its lookup preserves awaiting-sync, not a false local rollback.
+            close(); return nil
+        }
+    }
+    static func gmailIdentities(lines: [String], literals: [Data], allowed: Set<UInt64>, accountID: String, folder: String, validity: UInt64) throws -> [UInt64: GmailMessageIdentity] {
+        let headers = try fetchedBodies(lines: lines, literals: literals, allowed: allowed)
+        var groups: [String] = [], metadata: [UInt64: (String, UInt64)] = [:]
+        func finish() throws {
+            defer { groups = [] }
+            guard !groups.isEmpty else { return }
+            let text = groups.joined(separator: " ")
+            guard let uidText = MIMEParser.capture(#"(?i)\bUID\s+(\d+)\b"#, text), let uid = UInt64(uidText), headers[uid] != nil else { return }
+            guard let global = MIMEParser.capture(#"(?i)\bX-GM-MSGID\s+(\d+)\b"#, text), UInt64(global).map({ $0 > 0 }) == true,
+                  let sizeText = MIMEParser.capture(#"(?i)\bRFC822.SIZE\s+(\d+)\b"#, text), let size = UInt64(sizeText), size > 0, metadata[uid] == nil else { throw MailError.message("Gmail全局邮件身份响应无效。") }
+            metadata[uid] = (global, size)
+        }
+        for line in lines {
+            if MIMEParser.capture(#"(?i)^\*\s+\d+\s+(FETCH)\s*\("#, line) != nil { try finish() }
+            else if line.hasPrefix("* ") || MIMEParser.capture(#"(?i)^\S+\s+(OK|NO|BAD)\b"#, line) != nil { try finish(); continue }
+            groups.append(line)
+        }
+        try finish()
+        var result: [UInt64: GmailMessageIdentity] = [:]
+        for (uid, header) in headers {
+            guard header.count <= 65536, let (global, size) = metadata[uid] else { throw MailError.message("Gmail身份头信息超过范围或不完整。") }
+            let parsed = MIMEParser.parse(header, accountID: accountID)
+            let identity = GmailMessageIdentity(accountID: accountID, folder: folder, uid: uid, validity: validity, globalID: global, messageID: parsed.messageID, rawSize: size)
+            if identity.valid { result[uid] = identity }
+        }
+        return result
+    }
     private func searchUIDs() async throws -> Set<UInt64> {
         let reply = try await command("UID SEARCH ALL")
         var result: Set<UInt64> = [], received = false
@@ -473,14 +548,14 @@ public actor IMAPConnection {
         _ = try await readResponse(tag)
     }
     public struct Reply { var lines: [String]; var literals: [Data]; var completion: String = "" }
-    public func command(_ text: String, sensitive: Bool = false) async throws -> Reply {
+    public func command(_ text: String, sensitive: Bool = false, maximumLiteralBytes: Int = 64 * 1024 * 1024) async throws -> Reply {
         try Task.checkCancellation()
         let tag = nextTag(); try await write(Data("\(tag) \(text)\r\n".utf8))
-        do { return try await readResponse(tag) }
+        do { return try await readResponse(tag, maximumLiteralBytes: maximumLiteralBytes) }
         catch is CancellationError { close(); throw CancellationError() }
         catch { close(); if sensitive { throw MailError.message("邮箱认证失败，请确认已开启 IMAP 并使用客户端授权码。") }; throw error }
     }
-    private func readResponse(_ tag: String, retainLines: Bool = true, allowLiterals: Bool = true, onLine: ((String) -> Void)? = nil) async throws -> Reply {
+    private func readResponse(_ tag: String, retainLines: Bool = true, allowLiterals: Bool = true, maximumLiteralBytes: Int = 64 * 1024 * 1024, onLine: ((String) -> Void)? = nil) async throws -> Reply {
         var lines: [String] = [], literals: [Data] = [], bytes = 0
         for _ in 0..<100000 {
             try Task.checkCancellation()
@@ -498,6 +573,7 @@ public actor IMAPConnection {
                 guard let size = Int(rawSize), size >= 0 else { throw MailError.message("邮件服务器返回了无效正文长度。") }
                 guard allowLiterals else { throw MailError.message("邮件库存响应包含了非预期正文，读取已停止。") }
                 guard size <= 64 * 1024 * 1024 else { throw MailError.message("此邮件超过 64 MB，请在网页邮箱下载。") }
+                guard size <= maximumLiteralBytes else { throw MailError.message("邮件服务器返回的片段超过本次查询限制。") }
                 guard size <= maximumResponseBytes - bytes else { throw MailError.message("邮件服务器的总响应超过缓存限制，读取已停止。") }; bytes += size
                 literals.append(try await read(size))
             }

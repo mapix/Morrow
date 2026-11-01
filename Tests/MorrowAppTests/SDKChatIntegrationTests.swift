@@ -3,6 +3,56 @@ import MorrowCore
 @testable import MorrowApp
 
 final class SDKChatIntegrationTests: XCTestCase {
+    @MainActor func testSDKCanReadVerifiedMovedMailByItsOriginalID() async throws {
+        let (model, selected, original) = try await fixture(mode: "read-moved"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        var target = original; target.uid = 77; target.uidValidity = 42; target.messageID = "<target@example.invalid>"; target.folder = "INBOX"
+        model.accounts[1].isDemo = false
+        try await model.store.upsert(target); model.mails = [selected, target]
+        model.performServerMailMove = { _, _, _ in MailMoveReceipt.parse("[COPYUID 42 77 88]") }
+        await model.move(target, folder: MailFolder(accountID: target.accountID, path: "Archive", role: "archive"))
+        let current = try XCTUnwrap(model.mailByID(target.id))
+        XCTAssertNotEqual(current.id, target.id)
+        await model.askPartner("只读核验刚归档的邮件，使用已有来源ID", uiContext: model.currentContext)
+        XCTAssertEqual(model.visibleChat.last?.text, "SDK moved evidence")
+        XCTAssertTrue(model.visibleChat.last?.messageIDs.contains(current.id) == true)
+    }
+    @MainActor func testSimplifiedContactDirectoryIsAvailableInTheFirstModelRequest() async throws {
+        let (model, _, target) = try await fixture(mode: "directory-only"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        model.contactProfiles = ContactProfileBuilder.build(mails: model.mails, accounts: model.accounts, manual: [])
+        await model.askPartner("我的联系人有哪些", uiContext: model.currentContext)
+        let body = try XCTUnwrap(SDKChatHTTPFixture.lastBody), messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let prompt = messages.compactMap { $0["content"] as? String }.joined(separator: "\n")
+        XCTAssertTrue(prompt.contains("<contact-directory-data>")); XCTAssertTrue(prompt.contains(target.from.email))
+        XCTAssertEqual(model.visibleChat.last?.executionTrace?.tools.count, 0); XCTAssertEqual(SDKChatHTTPFixture.count, 1)
+    }
+    @MainActor func testSDKBatchReadsMultipleMailsWithoutPerMailModelRounds() async throws {
+        let (model, selected, target) = try await fixture(mode: "batch-read"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("只读核验这两封邮件", uiContext: model.currentContext)
+        XCTAssertEqual(model.visibleChat.last?.text, "SDK batch evidence"); XCTAssertEqual(SDKChatHTTPFixture.count, 2)
+        XCTAssertTrue(model.visibleChat.last?.messageIDs.contains(target.id) == true)
+        let stored = try await model.store.messages(ids: [selected.id, target.id]); XCTAssertTrue(stored.allSatisfy { !$0.isRead })
+        XCTAssertEqual(model.visibleChat.last?.executionTrace?.tools.filter { $0.tool == "read_mails" }.count, 1)
+    }
+    @MainActor func testSDKCodingCanQueryMailItHasNotReadThroughTools() async throws {
+        let (model, _, target) = try await fixture(mode: "coding"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("用代码整体分析邮件数据，只读", uiContext: model.currentContext)
+        XCTAssertEqual(model.visibleChat.last?.text, "SDK coding evidence")
+        XCTAssertEqual(model.visibleChat.last?.executionTrace?.tools.map(\.tool), ["run_code"])
+        XCTAssertTrue(model.visibleChat.last?.messageIDs.contains(target.id) == true)
+        let body = try XCTUnwrap(SDKChatHTTPFixture.lastBody), messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let output = try XCTUnwrap(messages.last(where: { $0["role"] as? String == "tool" })?["content"] as? String)
+        XCTAssertTrue(output.contains("SDK_TARGET_SOURCE"))
+    }
+    @MainActor func testSDKCodingMaintainsExplicitMailScope() async throws {
+        let (model, _, _) = try await fixture(mode: "coding-scope"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        model.pinCurrentChatScope()
+        await model.askPartner("用代码只读分析当前明确限定邮件", uiContext: model.resolvedChatContext)
+        XCTAssertEqual(model.visibleChat.last?.text, "SDK coding scoped")
+        XCTAssertFalse(model.visibleChat.last?.messageIDs.contains("target") == true)
+        let body = try XCTUnwrap(SDKChatHTTPFixture.lastBody), messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let output = try XCTUnwrap(messages.last(where: { $0["role"] as? String == "tool" })?["content"] as? String)
+        XCTAssertTrue(output.contains("SCOPED_CODE_VERIFIED"))
+    }
     @MainActor func testRepeatedQueryMistakeStillPausesForUserDecision() async throws {
         let (model, _, _) = try await fixture(mode: "scan-repeat"); defer { try? FileManager.default.removeItem(at: model.store.root) }
         await model.askPartner("只读查找游戏变现邮件", uiContext: model.currentContext)
@@ -159,7 +209,16 @@ private final class SDKChatHTTPFixture: URLProtocol {
         let (call, mode) = Self.lock.withLock { Self.calls += 1; return (Self.calls, Self.mode) }
         let operation: (String, [String: Any])?
         let answer: String
-        if mode == "scan-repeat" {
+        if mode == "read-moved" { operation = call == 1 ? ("read_mail", ["messageID": "target"]) : nil; answer = "SDK moved evidence" }
+        else if mode == "directory-only" { operation = nil; answer = "SDK direct contacts" }
+        else if mode == "batch-read" { operation = call == 1 ? ("read_mails", ["messageIDs": ["selected", "target"]]) : nil; answer = "SDK batch evidence" }
+        else if mode == "coding" {
+            operation = call == 1 ? ("run_code", ["python": "import maildata,json\nprint(json.dumps(maildata.query(\"SELECT id,text FROM mail WHERE id='target'\")['rows']))"]) : nil
+            answer = "SDK coding evidence"
+        } else if mode == "coding-scope" {
+            operation = call == 1 ? ("run_code", ["python": "import maildata\nassert maildata.query('SELECT count(*) AS n FROM mail_index')['rows'][0]['n']==1\nassert maildata.query(\"SELECT id FROM mail WHERE id='target'\")['rows']==[]\nprint('SCOPED_CODE_VERIFIED')"]) : nil
+            answer = "SDK coding scoped"
+        } else if mode == "scan-repeat" {
             operation = ("scan_mail", ["query": "game monetization"])
             answer = "Never complete invalid query"
         } else if mode == "scan-correction" {

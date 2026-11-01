@@ -54,26 +54,47 @@ extension AppModel {
         sessionDraftTask?.cancel(); sessionDraftTask = nil
         guard let i = chatSessions.firstIndex(where: { $0.id == activeSessionID }) else { return }
         var snapshot = chatSessions[i]
-        snapshot.input = chatInput; snapshot.materials = chatMaterials; snapshot.pinnedContext = chatPinnedContext; snapshot.newWork = newChatWork; snapshot.draftRevision += 1
+        snapshot.input = chatInput; snapshot.materials = chatMaterials; snapshot.pinnedContext = chatPinnedContext; snapshot.newWork = newChatWork
+        snapshot.draftRevision = nextSessionDraftRevision(snapshot)
         chatSessions[i] = snapshot
         Task { do { _ = try await store.saveSessionDraft(snapshot) } catch { self.error = error.localizedDescription } }
     }
+    func flushCurrentSessionDraft() async throws {
+        sessionDraftTask?.cancel(); sessionDraftTask = nil
+        guard let index = chatSessions.firstIndex(where: { $0.id == activeSessionID }) else { return }
+        var snapshot = chatSessions[index]
+        snapshot.input = chatInput; snapshot.materials = chatMaterials
+        snapshot.pinnedContext = chatPinnedContext; snapshot.newWork = newChatWork
+        snapshot.draftRevision = nextSessionDraftRevision(snapshot)
+        chatSessions[index] = snapshot
+        _ = try await store.saveSessionDraft(snapshot)
+    }
     func scheduleSessionDraft() {
         sessionDraftTask?.cancel()
-        guard let i = chatSessions.firstIndex(where: { $0.id == activeSessionID }) else { return }
+        guard var snapshot = cachedSession(activeSessionID) else { return }
         // Capture the owner and complete input now. A delayed save must not
         // consult whichever conversation happens to be selected in 300 ms.
-        var snapshot = chatSessions[i]
-        snapshot.input = chatInput; snapshot.materials = chatMaterials; snapshot.pinnedContext = chatPinnedContext; snapshot.newWork = newChatWork; snapshot.draftRevision += 1
-        chatSessions[i] = snapshot
+        snapshot.input = chatInput; snapshot.materials = chatMaterials; snapshot.pinnedContext = chatPinnedContext; snapshot.newWork = newChatWork
+        snapshot.draftRevision = nextSessionDraftRevision(snapshot)
+        rememberSessionDraft(snapshot)
         sessionDraftTask = Task {
-            do { try await Task.sleep(for: .milliseconds(300)); try Task.checkCancellation(); _ = try await store.saveSessionDraft(snapshot) }
+            do {
+                try await Task.sleep(for: .milliseconds(300)); try Task.checkCancellation()
+                // A draft save does not change session ordering or mailbox UI.
+                // Keep its latest fields in the non-published cache; metadata
+                // remains authoritative in the existing session projection.
+                _ = try await store.saveSessionDraft(snapshot)
+            }
             catch is CancellationError { }
             catch { self.error = error.localizedDescription }
         }
     }
+    private func nextSessionDraftRevision(_ session: ChatSession) -> Int {
+        let revision = max(session.draftRevision, sessionDraftRevisions[session.id] ?? 0) + 1
+        sessionDraftRevisions[session.id] = revision; return revision
+    }
     func chatEditorInput(in sessionID: String) -> String {
-        sessionID == activeSessionID ? chatInput : chatSessions.first(where: { $0.id == sessionID })?.input ?? ""
+        sessionID == activeSessionID ? chatInput : cachedSession(sessionID)?.input ?? ""
     }
     func setChatEditorInput(_ value: String, in sessionID: String) {
         guard let i = chatSessions.firstIndex(where: { $0.id == sessionID }) else { return }
@@ -84,7 +105,7 @@ extension AppModel {
             // AppKit may finish an IME composition after its old view is
             // detached. Retain that final edit in its original conversation.
             guard chatSessions[i].input != value else { return }
-            var snapshot = chatSessions[i]; snapshot.input = value; snapshot.draftRevision += 1
+            var snapshot = chatSessions[i]; snapshot.input = value; snapshot.draftRevision = nextSessionDraftRevision(snapshot)
             chatSessions[i] = snapshot
             Task { do { _ = try await store.saveSessionDraft(snapshot) } catch { self.error = error.localizedDescription } }
         }

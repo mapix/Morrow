@@ -15,11 +15,12 @@ Morrow keeps a rebuildable header projection alongside original mail. A projecti
 | Semantic query | Bounded Top-K; detached read-only SQLite ranking | Normalized-vector retrieval plus 20,000 × 768-dimensional storage benchmarks |
 | Contacts | Metadata inventory signature; versioned incremental batches | Full-text source, stable flags-only signature and preserved claims |
 | Chat / model services | Limited evidence, response bytes, queue and catalogue singleflight | Captured prompt, cancellation, HTTP/SSE limits and complete ID coverage |
+| Chat coding | Scoped metadata index and lazy, read-only body queries | Python/SRT execution, SQL aggregation, original-file isolation, scope and truncation checks |
 | iCloud | Separate environment state and private record payloads | Synthetic cross-device receive/update/tombstone/restart checks |
 
 Synthetic benchmarks measure storage and scheduling, not model-quality equivalence. Native verification uses the installed binary. Real-mail tests must keep the requested scope: reading/navigation are separate from authorized flag changes; test messages are never sent to real recipients.
 
-The macOS C/libcurl path retains its request timeout: cancellation stops follow-up work but cannot immediately interrupt a C function already executing. Background sync on iOS depends on foreground/runtime availability. These platform limits are not a claim that every possible mailbox, provider or hardware configuration has been tested.
+The macOS C/libcurl path retains its request timeout: cancellation stops follow-up work but cannot immediately interrupt a C function already executing. These platform limits are not a claim that every possible mailbox, provider or hardware configuration has been tested.
 
 ## Synthetic storage results
 
@@ -38,6 +39,53 @@ A bounded 20,000-message fixture produced these measurements on the development 
 | Cancellation of vector scan | 3.0 ms |
 
 These measurements verify the storage path and resource strategy. They do not certify a particular provider's network latency or model quality. Cold projection backfill is a one-time migration cost; original mail remains untouched.
+
+## Read-state feedback and ordering
+
+Opening an unread message and explicit read/unread actions publish their visible
+state before waiting for the server. Changes for canonical copies stay within
+the same account. Requests for one message run in order; only the latest
+pending request controls its displayed state. Reloads retain this pending
+choice while accepting fresh unrelated metadata.
+
+Storage is committed after server confirmation. Failed operations restore
+confirmed stored flags and preserve notes, stars and body revisions. Batches
+keep immediate feedback while retaining UID groups, partial acknowledgements
+and undo receipts; unacknowledged rows return to their confirmed state. An
+inventory captured before an acknowledgement cannot restore its older flags.
+
+Tests cover delayed acknowledgements, rapid read/unread changes, older and
+latest failures, reloads, canonical aliases, unread counts, retry, partial
+batches, whole-folder marking and undo. Loopback IMAP tests separately verify
+flag commands and partial server receipts. These checks do not replace a real
+mail provider acceptance test.
+
+## Desktop interaction and Gmail reuse
+
+Chat input has its own observable state. Typing and debounced draft saves no
+longer publish mailbox/contact/conversation updates on the shared AppModel.
+Session metadata remains separate from cached draft fields; switching sessions
+and normal application exit flush the last edit. A 20,000-contact / 500-session
+fixture verifies zero shared-workspace notifications for 400 edits, including
+the settled save. Its measured 2.2 ms is draft-state logic, not end-to-end
+keyboard or network latency.
+
+Archive and Trash remove pending rows and clear the old reader immediately.
+Confirmed COPYUID location changes reuse the complete local message and
+independent raw/attachment file links in a transaction; vectors, receipts and
+current source references follow the verified new location. Gmail moves that
+omit COPYUID use a cached or pre-move global identity and a unique targeted UID
+search. These paths do not scan the whole destination or download its body.
+Unverified locations remain explicitly pending sync and do not offer a guessed
+undo. Failed server operations restore current stored metadata.
+
+Same-folder synchronization excludes saved and durably queued UIDs; a missing
+queued raw cache regains download eligibility. Gmail cross-folder reuse requires
+matching X-GM-MSGID, RFC822.SIZE, account configuration and UIDVALIDITY. Message-ID
+only selects candidates. File paths must belong to the current store, and
+separate hard links keep deleting one alias from deleting another's bytes.
+Read/star edits newer than the inventory are retained. Progress distinguishes
+local reuse, this sync's remaining work and actual new downloads.
 
 ## 0.11.1 cache repair
 

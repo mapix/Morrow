@@ -44,11 +44,32 @@ public struct MailSyncInventory: Sendable {
     }
 }
 
+/// A folder-local UID plan. A server cursor knows membership, not which bodies
+/// have already reached local storage or the durable processing queue.
+public struct MailSyncDownloadPlan: Sendable, Equatable {
+    public var serverCount: Int
+    public var savedCount: Int
+    public var queuedCount: Int
+    public var remainingUIDs: [UInt64]
+    public var reusedCount: Int { savedCount + queuedCount }
+    public init(presentUIDs: Set<UInt64>, savedUIDs: Set<UInt64>, queuedUIDs: Set<UInt64>) {
+        let saved = savedUIDs.intersection(presentUIDs)
+        let queued = queuedUIDs.intersection(presentUIDs).subtracting(saved)
+        serverCount = presentUIDs.count; savedCount = saved.count; queuedCount = queued.count
+        remainingUIDs = presentUIDs.subtracting(saved).subtracting(queued).sorted(by: >)
+    }
+}
+
 extension MailStore {
     public func mailSyncCursor(account: MailAccount, folder: String) throws -> MailFolderSyncCursor? {
         let id = Self.hash(account.id + "\n" + folder)
         guard let cursor = try object(MailFolderSyncCursor.self, kind: "mail-sync-cursor", id: id), cursor.matches(account, folder: folder) else { return nil }
         return cursor
+    }
+    public func mailSyncDownloadPlan(account: MailAccount, folder: String, inventory: MailSyncInventory) throws -> MailSyncDownloadPlan {
+        let saved = Set(try syncRecords(account: account.id, folder: folder).filter { $0.uidValidity == inventory.validity && $0.uid > 0 }.map(\.uid))
+        let queued = Set(try queuedMailDownloads().filter { $0.accountID == account.id && $0.folder == folder && $0.validity == inventory.validity }.map(\.uid))
+        return .init(presentUIDs: inventory.presentUIDs, savedUIDs: saved, queuedUIDs: queued)
     }
 }
 

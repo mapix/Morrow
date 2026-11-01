@@ -11,12 +11,17 @@ public struct ResponderSandboxResult: Codable, Sendable {
     public var unavailable: Bool?
 }
 
-/// The bridge is trusted host code; commands only receive staged source text,
-/// an empty environment, and the filesystem/network policy enforced by SRT.
+/// Trusted host code stages sources and, for Chat, a scoped query client.
+/// Commands receive a clean environment and SRT filesystem/network limits.
 public final class ResponderSandboxRuntime: @unchecked Sendable {
     public let workspace: URL
     private let node: URL
     private let bridge: URL
+    private let python: URL?
+    #if os(macOS)
+    private var mailDataServer: AgentMailDataServer?
+    private var mailData: AgentMailData?
+    #endif
     public init() throws {
         #if os(macOS)
         let fm = FileManager.default
@@ -28,6 +33,7 @@ public final class ResponderSandboxRuntime: @unchecked Sendable {
         if let directories = try? fm.contentsOfDirectory(at: versions, includingPropertiesForKeys: nil) { nodes += directories.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedDescending }.map { $0.appendingPathComponent("bin/node") } }
         guard let executable = nodes.first(where: { fm.isExecutableFile(atPath: $0.path) }) else { throw MailError.message("响应器需要 Node.js 22.12 或更新版本；沙箱不可用时不会执行工具。") }
         node = executable.resolvingSymlinksInPath()
+        python = ["/Applications/Xcode.app/Contents/Developer/usr/bin/python3", "/Library/Developer/CommandLineTools/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].map { URL(fileURLWithPath: $0) }.first { fm.isExecutableFile(atPath: $0.path) }?.resolvingSymlinksInPath()
         // SRT uses Unix sockets. macOS's per-user temporary path plus a UUID
         // exceeds sockaddr_un's limit; a short private workspace avoids it.
         workspace = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("MorrowResponder-" + String(UUID().uuidString.prefix(16)), isDirectory: true)
@@ -37,7 +43,35 @@ public final class ResponderSandboxRuntime: @unchecked Sendable {
         throw MailError.message("此设备不支持 Anthropic Sandbox Runtime；响应器工具需要在 Mac 执行。")
         #endif
     }
-    deinit { try? FileManager.default.removeItem(at: workspace) }
+    deinit {
+        #if os(macOS)
+        mailDataServer?.stop()
+        #endif
+        try? FileManager.default.removeItem(at: workspace)
+    }
+    /// Host-only staging. No original database path crosses into the sandbox.
+    public func enableMailData(root: URL, mails: [MailMessage], contacts: [ContactTriage], accounts: [MailAccount]) throws {
+        #if os(macOS)
+        let data = try AgentMailData(root: root, mails: mails, contacts: contacts, accounts: accounts)
+        let module = bridge.deletingLastPathComponent().appendingPathComponent("maildata.py")
+        let source = try Data(contentsOf: module)
+        guard source.count <= 16384 else { throw MailError.message("邮件数据客户端超过预算。") }
+        let target = workspace.appendingPathComponent("input/maildata.py")
+        try source.write(to: target, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: target.path)
+        let server = try AgentMailDataServer(path: workspace.appendingPathComponent("input/mail-data.sock"), data: data)
+        mailData = data; mailDataServer = server
+        #else
+        throw MailError.message("邮件coding数据接口需要在Mac运行。")
+        #endif
+    }
+    public var observedMailDataIDs: Set<String> {
+        #if os(macOS)
+        return mailData?.observedIDs ?? []
+        #else
+        return []
+        #endif
+    }
     public func stageText(_ text: String, name: String) throws {
         guard ["mail.txt", "attachment.txt"].contains(name), text.utf8.count <= 256 * 1024 else { throw MailError.message("沙箱资料超过限制。") }
         let target = workspace.appendingPathComponent("input/" + name)
@@ -45,11 +79,24 @@ public final class ResponderSandboxRuntime: @unchecked Sendable {
         try Data(text.utf8).write(to: target, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: target.path)
     }
-    public func run(_ command: String, policy: ResponderExecutionPolicy) async throws -> ResponderSandboxResult {
+    public func runPython(_ source: String, policy: ResponderExecutionPolicy) async throws -> ResponderSandboxResult {
+        guard !source.isEmpty, source.utf8.count <= 16000 else { throw MailError.message("Python代码为空或超过16000字节。") }
+        guard let python else { throw MailError.message("Python运行时不可用，请安装Python或Xcode命令行工具。") }
+        let relative = "input/analysis-" + UUID().uuidString + ".py"
+        let path = workspace.appendingPathComponent(relative)
+        try Data(source.utf8).write(to: path, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: path.path)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let executable = "'" + python.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return try await run("PYTHONPATH=input " + executable + " -B " + relative, policy: policy, pythonRuntime: python)
+    }
+    public func run(_ command: String, policy: ResponderExecutionPolicy, pythonRuntime: URL? = nil) async throws -> ResponderSandboxResult {
         #if os(macOS)
         try policy.validate()
         let root = workspace, node = node, bridge = bridge
-        let request = try JSONSerialization.data(withJSONObject: ["workspace": root.path, "allowedDomains": policy.networkDomains, "command": command, "timeoutSeconds": policy.commandSeconds])
+        var fields: [String: Any] = ["workspace": root.path, "allowedDomains": policy.networkDomains, "command": command, "timeoutSeconds": policy.commandSeconds, "mailData": mailDataServer != nil]
+        if let pythonRuntime { fields["pythonExecutable"] = pythonRuntime.path }
+        let request = try JSONSerialization.data(withJSONObject: fields)
         let process = Process()
         return try await withTaskCancellationHandler {
             let worker = Task.detached(priority: .utility) { () throws -> ResponderSandboxResult in

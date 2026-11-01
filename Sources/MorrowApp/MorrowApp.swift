@@ -58,6 +58,15 @@ private struct MenuBarContent: View {
         Task { await AppState.shared.start(); drainPendingURLs(); NativePreview.renderIfRequested(model: AppState.shared) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model, model.ready else { return .terminateNow }
+        finishFocusedChatComposition()
+        Task {
+            do { try await model.flushCurrentSessionDraft(); sender.reply(toApplicationShouldTerminate: true) }
+            catch { model.error = "未发送输入尚未保存：" + error.localizedDescription; sender.reply(toApplicationShouldTerminate: false) }
+        }
+        return .terminateLater
+    }
     func application(_ application: NSApplication, open urls: [URL]) { pendingURLs += urls; drainPendingURLs() }
     func drainPendingURLs() {
         guard let model, model.ready else { return }; let urls = pendingURLs; pendingURLs = []

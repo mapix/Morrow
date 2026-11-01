@@ -28,7 +28,6 @@ Model requests and the final SMTP gateway remain trusted Swift host operations. 
 
 Every delivered responder reply completes read → plan → tools → independent verification. Fixed text follows the same loop and cannot be rewritten. Automatic replies target the original From address, never Reply-To/CC/BCC. Queued replies have a10s cancellation window. Rule changes cancel active loops and queued deliveries. Interrupted preparation becomes a visible retryable failure; uncertain SMTP delivery is never automatically retried.
 
-iOS has no SRT backend. The phone does not substitute a single model call or take over desktop automatic delivery.
 
 ## Verification
 
@@ -37,3 +36,28 @@ swift test --filter Responder
 ```
 
 This includes actual SRT input/output/filesystem/network/time/output-boundary checks and isolated simulated-mail pipeline tests. `Tests/Fixtures/Sandbox/keychain-probe.c` verifies the credential-service RPC fence without reading any credential. Optional local-model acceptance is enabled only with `MORROW_LIVE_RESPONDER_MODEL`; its mailbox is always synthetic.
+## Chat coding data
+
+Chat can submit Python source directly through `run_code.python`. The host
+selects an installed Python interpreter, stages a private script, and executes
+it with the same SRT filesystem, network and output limits. Python currently
+requires Xcode, Command Line Tools, or an installed Homebrew/local interpreter.
+
+`import maildata` exposes `query(sql, max_rows=1000)`. Tables are `mail_index`
+(all permitted metadata), `mail` (metadata plus lazy full text), `contacts`, and
+`accounts` (nonsecret fields). A private Unix socket carries queries to the
+host. SQL runs against an isolated memory database with a scoped metadata
+index; the original SQLite database is opened read-only only by the host and
+is never attached to the query connection or made visible in the sandbox.
+Bodies are fetched on demand through a function that checks the scoped IDs.
+
+Only read queries and selected built-in functions are accepted. Each query
+has a five-second execution budget, a two-MiB SQLite value limit, at most 2000
+returned rows, 64 KiB per returned cell, and 512 KiB per response. Truncation is
+explicit. Scripts should aggregate/filter first and print concise results and
+real source IDs. Scratch files live only for the current run.
+
+This data socket is enabled by the Chat host. Normal responder commands retain
+their staged-input-only access. Explicit upload-only Chat scopes receive no
+mail data client. There are no original mailbox copies or persistent second
+databases.

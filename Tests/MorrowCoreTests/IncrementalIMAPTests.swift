@@ -3,6 +3,20 @@ import CMail
 @testable import MorrowCore
 
 final class IncrementalIMAPTests: XCTestCase {
+    func testGmailIdentityReuseReadsOnlyMinimalHeadersAcrossFolders() async throws {
+        let header = "Message-ID: <identity@example.invalid>\r\n\r\n"
+        let peer = try scripted("X-GM-EXT-1", [
+            (#"SELECT "[Gmail]/All Mail""#, selected(11, mod: nil, next: 10, count: 1)),
+            ("UID FETCH 9 (UID X-GM-MSGID RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])", ["* 1 FETCH (UID 9 X-GM-MSGID 18230923993923822931 RFC822.SIZE 300 BODY[HEADER.FIELDS (MESSAGE-ID)] {\(header.utf8.count)}", header, ")"]),
+            (#"SELECT "INBOX""#, selected(42, mod: nil, next: 2, count: 1)),
+            ("UID FETCH 1 (UID X-GM-MSGID RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])", ["* 1 FETCH (UID 1 X-GM-MSGID 18230923993923822931 RFC822.SIZE 300 BODY[HEADER.FIELDS (MESSAGE-ID)] {\(header.utf8.count)}", header, ")"])
+        ]); defer { peer.stop() }
+        let client = try await connect(peer)
+        let target = try await client.gmailIdentities(accountID: "fixture", folder: "[Gmail]/All Mail", uids: [9], expectedValidity: 11)
+        let source = try await client.gmailIdentities(accountID: "fixture", folder: "INBOX", uids: [1], expectedValidity: 42)
+        XCTAssertEqual(target[9]?.globalID, source[1]?.globalID); XCTAssertEqual(target[9]?.messageID, "<identity@example.invalid>")
+        await client.close()
+    }
     func testLargeAttachmentSyncFetchesTextAndKeepsRemoteLinkWithoutDownloadingAttachment() async throws {
         let headers = "From: fixture@example.invalid\r\nSubject: Large attachment fixture\r\nMessage-ID: <large@example.invalid>\r\nContent-Type: multipart/mixed; boundary=fixture\r\n\r\n"
         let mime = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n"

@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Morrow",
-    platforms: [.macOS("26.0"), .iOS("26.0")],
+    platforms: [.macOS("26.0")],
     products: [.executable(name: "Morrow", targets: ["MorrowApp"]), .library(name: "MorrowCore", targets: ["MorrowCore"])],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", revision: "f5b0677f6b52b81d068871611cfcb82d1e7a0005", traits: []),

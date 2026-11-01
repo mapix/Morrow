@@ -12,6 +12,7 @@ public struct AgentSDKResult: Codable, Sendable {
     public var paused: Bool?
     public var interrupts: [OpenUIJSON]?
     public var pauseReason: String?
+    public var answerLimited: Bool?
 }
 
 /// Runs the installed SDK through a private, bounded stdio protocol. Model and

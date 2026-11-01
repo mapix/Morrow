@@ -54,7 +54,7 @@ struct AgentProgressView: View {
     }
     private func duration(_ seconds: Double) -> String { let value = max(0, Int(seconds)); return value < 60 ? "\(value)s" : "\(value / 60)m \(value % 60)s" }
     private func title(_ name: String) -> String {
-        let names = ["search_mail":"检索邮件", "read_mail":"读取正文", "scan_mail":"检查邮件列表", "write_plan":"更新计划", "find_tools":"发现工具", "cite_sources":"整理来源", "render_ui":"准备图表", "prepare_draft":"保存草稿", "read_attachment":"读取附件", "delegate_task":"执行分任务", "mail_statistics":"读取统计"]
+        let names = ["search_mail":"检索邮件", "read_mail":"读取正文", "read_mails":"批量读取正文", "list_contacts":"筛选联系人", "scan_mail":"检查邮件列表", "write_plan":"更新计划", "find_tools":"发现工具", "cite_sources":"整理来源", "render_ui":"准备图表", "prepare_draft":"保存草稿", "read_attachment":"读取附件", "delegate_task":"执行分任务", "mail_statistics":"读取统计"]
         return L10n.t(names[name] ?? name.replacingOccurrences(of: "_", with: " "))
     }
 }

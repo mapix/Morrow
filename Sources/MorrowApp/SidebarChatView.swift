@@ -50,7 +50,6 @@ struct SidebarChatView: View {
                 .onChange(of: model.scrollChatID) { if let id = model.scrollChatID { revealChat(id, proxy: proxy) } }
             }
             composer
-                .onChange(of: model.chatInput) { model.scheduleSessionDraft() }
                 .onChange(of: model.chatMaterials.map(\.id)) { model.scheduleSessionDraft() }
                 .onChange(of: model.newChatWork) { model.scheduleSessionDraft() }
                 .onChange(of: model.chatPinnedContext) { model.scheduleSessionDraft() }
@@ -81,15 +80,17 @@ struct SidebarChatView: View {
         return VStack(alignment: .leading, spacing: 8) {
             scopeAnchor
             if !model.chatMaterials.isEmpty { ScrollView(.horizontal) { HStack(spacing: 12) { ForEach(model.chatMaterials) { material in HStack(spacing: 6) { ChatMaterialPreview(material: material, compact: true); Text(material.name).font(Theme.label).lineLimit(1); Button { model.chatMaterials.removeAll { $0.id == material.id } } label: { Image(systemName: "xmark").font(Theme.small) }.buttonStyle(.plain).frame(width: 24, height: 28).help(L10n.t("移除文件：") + material.name).accessibilityLabel(L10n.t("移除文件：") + material.name) }.frame(maxWidth: 210) } } }.frame(height: 48) }
-            VStack(alignment: .leading, spacing: 4) {
+            ChatInputObservation(input: model.chatInputState) { input in
+              VStack(alignment: .leading, spacing: 4) {
                 RichChatInput(text: Binding(get: { model.chatEditorInput(in: sessionID) }, set: { model.setChatEditorInput($0, in: sessionID) }), pasteMedia: model.pasteChatMaterials, submit: { if sessionID == model.activeSessionID && !voice.preparing && !voice.recording && !voice.finalizing { model.beginSidebarChat() } }, focusTrigger: model.chatFocusNonce, sessionID: sessionID, currentText: { model.chatEditorInput(in: sessionID) }, placeholder: model.newChatWork ? L10n.t("把这件事交给我…") : L10n.t("说说下一步，或带上文件…")).id(sessionID).frame(height: model.compactLayout ? 64 : 80).disabled(voice.preparing || voice.recording || voice.finalizing)
                     .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in let targetID = model.activeSessionID; for provider in providers { _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in await model.addChatFile(url, sessionID: targetID) } } } }; return true }
                 HStack(spacing: 12) {
                     Menu { Button(L10n.t("添加文件…")) { model.pickChatFiles() }; Button(L10n.t("截取Morrow窗口")) { model.captureWorkspace() }; Button(L10n.t("粘贴截图或文件")) { model.pasteChatMaterials() } } label: { Image(systemName: "plus").frame(width: 32, height: 32).contentShape(Rectangle()) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32).help(L10n.t("添加文件或截图")).accessibilityLabel(L10n.t("添加文件或截图"))
                     Button { if voice.recording { voice.stop() } else { MediaTextView.finishFocusedComposition(); voiceBase = model.chatInput; voiceSessionID = model.activeSessionID; Task { await voice.start() } } } label: { Image(systemName: voice.recording ? "stop.circle.fill" : "mic").foregroundStyle(voice.recording ? Theme.accent2 : Theme.secondary) }.buttonStyle(ToolbarIconButtonStyle()).frame(width: 32, height: 32).disabled(voice.preparing || voice.finalizing).help(voice.recording ? L10n.t("结束语音输入") : L10n.t("语音输入")).accessibilityLabel(voice.recording ? L10n.t("结束语音输入") : L10n.t("语音输入"))
                     Spacer()
-                    Button { if model.currentSessionBusy, let task = model.sidebarTask { task.cancel() } else { MediaTextView.finishFocusedComposition(); voice.stop(); model.beginSidebarChat() } } label: { Image(systemName: model.currentSessionBusy ? "stop.fill" : "arrow.up") }.buttonStyle(ChatSendButtonStyle()).disabled(voice.recording || voice.preparing || voice.finalizing || (!model.currentSessionBusy && (model.sidebarTask != nil || model.partnerBusy || model.materialBusy || (model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatMaterials.isEmpty)))).help(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送（⌘Enter / Ctrl+Enter）")).accessibilityLabel(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送"))
+                    Button { if model.currentSessionBusy, let task = model.sidebarTask { task.cancel() } else { MediaTextView.finishFocusedComposition(); voice.stop(); model.beginSidebarChat() } } label: { Image(systemName: model.currentSessionBusy ? "stop.fill" : "arrow.up") }.buttonStyle(ChatSendButtonStyle()).disabled(voice.recording || voice.preparing || voice.finalizing || (!model.currentSessionBusy && (model.sidebarTask != nil || model.partnerBusy || model.materialBusy || (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatMaterials.isEmpty)))).help(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送（⌘Enter / Ctrl+Enter）")).accessibilityLabel(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送"))
                 }.padding(.horizontal, 8).padding(.bottom, 8)
+              }.onChange(of: input) { model.scheduleSessionDraft() }
             }.background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.fieldEdge))
             Text(L10n.t("⌘Enter / Ctrl+Enter 发送 · Enter 换行")).font(Theme.small).foregroundStyle(Theme.muted)
             if model.sidebarTask != nil && !model.currentSessionBusy { Text(L10n.t("另一段对话正在处理；当前输入会保留。")).font(Theme.label).foregroundStyle(Theme.secondary) }

@@ -90,6 +90,46 @@ public actor MailTransport {
     public func syncFlags(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String) async throws -> [UInt64: MailSyncFlags] {
         try await withSession(account, password: password) { try await $0.syncFlags(folder: folder, uids: uids, expectedValidity: validity) }
     }
+    /// Validate a small Gmail identity batch before any full-body request.
+    /// Other servers retain the normal body-download path.
+    public func reuseGmailBodies(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String,
+                                 store: MailStore, flags: [UInt64: MailSyncFlags], inventoryStarted: Date) async throws -> [UInt64: MailMessage] {
+        guard !uids.isEmpty else { return [:] }
+        let destinations = try await withSession(account, password: password) { try await $0.gmailIdentities(accountID: account.id, folder: folder, uids: uids, expectedValidity: validity) }
+        guard !destinations.isEmpty else { return [:] }
+        var candidates: [UInt64: [MailMessage]] = [:], sourceIdentities: [String: GmailMessageIdentity] = [:], candidateBytes: UInt64 = 0
+        var missing: [String: [MailMessage]] = [:]
+        for (uid, destination) in destinations.sorted(by: { $0.key > $1.key }) where flags[uid] != nil {
+            guard destination.rawSize <= 16 * 1024 * 1024 - candidateBytes else { continue }
+            let sources = try await store.gmailBodyCandidates(account: account.id, messageID: destination.messageID, destinationID: destination.mailID, rawSize: destination.rawSize)
+            candidateBytes += destination.rawSize
+            candidates[uid] = sources
+            for source in sources {
+                if let identity = try await store.cachedGmailIdentity(account: account, message: source) { sourceIdentities[source.id] = identity }
+                else { missing[source.folder + "\n" + String(source.uidValidity), default: []].append(source) }
+            }
+        }
+        for sources in missing.values {
+            var seen = Set<String>(); let distinct = sources.filter { seen.insert($0.id).inserted }
+            guard let first = distinct.first else { continue }
+            for start in stride(from: 0, to: distinct.count, by: 64) {
+                let batch = Array(distinct[start..<min(start + 64, distinct.count)])
+                let identities = try await withSession(account, password: password) { try await $0.gmailIdentities(accountID: account.id, folder: first.folder, uids: batch.map(\.uid), expectedValidity: first.uidValidity) }
+                for source in batch { if let identity = identities[source.uid] { sourceIdentities[source.id] = identity; try? await store.cacheGmailIdentity(identity, account: account) } }
+            }
+        }
+        var reused: [UInt64: MailMessage] = [:]
+        for (uid, destination) in destinations {
+            guard let flag = flags[uid] else { continue }
+            for source in candidates[uid] ?? [] {
+                guard let identity = sourceIdentities[source.id] else { continue }
+                if let saved = try await store.reuseGmailBody(source: source, sourceIdentity: identity, destination: destination, flags: flag, inventoryStarted: inventoryStarted) {
+                    reused[uid] = saved; try? await store.cacheGmailIdentity(destination, account: account); break
+                }
+            }
+        }
+        return reused
+    }
     public static func parseFlags(_ text: String) -> [UInt64: (read: Bool, starred: Bool)] {
         var out: [UInt64: (read: Bool, starred: Bool)] = [:]
         text.enumerateLines { line, _ in if let row = IMAPFlagRow.parse(line) { out[row.uid] = (row.read, row.starred) } }
@@ -146,9 +186,31 @@ public actor MailTransport {
         guard !account.usesPOP else { throw MailError.message("POP 邮箱不支持服务器批量标记。") }
         return try await withSession(account, password: password) { try await $0.markFolderRead(folder: folder, expectedValidity: expectedValidity) }
     }
-    public func move(_ account: MailAccount, message: MailMessage, destination: String, password: String) async throws -> MailMoveReceipt {
+    public func move(_ account: MailAccount, message: MailMessage, destination: String, password: String, store: MailStore? = nil) async throws -> MailMoveReceipt {
         guard message.uid > 0, destination != message.folder else { return MailMoveReceipt(destinationValidity: nil, destinationUID: nil) }
-        return try await withSession(account, password: password) { try await $0.move(folder: message.folder, uid: message.uid, destination: destination, expectedValidity: message.uidValidity) }
+        guard message.accountID == account.id else { throw MailError.message("移动来源不属于当前邮箱。") }
+        var sourceIdentity: GmailMessageIdentity?
+        if let store {
+            sourceIdentity = try await store.cachedGmailIdentity(account: account, message: message)
+            if sourceIdentity?.messageID != message.messageID.trimmingCharacters(in: .whitespacesAndNewlines) { sourceIdentity = nil }
+            if sourceIdentity == nil {
+                do {
+                    let identities = try await withSession(account, password: password) { try await $0.gmailIdentities(accountID: account.id, folder: message.folder, uids: [message.uid], expectedValidity: message.uidValidity) }
+                    if let identity = identities[message.uid], identity.messageID == message.messageID.trimmingCharacters(in: .whitespacesAndNewlines) {
+                        sourceIdentity = identity; try? await store.cacheGmailIdentity(identity, account: account)
+                    }
+                } catch is CancellationError { throw CancellationError() }
+                catch { sourceIdentity = nil }
+            }
+        }
+        let retainedIdentity = sourceIdentity
+        return try await withSession(account, password: password) { connection in
+            let receipt = try await connection.move(folder: message.folder, uid: message.uid, destination: destination, expectedValidity: message.uidValidity)
+            guard (receipt.destinationUID == nil || receipt.destinationValidity == nil || receipt.sourceUID == nil), let sourceIdentity = retainedIdentity else { return receipt }
+            // Source identity was obtained before MOVE. Looking up a vanished
+            // source UID afterwards can never establish its previous identity.
+            return await connection.resolveGmailMove(accountID: account.id, sourceIdentity: sourceIdentity, destination: destination) ?? receipt
+        }
     }
     public func createFolder(_ account: MailAccount, path: String, password: String) async throws {
         try await withSession(account, password: password) { try await $0.create(MailboxCodec.encode(path)) }

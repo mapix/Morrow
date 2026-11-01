@@ -57,9 +57,8 @@ without IDLE. Listening renews every 25 minutes, reconnects with bounded backoff
 and triggers catch-up after reconnecting. History downloads yield between raw
 batches when incoming-mail notifications need attention.
 
-macOS listens while the app runs. iOS listens while the app is in the foreground
-and catches up on returning to it; background push requires separate platform
-support and is not supplied by an IMAP IDLE connection. POP3 remains polled.
+Morrow listens while the macOS app runs and catches up after reconnecting.
+POP3 remains polled.
 
 Protocol checks use synthetic loopback peers. They cover an unchanged 85,433-UID
 folder with no FETCH/SEARCH, CONDSTORE deltas, QRESYNC deletions, UIDVALIDITY

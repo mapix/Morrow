@@ -1,7 +1,7 @@
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime';
 import { spawn } from 'node:child_process';
 import { realpath, stat, lstat, readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 let input = '';
@@ -16,16 +16,20 @@ if (typeof request.command !== 'string' || Buffer.byteLength(request.command) > 
 const domains = request.allowedDomains ?? [];
 if (domains.length > 20 || domains.some(d => typeof d !== 'string' || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(d) || d.endsWith('.localhost'))) throw new Error('Invalid network allowlist');
 const timeout = Math.min(60, Math.max(1, Number(request.timeoutSeconds) || 15));
+const mailSocket = join(root, 'input', 'mail-data.sock');
+if (request.mailData === true && !(await lstat(mailSocket)).isSocket()) throw new Error('Missing host mail data socket');
+const python = request.pythonExecutable ? await realpath(request.pythonExecutable) : null;
+if (python && !(await stat(python)).isFile()) throw new Error('Invalid Python runtime');
 // Keep SDK proxy plumbing; never inherit the desktop's credentials, shell
 // startup hooks or other process environment into executable tools.
-const safeEnv = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, TMPDIR: join(root, 'tmp'), LANG: 'en_US.UTF-8' };
+const safeEnv = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, TMPDIR: join(root, 'tmp'), CLAUDE_CODE_TMPDIR: join(root, 'tmp'), LANG: 'en_US.UTF-8' };
 for (const key of Object.keys(process.env)) delete process.env[key];
 Object.assign(process.env, safeEnv);
 const config = SandboxRuntimeConfigSchema.parse({
-  network: { allowedDomains: domains.map(domain => domain + ':443'), deniedDomains: [], strictAllowlist: true, allowLocalBinding: false, allowUnixSockets: [] },
+  network: { allowedDomains: domains.map(domain => domain + ':443'), deniedDomains: [], strictAllowlist: true, allowLocalBinding: false, allowUnixSockets: request.mailData === true ? [mailSocket] : [] },
   filesystem: {
     denyRead: ['/Users', '/Volumes', '/private/var', '/var', '/private/tmp', '/tmp', '/etc', '/private/etc', '/Library/Keychains', '/Library/Application Support', '/opt', '/usr/local'],
-    allowRead: [root, process.execPath, '/private/var/select/sh', '/private/etc/ssl', '/private/etc/resolv.conf'],
+    allowRead: [root, process.execPath, ...(python ? [python, dirname(dirname(python))] : []), '/private/var/select/sh', '/private/etc/ssl', '/private/etc/resolv.conf'],
     allowWrite: [join(root, 'output'), join(root, 'tmp')],
     denyWrite: [join(root, 'input')]
   },

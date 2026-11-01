@@ -43,7 +43,7 @@ class PublicationGateTests(unittest.TestCase):
         self.assertEqual(publication.path_category("Sources/unsafe\nfile.swift", policy), "unsafe-path")
         self.assertIsNone(publication.path_category("website/deploy/nginx.conf", POLICY))
         self.assertEqual(publication.path_category("website/deploy/personal.conf", POLICY), "unapproved-configuration-file")
-        self.assertIsNone(publication.path_category("iOS/MorrowMobile/Resources/Notices/MLX-LICENSE", POLICY))
+        self.assertEqual(publication.path_category("iOS/MorrowMobile/Resources/Notices/MLX-LICENSE", POLICY), "outside-public-allowlist")
         self.assertEqual(publication.path_category("docs/public/personal-LICENSE", POLICY), "unapproved-file-type")
 
     def testIndexBytesAreCheckedInsteadOfSanitizedWorktree(self):

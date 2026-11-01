@@ -6,7 +6,7 @@ struct PeopleWorkspaceView: View {
     @EnvironmentObject var model: AppModel
     @State private var query = ""
     @State private var editing: ContactEntry?
-    private var profiles: [ContactProfile] { model.contactProfiles.filter { query.isEmpty || ($0.display + $0.email + $0.topics.joined()).localizedCaseInsensitiveContains(query) } }
+    private var profiles: [ContactProfile] { query.isEmpty ? model.contactProfiles : model.contactProfiles.filter { ($0.display + $0.email + $0.topics.joined()).localizedCaseInsensitiveContains(query) } }
     var body: some View {
         HSplitView {
             VStack(alignment: .leading, spacing: 16) {

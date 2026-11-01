@@ -9,6 +9,7 @@ import MorrowCore
     let allowedIDs: Set<String>?
     let agreement: WorkAgreement?
     var evidenceIDs = Set<String>()
+    var initialEvidenceIDs = Set<String>()
     var citedIDs: [String] = []
     var draftIDs: [String] = []
     var artifactIDs: [String] = []
@@ -22,6 +23,7 @@ import MorrowCore
     var trace = AgentExecutionTrace()
     var lastStreamUpdate = Date.distantPast
     var sandbox: ResponderSandboxRuntime?
+    var sandboxDataTask: Task<Void, Error>?
     var materials: [ChatMaterial] = []
     var draftSnapshots: [String: ComposeDraft] = [:]
     init(sessionID: String, instruction: String, ui: WorkspaceContext?, runID: String?, allowedIDs: Set<String>?, agreement: WorkAgreement?) {
@@ -57,6 +59,20 @@ extension AppModel {
             if let composer { context.draftSnapshots[composer.id] = composer }
             let checkpoints = try AgentCheckpointStore(root: store.root), runtime = try AgentSDKRuntime()
             let selected = try await initialChatEvidence(uiContext)
+            context.initialEvidenceIDs.formUnion(selected.map(\.id))
+            let contactSnapshot: OpenUIJSON
+            if capturedUI?.enforcesMailScope == true && capturedUI?.page == "materials" { contactSnapshot = .null }
+            else {
+                let inventory = sdkContacts(["limit": .number(20)], context: context, recordSources: false).object
+                let rows: [OpenUIJSON]
+                if case .array(let values) = inventory["rows"] { rows = values } else { rows = [] }
+                let compact = rows.map { row -> OpenUIJSON in
+                    let fields = row.object
+                    if case .array(let sources) = fields["sourceMailIDs"] { context.initialEvidenceIDs.formUnion(sources.map(\.text)) }
+                    return .object(fields.filter { ["email", "display", "mailCount", "directReceived", "directSent", "hasDirectExchange", "lastSeen", "sourceMailIDs"].contains($0.key) })
+                }
+                contactSnapshot = .object(["rows": .array(compact), "total": inventory["total"] ?? .number(0), "nextOffset": inventory["nextOffset"] ?? .null, "coverage": inventory["coverage"] ?? .null])
+            }
             let hints = uiContext.map { String(decoding: (try? JSONEncoder().encode(chatContextForModel($0))) ?? Data(), as: UTF8.self) } ?? "null"
             let evidence = selected.prefix(4).map { "ID:\($0.id)\n主题:\($0.subject)\n资料片段:\(String($0.text.prefix(1600)))" }.joined(separator: "\n\n")
             let uploads = try await materialEvidence(materials)
@@ -70,17 +86,24 @@ extension AppModel {
             search_mail提供语义候选和条件过滤，候选数不是全局总数。用scan_mail跨页检查元数据、用read_mail/read_attachment分页查看正文。统计总数必须以mail_statistics的实际回执为准；尚未同步/索引的资料说明覆盖限制。
             read_report读取的是已保存简报；其中的来源引用不代表本轮重新核对了所有原邮件。需要核实时再读取对应原邮件。简报优先保存document结构，未完成的覆盖和不确定事项必须明确标注。
             read_mail的pageSize是一次读取的字符数量，不是结束下标；默认6000字，不要用几百字反复翻页。用户只要求几封相关结果时，取得足够事实就完成，不为读而读。需要完整正文才继续nextOffset。
+            联系人筛选先用list_contacts取得全体联系人数量、按双向直接往来排序的候选、往来计数和代表邮件片段，再用read_mails一次核验多封候选。联系人优先看用户直接回复、合作事项及近期互动；抄送、群发、邮箱名称和频次都不能单独证明是真人或重要关系。除非用户明确要求逐封审计，不要通读候选的所有历史正文；默认先核验最有依据的一批，回答说明采用的标准、实际覆盖和不确定身份。list_contacts未覆盖的页不能说成已逐人核验。
+            独立的只读查询可在同一轮发出多个工具调用；已知多个邮件ID优先read_mails，避免每封邮件都单独等待一轮模型。普通聊天先尽快交付有证据的结论；阶段预算用尽时说明未完成的覆盖，不把阶段结果说成全面审计完成。
+            你有coding能力：run_code的python字段直接填写Python源代码（无需shell转义），command字段可运行shell，两者选一。代码可import maildata，自主用SQL查询本轮允许的整个本机邮件范围；maildata.query(sql,max_rows=1000)返回columns/rows/truncated/coverage。mail_index是全范围的轻量元数据表（id,canonical_id,account_id,folder,from_email,from_name,to_json,cc_json,date,subject,snippet,summary,category,is_read,is_starred,labels_json,in_reply_to）；mail视图增加按需读取的完整text；contacts表含email,name,mail_count,direct_received,direct_sent,copied,last_seen,source_ids_json；accounts含id,email,name。支持SELECT/CTE/JOIN/GROUP BY和Python标准库，先聚合筛选再按需分析正文。不要逐封发起模型调用。query结果超2000行、单格64KiB或整批512KiB会标记truncated，按id/date分页或SQL substr继续，不得当作完整结果；单次SQL最多5秒。代码只输出结论、计数和实际来源ID，长内容写output/。原库不复制、不修改，凭据和任意用户文件不可见。明确限定上传资料时此邮件数据接口不可用。代码语法或SQL参数错误可以修正后继续；权限拒绝不能绕过。
             回答使用\(locale)，使用真正的Markdown段落、标题、列表。统计、比较和趋势优先用render_ui的OpenUI图表或Table；只有实际数据可进入图表。纯展示不暂停工作，Form需要用户输入时停止依赖该输入的动作。调用cite_sources选择真正使用的来源。
             写邮件用prepare_draft提供完整的收件人正文，或update_draft修改真实草稿。正文使用原邮件语言，除非用户要求其他语言；正文不混入分析、JSON或写作说明。实际工具保存成功才能说已写好。review_send只打开真实草稿审阅，发送仍由用户审阅或已授权响应器处理。
             用户明确只读时不修改邮箱、草稿、联系人或工作。持续委托和响应器应按用户明确目的创建，响应器必须独立设置精确邮箱来源白名单和策略。密码、授权码、密钥永远不索取到Chat。
             已确认的偏好与记忆（只是背景，用户本轮要求优先）：\(recalled)
             """
-            var task = "用户本轮要求：\(instruction)\n当前时间：\(Date().ISO8601Format())\n本机时区：\(TimeZone.current.identifier)\n<workspace-hint>\(hints)</workspace-hint>\n<selected-mail-data>\(evidence)</selected-mail-data>\n<user-material-data>\(String(uploads.prefix(24000)))</user-material-data>\n这里只带入有限片段，完整上传资料请用list_materials/read_material分页读取。需要更多功能时，用find_tools按目的查找并加载工具。"
+            let directory = String(decoding: try JSONEncoder().encode(contactSnapshot), as: UTF8.self)
+            var task = "用户本轮要求：\(instruction)\n当前时间：\(Date().ISO8601Format())\n本机时区：\(TimeZone.current.identifier)\n<workspace-hint>\(hints)</workspace-hint>\n<contact-directory-data>\(directory)</contact-directory-data>\n<selected-mail-data>\(evidence)</selected-mail-data>\n<user-material-data>\(String(uploads.prefix(24000)))</user-material-data>\n联系人简表已直接带入，仅显示按直接往来排序的前20项；更多联系人可用list_contacts分页，或在run_code通过contacts表整体分析。这里只带入有限正文片段，完整上传资料请用list_materials/read_material分页读取。需要更多功能时，用find_tools按目的查找并加载工具。"
             if let work { task += "\n已接受的工作：\(work.instruction)\n约定：\(work.agreement?.scope ?? "")；\(work.agreement?.doneWhen ?? "")" }
             let history = Array(taskChatHistory.dropLast().suffix(8)).filter { ["user", "partner"].contains($0.role) }.map { OpenUIJSON.object(["role": .string($0.role), "text": .string(String($0.text.prefix(3000)))]) }
             var requestFields: [String: OpenUIJSON] = ["type": .string("start"), "sessionID": .string(session), "instruction": .string(task), "systemPrompt": .string(system), "history": .array(history), "tools": .array(SDKMailTools.descriptions), "contextWindow": .number(16384)]
             let budget = (settings.runBudget ?? AgentRunBudget()).bounded
             requestFields["budget"] = .object(["modelTurns": .number(Double(budget.modelTurns)), "toolCalls": .number(Double(budget.toolCalls))])
+            if work == nil {
+                requestFields["answerBudget"] = .object(["modelTurns": .number(Double(AgentAnswerBudget.modelTurns)), "toolCalls": .number(Double(AgentAnswerBudget.toolCalls)), "seconds": .number(Double(AgentAnswerBudget.seconds))])
+            }
             if waiting != nil { requestFields["resume"] = .string(instruction) }
             let request: OpenUIJSON = .object(requestFields)
             let modelSettings = settings
@@ -99,9 +122,12 @@ extension AppModel {
                 try await store.save(OpenUIJSON.object(value), kind: "agent-sdk-waiting", id: session)
             } else { try await store.remove(kind: "agent-sdk-waiting", id: session) }
             var reply = PartnerChat(role: "partner", text: result.text, messageIDs: context.citedIDs.isEmpty ? Array(context.evidenceIDs.prefix(60)) : context.citedIDs)
+            var seenSources = Set<String>()
+            reply.messageIDs = reply.messageIDs.map(resolvedMovedMailID).filter { seenSources.insert($0).inserted }
             reply.sessionID = session; reply.draftIDs = context.draftIDs
             reply.artifactIDs = context.artifactIDs
             if result.paused == true, result.pauseReason != nil { reply.continuationPrompt = "继续刚才的任务，使用已保存的进度与资料。出现问题先说明并询问我。" }
+            if result.answerLimited == true { reply.continuationPrompt = "在刚才结果基础上继续核验尚未覆盖的部分，复用已有资料，明确说明新增证据。" }
             context.trace.finish(status: result.pauseReason == "runtime_error" ? "failed" : result.paused == true ? "paused" : "completed"); reply.executionTrace = context.trace
             if context.presentation == nil, ChatStatisticsPresentation.requested(instruction), let statistics = context.statistics { context.presentation = OpenUIInteraction(source: statistics.chartSource, runID: runID) }
             if var page = context.presentation { page.sessionID = session; page.chatID = reply.id; reply.openUIID = page.id; context.presentation = page }
@@ -137,7 +163,7 @@ extension AppModel {
         try Task.checkCancellation()
         let fields = request.object, name = fields["name"]?.text ?? "", args = fields["args"]?.object ?? [:]
         guard SDKMailTools.names.contains(name), try JSONEncoder().encode(request).count <= 256 * 1024 else { throw MailError.message("Agent 工具请求无效。") }
-        let readTools: Set<String> = ["search_mail", "scan_mail", "read_mail", "mail_statistics", "list_accounts", "list_folders", "list_contacts", "get_contact_profile", "list_attachments", "read_attachment", "list_materials", "read_material", "list_drafts", "read_draft", "list_reports", "read_report", "list_memories", "list_responders", "workspace_state", "list_sessions", "list_models", "get_settings", "cite_sources", "render_ui", "run_code", "save_report"]
+        let readTools: Set<String> = ["search_mail", "scan_mail", "read_mail", "read_mails", "mail_statistics", "list_accounts", "list_folders", "list_contacts", "get_contact_profile", "list_attachments", "read_attachment", "list_materials", "read_material", "list_drafts", "read_draft", "list_reports", "read_report", "list_memories", "list_responders", "workspace_state", "list_sessions", "list_models", "get_settings", "cite_sources", "render_ui", "run_code", "save_report"]
         if context.ui?.enforcesMailScope == true && context.ui?.page == "materials", !["list_materials", "read_material", "render_ui", "run_code", "save_report", "list_memories"].contains(name) { throw MailError.message("本轮明确只使用带入资料，未读取邮箱。") }
         if (context.readOnly || context.awaitingInput) && !readTools.contains(name) { throw MailError.message("本轮仅查询或正在等待用户输入，未执行修改。") }
         let callID = fields["callId"]?.text ?? UUID().uuidString, receiptID = MailStore.hash(context.sessionID + ":" + callID)
@@ -204,11 +230,12 @@ extension AppModel {
             reply = .object(["total": .number(Double(candidates.count)), "offset": .number(Double(offset)), "nextOffset": offset + rows.count < candidates.count ? .number(Double(offset + rows.count)) : .null, "rows": .array(rows.map { sdkMailRow($0, snippet: String($0.text.prefix(240))) }), "coverage": .string("本机已同步邮件的元数据；未逐封读取完整正文")])
         case "read_mail":
             let id = args["messageID"]?.text ?? ""; try sdkCheckMail(id, context: context)
-            guard let mail = try await store.message(id) else { throw MailError.message("邮件完整正文尚未在本机。") }
+            guard let mail = try await store.message(resolvedMovedMailID(id)) else { throw MailError.message("邮件完整正文尚未在本机。") }
             let offset = max(0, Int(args["offset"]?.text ?? "0") ?? 0), requested = Int(args["pageSize"]?.text ?? args["limit"]?.text ?? "6000") ?? 6000
             let limit = min(8000, max(4000, requested))
             let text = String(mail.text.dropFirst(offset).prefix(limit)); context.evidenceIDs.insert(id); sidebarEvidenceMailIDs.insert(id); context.sourceText.append(String(text.prefix(8000)))
-            reply = .object(["messageID": .string(id), "subject": .string(mail.subject), "from": .string(mail.from.email), "date": .string(mail.date.ISO8601Format()), "text": .string(text), "totalCharacters": .number(Double(mail.text.count)), "pageSize": .number(Double(text.count)), "nextOffset": offset + text.count < mail.text.count ? .number(Double(offset + text.count)) : .null, "readStateUnchanged": .bool(true)])
+            reply = .object(["messageID": .string(id), "currentMessageID": .string(mail.id), "folder": .string(mail.folder), "subject": .string(mail.subject), "from": .string(mail.from.email), "date": .string(mail.date.ISO8601Format()), "text": .string(text), "totalCharacters": .number(Double(mail.text.count)), "pageSize": .number(Double(text.count)), "nextOffset": offset + text.count < mail.text.count ? .number(Double(offset + text.count)) : .null, "readStateUnchanged": .bool(true)])
+        case "read_mails": reply = try await sdkReadMails(args, context: context)
         case "mail_statistics":
             let query = MailQuery(args["query"]?.text ?? "")
             if !query.text.isEmpty { reply = try sdkQueryCorrection(tool: name, args: args, context: context); break }
@@ -218,15 +245,13 @@ extension AppModel {
             context.statistics = statistics
             reply = .object(["total": .number(Double(count)), "unread": .number(Double(unread)), "summary": .string(statistics.summary), "chartSource": .string(statistics.chartSource), "coverage": .string("本机已同步范围，不包含未下载的服务器邮件")])
         case "list_contacts":
-            let query = args["query"]?.text ?? ""
-            let people = contactProfiles.filter { profile in (context.allowedIDs == nil || !Set(profile.mailIDs).isDisjoint(with: context.allowedIDs!)) && (query.isEmpty || (profile.display + profile.email + profile.topics.joined()).localizedCaseInsensitiveContains(query)) }.prefix(40)
-            reply = .array(people.map { .object(["email": .string($0.email), "display": .string($0.display), "mailCount": .number(Double(context.allowedIDs == nil ? $0.mailCount : $0.mailIDs.filter { context.allowedIDs?.contains($0) ?? false }.count)), "topics": .array(context.allowedIDs == nil ? $0.topics.prefix(8).map(OpenUIJSON.string) : []), "sourceMailIDs": .array($0.mailIDs.filter { context.allowedIDs?.contains($0) ?? true }.prefix(8).map(OpenUIJSON.string))]) })
+            reply = sdkContacts(args, context: context)
         case "get_contact_profile":
             guard let profile = contactProfiles.first(where: { $0.email.caseInsensitiveCompare(args["email"]?.text ?? "") == .orderedSame }) else { throw MailError.message("联系人画像不存在。") }
             let sources = profile.mailIDs.filter { context.allowedIDs?.contains($0) ?? true }
             guard context.allowedIDs == nil || !sources.isEmpty else { throw MailError.message("联系人不在当前明确范围内。") }
             context.evidenceIDs.formUnion(sources.prefix(12))
-            reply = .object(["email": .string(profile.email), "display": .string(profile.display), "mailCount": .number(Double(context.allowedIDs == nil ? profile.mailCount : sources.count)), "topics": .array(context.allowedIDs == nil ? profile.topics.prefix(12).map(OpenUIJSON.string) : []), "claims": .array(context.allowedIDs == nil ? profile.claims.prefix(10).map { .object(["text": .string($0.text), "quote": .string($0.quote)]) } : []), "sourceMailIDs": .array(sources.prefix(12).map(OpenUIJSON.string))])
+            reply = .object(["email": .string(profile.email), "display": .string(profile.display), "mailCount": .number(Double(context.allowedIDs == nil ? profile.mailCount : sources.count)), "topics": .array(context.allowedIDs == nil ? profile.topics.prefix(12).map(OpenUIJSON.string) : []), "claims": .array(context.allowedIDs == nil ? profile.claims.prefix(10).map { .object(["text": .string($0.text), "quote": .string($0.quote), "messageID": .string($0.mailID)]) } : []), "sourceMailIDs": .array(sources.prefix(12).map(OpenUIJSON.string))])
         case "list_attachments":
             let query = args["query"]?.text ?? ""
             let records = attachmentRecords.filter { (context.allowedIDs?.contains($0.mail.id) ?? true) && (query.isEmpty || ($0.attachment.name + $0.kind + $0.mail.subject).localizedCaseInsensitiveContains(query)) }.prefix(60)
@@ -247,7 +272,7 @@ extension AppModel {
             reply = .object(["attachmentID": .string(id), "messageID": .string(entry.mail.id), "name": .string(entry.attachment.name), "text": .string(text), "method": .string(extracted.source), "failure": extracted.failure.map(OpenUIJSON.string) ?? .null, "truncated": .bool(extracted.truncated), "nextOffset": offset + text.count < extracted.text.count ? .number(Double(offset + text.count)) : .null])
         case "cite_sources":
             guard case .array(let values) = args["messageIDs"] else { throw MailError.message("请选择实际来源ID。") }
-            let ids = values.map(\.text); guard ids.count <= 200, ids.allSatisfy(context.evidenceIDs.contains) else { throw MailError.message("引用不属于本轮实际工具来源。") }
+            let ids = values.map(\.text); guard ids.count <= 200, ids.allSatisfy({ context.evidenceIDs.contains($0) || context.initialEvidenceIDs.contains($0) }) else { throw MailError.message("引用不属于本轮实际来源。") }
             context.citedIDs = ids; reply = .object(["cited": .number(Double(ids.count))])
         case "render_ui":
             let source = args["source"]?.text ?? "", root = try OpenUILang.parse(source).root(); try root.validatePresentation()
@@ -309,12 +334,28 @@ extension AppModel {
             if !context.artifactIDs.contains(artifact.id) { context.artifactIDs.append(artifact.id) }
             reply = .object(["artifactID": .string(artifact.id), "saved": .bool(true), "sessionID": .string(context.sessionID), "instruction": .string("简报已保存并关联本会话；保存成功不代表整个任务已完成。")])
         case "run_code":
-            let code = args["command"]?.text ?? ""; guard !code.isEmpty, code.utf8.count <= 16000 else { throw MailError.message("沙箱命令为空或过长。") }
+            let python = args["python"]?.text, code = python ?? args["command"]?.text ?? ""
+            guard !code.isEmpty, code.utf8.count <= 16000, !(python != nil && args["command"] != nil) else { throw MailError.message("请提供不超过16000字节的python代码或command命令，两者选一。") }
             if context.sandbox == nil { context.sandbox = try ResponderSandboxRuntime() }
             let sandbox = context.sandbox!; try sandbox.stageText(String(context.sourceText.suffix(16).joined(separator: "\n\n").prefix(60000)), name: "mail.txt")
+            if !(context.ui?.enforcesMailScope == true && context.ui?.page == "materials") {
+                if context.sandboxDataTask == nil {
+                    let active = Set(accounts.filter(\.enabled).map(\.id))
+                    let inventory = primaryMails.filter { active.contains($0.accountID) && (context.allowedIDs?.contains($0.id) ?? true) }
+                    let usedAccounts = Set(inventory.map(\.accountID))
+                    let profiles = contactProfiles, ownAccounts = accounts.filter { $0.enabled && (context.allowedIDs == nil || usedAccounts.contains($0.id)) }
+                    let root = store.root, unmailed = context.allowedIDs == nil
+                    context.sandboxDataTask = Task.detached(priority: .userInitiated) {
+                        let candidates = ContactTriage.build(profiles: profiles, mails: inventory, accounts: ownAccounts, includeUnmailed: unmailed)
+                        try sandbox.enableMailData(root: root, mails: inventory, contacts: candidates, accounts: ownAccounts)
+                    }
+                }
+                try await context.sandboxDataTask?.value
+            }
             var policy = ResponderExecutionPolicy(); policy.networkDomains = []
-            let result = try await sandbox.run(code, policy: policy)
-            reply = .object(["exitCode": .number(Double(result.exitCode)), "stdout": .string(result.stdout), "stderr": .string(result.stderr), "timedOut": .bool(result.timedOut), "truncated": .bool(result.truncated), "runtime": .string(result.runtime)])
+            let result = try await (python == nil ? sandbox.run(code, policy: policy) : sandbox.runPython(code, policy: policy))
+            context.evidenceIDs.formUnion(sandbox.observedMailDataIDs); sidebarEvidenceMailIDs.formUnion(sandbox.observedMailDataIDs)
+            reply = .object(["ok": .bool(result.exitCode == 0 && !result.timedOut && !result.truncated), "exitCode": .number(Double(result.exitCode)), "stdout": .string(result.stdout), "stderr": .string(result.stderr), "timedOut": .bool(result.timedOut), "truncated": .bool(result.truncated), "runtime": .string(result.runtime)])
         default:
             guard let type = SDKMailTools.operations[name] else { throw MailError.message("未知邮件工具。") }
             var values = args; values["type"] = .string(type)
@@ -336,6 +377,62 @@ extension AppModel {
     }
     private func sdkCheckMail(_ id: String, context: SDKChatContext) throws {
         guard let mail = mailByID(id), accounts.contains(where: { $0.id == mail.accountID && $0.enabled }), context.allowedIDs?.contains(id) ?? true else { throw MailError.message("邮件不存在或不在本轮明确允许的范围内。") }
+    }
+    private func sdkReadMails(_ args: [String: OpenUIJSON], context: SDKChatContext) async throws -> OpenUIJSON {
+        guard case .array(let values) = args["messageIDs"], !values.isEmpty, values.count <= AgentAnswerBudget.maximumBatchMails,
+              values.allSatisfy({ if case .string(let id) = $0 { return !id.isEmpty }; return false }) else { throw MailError.message("请提供1至12个真实邮件ID，更多邮件分批读取。") }
+        var seen = Set<String>(); let ids = values.map(\.text).filter { seen.insert($0).inserted }
+        // Validate the entire batch before loading or registering any source.
+        for id in ids { try sdkCheckMail(id, context: context) }
+        let lookupIDs = ids.map(resolvedMovedMailID)
+        let mails = try await store.messages(ids: lookupIDs)
+        guard mails.count == Set(lookupIDs).count else { throw MailError.message("批次中有邮件完整正文尚未在本机。") }
+        let byID = Dictionary(mails.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let offset = max(0, Int(args["offset"]?.text ?? "0") ?? 0)
+        let requested = Int(args["pageSize"]?.text ?? "2000") ?? 2000
+        let limit = min(AgentAnswerBudget.batchCharacters / ids.count, min(4000, max(1000, requested)))
+        let rows = ids.map { requestedID -> OpenUIJSON in
+            let mail = byID[resolvedMovedMailID(requestedID)]!
+            let text = String(mail.text.dropFirst(offset).prefix(limit))
+            context.sourceText.append(text)
+            var row = sdkMailRow(mail, snippet: "").object
+            row["messageID"] = .string(requestedID); row["currentMessageID"] = .string(mail.id)
+            row["fromName"] = .string(mail.from.name)
+            row["to"] = .array(mail.to.map { .string($0.email) })
+            row["cc"] = .array(mail.cc.map { .string($0.email) })
+            row["text"] = .string(text)
+            row["offset"] = .number(Double(offset))
+            row["totalCharacters"] = .number(Double(mail.text.count))
+            row["pageSize"] = .number(Double(text.count))
+            row["nextOffset"] = offset + text.count < mail.text.count ? .number(Double(offset + text.count)) : .null
+            return .object(row)
+        }
+        context.evidenceIDs.formUnion(ids); sidebarEvidenceMailIDs.formUnion(ids)
+        return .object(["rows": .array(rows), "readStateUnchanged": .bool(true), "coverage": .string("仅读取所选邮件的指定正文片段；需要更多正文时按该邮件nextOffset读取")])
+    }
+    private func sdkContacts(_ args: [String: OpenUIJSON], context: SDKChatContext, recordSources: Bool = true) -> OpenUIJSON {
+        let query = args["query"]?.text ?? "", offset = max(0, Int(args["offset"]?.text ?? "0") ?? 0)
+        let limit = min(40, max(1, Int(args["limit"]?.text ?? "20") ?? 20))
+        let active = Set(accounts.filter(\.enabled).map(\.id))
+        let inventory = primaryMails.filter { active.contains($0.accountID) && (context.allowedIDs?.contains($0.id) ?? true) }
+        var candidates = ContactTriage.build(profiles: contactProfiles, mails: inventory, accounts: accounts, includeUnmailed: context.allowedIDs == nil).filter { candidate in
+            query.isEmpty || (candidate.profile.display + " " + candidate.profile.email + " " + candidate.mails.map(\.subject).joined(separator: " ")).localizedCaseInsensitiveContains(query)
+        }
+        if args["sort"]?.text == "recent" {
+            candidates.sort { left, right in
+                let a = left.mails.first?.date ?? .distantPast, b = right.mails.first?.date ?? .distantPast
+                return a == b ? left.profile.email < right.profile.email : a > b
+            }
+        } else { candidates.sort(by: ContactTriage.interactionOrder) }
+        let page = Array(candidates.dropFirst(offset).prefix(limit))
+        let rows = page.map { candidate -> OpenUIJSON in
+            let samples = candidate.samples
+            let ids = samples.map(\.id)
+            if recordSources { context.evidenceIDs.formUnion(ids); sidebarEvidenceMailIDs.formUnion(ids) }
+            let sources = samples.map { sdkMailRow($0, snippet: String($0.text.prefix(400))) }
+            return .object(["email": .string(candidate.profile.email), "display": .string(candidate.profile.display), "mailCount": .number(Double(candidate.mails.count)), "directReceived": .number(Double(candidate.directReceived)), "directSent": .number(Double(candidate.directSent)), "hasDirectExchange": .bool(candidate.hasDirectExchange), "copied": .number(Double(candidate.copied)), "lastSeen": candidate.mails.first.map { .string($0.date.ISO8601Format()) } ?? .null, "automationHints": .array(candidate.automationHints.map(OpenUIJSON.string)), "topics": .array(Array(Set(candidate.mails.map(\.normalizedSubject))).sorted().prefix(6).map(OpenUIJSON.string)), "sourceMailIDs": .array(ids.map(OpenUIJSON.string)), "samples": .array(sources)])
+        }
+        return .object(["rows": .array(rows), "total": .number(Double(candidates.count)), "offset": .number(Double(offset)), "nextOffset": offset + page.count < candidates.count ? .number(Double(offset + page.count)) : .null, "sort": .string(args["sort"]?.text == "recent" ? "recent" : "interaction"), "coverage": .string("本机已同步且本轮允许的联系人元数据；排序优先双向直接往来及用户直接发信；代表片段未经完整正文核验，自动化地址提示不能单独证明是否真人")])
     }
     private func sdkQueryCorrection(tool: String, args: [String: OpenUIJSON], context: SDKChatContext) throws -> OpenUIJSON {
         let query = args["query"]?.text ?? "", key = tool + ":" + query
@@ -394,6 +491,7 @@ private enum SDKMailTools {
             tool("search_mail", "语义、关键词及日期/发件人条件检索；可用cursor继续同一候选列表，Nimble复核相关性。", ["query": string, "cursor": string, "limit": integer]),
             tool("scan_mail", "跨页扫描所有已同步邮件元数据，用日期/from/to等条件；offset继续，不能作为全文读取。", ["query": string, "offset": integer, "limit": integer]),
             tool("read_mail", "读取真实邮件正文，保持已读状态。offset是起始字符，pageSize是每页字数（默认6000、最少4000、最多8000），不是结束下标；不需要完整正文时取得足够事实即停止。limit仅作旧版本别名。", ["messageID": string, "offset": integer, "pageSize": integer, "limit": integer], required: ["messageID"]),
+            tool("read_mails", "一次读取1至12封指定邮件正文片段，保持已读状态，默认每封2000字、整批最多24000字；优先用于多封候选核验，避免逐封模型往返。每封返回nextOffset，需要更多正文再单独read_mail。", ["messageIDs": .object(["type": .string("array"), "items": string, "minItems": .number(1), "maxItems": .number(12)]), "offset": integer, "pageSize": integer], required: ["messageIDs"]),
             tool("mail_statistics", "实际本机邮件统计，query只接受日期/发件人等确定条件，kind为categories或monthly。", ["query": string, "kind": string]),
             tool("list_accounts", "列出邮箱ID、地址、服务商和是否启用；不返回凭据。"),
             tool("list_folders", "列出邮箱实际文件夹路径与角色，移动邮件前核对，不要猜测路径。", ["accountID": string]),
@@ -411,7 +509,7 @@ private enum SDKMailTools {
             tool("archive_session", "归档已结束的Chat会话，可恢复；当前运行会话不能归档。", ["sessionID": string], required: ["sessionID"]),
             tool("batch_mail", "使用原生批量接口处理多封真实邮件，支持mark_read、mark_unread、star、unstar、archive、trash、label。", ["messageIDs": .object(["type": .string("array"), "items": string]), "action": string, "label": string], required: ["messageIDs", "action"]),
             tool("mark_folder_read", "按用户要求将某个实际邮箱文件夹跨页全部标为已读，使用服务器批量接口；先list_folders核对。", ["accountID": string, "folderPath": string], required: ["accountID", "folderPath"]),
-            tool("list_contacts", "列出历史联系人profile和来源，可用query姓名/地址/主题。", ["query": string]),
+            tool("list_contacts", "联系人筛选优先使用：一次汇总全部允许联系人的直接往来计数，并返回按双向互动排序的候选、代表邮件片段和来源ID；offset/limit分页（默认20、最多40），sort可选interaction或recent；query过滤姓名/地址/邮件主题。元数据不能单独证明真人身份。", ["query": string, "offset": integer, "limit": integer, "sort": string]),
             tool("get_contact_profile", "读取联系人完整画像、事实引用和来源邮件；可继续按此联系人检索全部往来。", ["email": string], required: ["email"]),
             tool("list_attachments", "列出真实附件ID、文件名和邮件来源，可用query筛选。", ["query": string]),
             tool("read_attachment", "提取PDF、图片及其他附件的可读内容，offset分页；回执注明提取失败或截断。", ["attachmentID": string, "offset": integer], required: ["attachmentID"]),
@@ -429,7 +527,7 @@ private enum SDKMailTools {
             tool("list_reports", "查找已保存简报，返回实际artifactID、摘要和所属会话；不把全部简报正文加入上下文。"),
             tool("read_report", "读取真实简报正文和来源，修改前先读取；界面中的artifactID只是提示。", ["artifactID": string], required: ["artifactID"]),
             tool("save_report", "保存并关联本会话的结构化简报；更新本会话已有简报可传artifactID。优先document，content仅用于旧格式。摘要summary、覆盖进度coverage、发现findings、待办actions、待核实uncertainties和数据表tables分开。status=in_progress/needs_review/complete；覆盖未完成或仍有未知事项时不得使用complete。保存成功不代表任务完成。", ["title": string, "content": string, "artifactID": string, "document": briefSchema], required: ["title"]),
-            tool("run_code", "在Anthropic Sandbox Runtime分析本轮已读取资料。input/mail.txt只含本轮来源；可写output/和tmp/，默认无网络，不可访问用户文件或邮箱库。", ["command": string], required: ["command"]),
+            tool("run_code", "自主编写并执行代码：python字段直接传Python源代码，或command传shell命令，两者选一。Python可import maildata；maildata.query(SQL)只读查询全范围的mail_index元数据、mail完整text、contacts、accounts，支持CTE/JOIN/GROUP BY，范围由本轮权限控制。原库不可访问或修改，无凭据和网络；只能写output/和tmp/。输入资料限定模式只提供input/mail.txt。", ["command": string, "python": string]),
         ]
         for (name, operation) in operations.sorted(by: { $0.key < $1.key }) {
             var properties: [String: OpenUIJSON] = [:], required: [String] = []
@@ -457,6 +555,6 @@ private enum SDKMailTools {
     static func title(_ name: String) -> String {
         let values = ["archive_mail": "归档邮件", "mark_read": "标为已读", "mark_unread": "标为未读", "label_mail": "添加标签", "star_mail": "添加星标", "unstar_mail": "取消星标", "trash_mail": "移到废纸篓", "sync_mail": "同步邮箱", "create_folder": "创建文件夹", "create_delegation": "创建持续委托", "add_account": "连接邮箱", "add_contact": "添加联系人", "create_calendar_event": "准备日历安排", "compose_mail": "打开写邮件", "export_mail": "导出邮件", "forward_mail": "转发邮件", "reply_mail": "回复邮件", "reply_all": "回复全部", "move_mail": "移动邮件", "navigate": "切换页面", "select_mail": "打开邮件", "select_contact": "打开联系人", "select_attachment": "预览附件", "save_attachment": "保存附件", "show_search": "显示搜索结果", "update_draft": "修改草稿", "import_mail": "导入邮件", "undo": "撤销处理"]
         if let value = values[name] { return value }
-        switch name { case "search_mail": return "检索邮件"; case "read_mail": return "读取邮件"; case "read_attachment": return "分析附件"; case "prepare_draft": return "准备草稿"; case "render_ui": return "准备图表"; case "mail_statistics": return "读取统计"; case "task": return "推进分任务"; case "write_todos": return "更新处理计划"; default: return "处理 " + name }
+        switch name { case "search_mail": return "检索邮件"; case "read_mail", "read_mails": return "读取邮件"; case "list_contacts": return "筛选联系人"; case "read_attachment": return "分析附件"; case "prepare_draft": return "准备草稿"; case "render_ui": return "准备图表"; case "mail_statistics": return "读取统计"; case "task": return "推进分任务"; case "write_todos": return "更新处理计划"; default: return "处理 " + name }
     }
 }

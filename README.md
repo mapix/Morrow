@@ -2,7 +2,7 @@
 
 <img src="website/assets/morrow-icon.png" width="96" alt="Morrow app icon">
 
-An open-source native AI mail partner for macOS and iPhone. Morrow reads incoming mail, organizes people and files, brings important work forward, and prepares the next action with you.
+An open-source native AI mail partner for macOS. Morrow reads incoming mail, organizes people and files, brings important work forward, and prepares the next action with you.
 
 [Homepage](https://morrow.novarock.io) / [Download](https://github.com/mapix/Morrow/releases) / [中文](docs/public/README.zh-Hans.md)
 
@@ -12,16 +12,17 @@ An open-source native AI mail partner for macOS and iPhone. Morrow reads incomin
 - Build a local 768-dimensional EmbeddingGemma 2 index for semantic search.
 - Organize mail by contact and manage attachments in one place.
 - Delegate work through persistent chat sessions, files, images and voice.
+- Let Chat write Python/SQL to analyze scoped mail and contact data in a read-only sandbox.
 - Prepare replies, reports and structured OpenUI interactions.
 - Keep editable memories and configure scoped automatic responders.
 - Use local models, compatible HTTPS model APIs, or native ChatGPT sign-in.
 - Switch languages, themes and layout density. Optional iCloud workspace sync starts off.
 
-The macOS client requires Apple Silicon and macOS 26 or later. The iPhone client requires iOS 26; local Metal inference needs a physical device. Mail credentials remain in Keychain. Cloud sync covers chat, memories, contacts and artifacts; each device obtains mail from its provider.
+Morrow requires Apple Silicon and macOS 26 or later. Mail credentials remain in Keychain. Optional iCloud sync covers chat, memories, contacts and artifacts across your Macs; each Mac obtains mail from its provider.
 
 ## Build
 
-Install Xcode 26, its Metal toolchain, Python, and XcodeGen for the mobile project.
+Install Xcode 26, its Metal toolchain, and Python.
 
 ```sh
 swift package resolve
@@ -33,11 +34,6 @@ zsh scripts/package-app.sh
 ```
 
 OAuth client configuration is intentionally local and ignored by Git. Configure your own provider application where required; passwords and tokens never belong in this file. Embedding model weights are downloaded separately and are not stored in Git.
-
-```sh
-zsh scripts/build-mobile.sh simulator
-zsh scripts/build-mobile.sh device
-```
 
 See [configuration](docs/public/CONFIGURATION.md), [data and migration](docs/public/DATA.md), and [development](CONTRIBUTING.md). Production signing uses your own prepared Apple credentials and provisioning configuration. Signing credentials and account data are never part of the repository.
 

@@ -391,6 +391,79 @@ public actor MailStore {
         }
         return result
     }
+    public func gmailBodyCandidates(account: String, messageID: String, destinationID: String, rawSize: UInt64) throws -> [MailMessage] {
+        guard !messageID.isEmpty else { return [] }
+        let canonical = account + ":message:" + messageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = try statement("SELECT id FROM messages WHERE account=? AND canonical=? AND id<>? ORDER BY CASE WHEN upper(folder)='INBOX' THEN 0 ELSE 1 END,date DESC LIMIT 2", [.text(account), .text(canonical), .text(destinationID)])
+        defer { sqlite3_finalize(query) }
+        var ids: [String] = []
+        while sqlite3_step(query) == SQLITE_ROW { ids.append(string(query, 0)) }
+        let eligible = ids.filter { id in
+            guard let info = try? FileManager.default.attributesOfItem(atPath: rawURL(id).path), info[.type] as? FileAttributeType == .typeRegular else { return false }
+            return (info[.size] as? NSNumber)?.uint64Value == rawSize
+        }
+        return try eligible.compactMap { try message($0) }.filter { ($0.contentAvailability == nil || $0.contentAvailability == .complete) && $0.uid > 0 }
+    }
+    public func cachedGmailIdentity(account: MailAccount, message: MailMessage) throws -> GmailMessageIdentity? {
+        let key = GmailMessageIdentity.lookupID(accountID: account.id, folder: message.folder, uid: message.uid, validity: message.uidValidity)
+        guard let identity = try object(GmailMessageIdentity.self, kind: "mail-gmail-identity", id: key), identity.valid,
+              identity.accountID == account.id, identity.folder == message.folder, identity.uid == message.uid, identity.validity == message.uidValidity,
+              identity.accountFingerprint == MailFolderSyncCursor.fingerprint(account) else { return nil }
+        return identity
+    }
+    public func cacheGmailIdentity(_ identity: GmailMessageIdentity, account: MailAccount) throws {
+        guard identity.valid, identity.accountID == account.id else { throw MailError.message("Gmail身份不属于当前邮箱。") }
+        var bound = identity; bound.accountFingerprint = MailFolderSyncCursor.fingerprint(account)
+        try save(bound, kind: "mail-gmail-identity", id: bound.id)
+    }
+    /// Reuse is authorized by Gmail global identity and complete raw size, not
+    /// by folder UID or RFC Message-ID alone. Separate hard-link paths preserve
+    /// other aliases when one message or attachment is removed.
+    public func reuseGmailBody(source: MailMessage, sourceIdentity: GmailMessageIdentity, destination: GmailMessageIdentity,
+                               flags: MailSyncFlags, inventoryStarted: Date) throws -> MailMessage? {
+        guard let latest = try message(source.id), latest.accountID == source.accountID, latest.bodyVersion == source.bodyVersion,
+              latest.messageID.trimmingCharacters(in: .whitespacesAndNewlines) == source.messageID.trimmingCharacters(in: .whitespacesAndNewlines),
+              latest.uid == source.uid, latest.uidValidity == source.uidValidity, latest.folder == source.folder else { return nil }
+        guard sourceIdentity.valid, destination.valid, source.accountID == destination.accountID,
+              sourceIdentity.accountID == source.accountID, sourceIdentity.folder == source.folder,
+              sourceIdentity.uid == source.uid, sourceIdentity.validity == source.uidValidity,
+              sourceIdentity.globalID == destination.globalID, sourceIdentity.messageID == destination.messageID,
+              source.messageID.trimmingCharacters(in: .whitespacesAndNewlines) == destination.messageID,
+              sourceIdentity.rawSize == destination.rawSize, source.id != destination.mailID,
+              (source.contentAvailability == nil || source.contentAvailability == .complete),
+              try message(destination.mailID) == nil, try object(MailDownloadJob.self, kind: "mail-download", id: destination.mailID) == nil else { return nil }
+        let manager = FileManager.default, sourceRaw = rawURL(source.id), targetRaw = rawURL(destination.mailID)
+        let ownedRoot = root.resolvingSymlinksInPath().path
+        guard sourceRaw.resolvingSymlinksInPath().path.hasPrefix(ownedRoot + "/raw/"), targetRaw.resolvingSymlinksInPath().path.hasPrefix(ownedRoot + "/raw/"),
+              let attributes = try? manager.attributesOfItem(atPath: sourceRaw.path), attributes[.type] as? FileAttributeType == .typeRegular,
+              (attributes[.size] as? NSNumber)?.uint64Value == destination.rawSize, !manager.fileExists(atPath: targetRaw.path) else { return nil }
+        var alias = latest; alias.id = destination.mailID; alias.folder = destination.folder; alias.uid = destination.uid; alias.uidValidity = destination.validity; alias.raw = Data()
+        if latest.localFlagModifiedAt.map({ $0 > inventoryStarted }) != true {
+            alias.isRead = flags.read; alias.isStarred = flags.starred; alias.localFlagModifiedAt = nil
+        }
+        var created: [URL] = [], committed = false
+        defer { if !committed { for file in created { try? manager.removeItem(at: file) } } }
+        try Task.checkCancellation()
+        try manager.linkItem(at: sourceRaw, to: targetRaw); created.append(targetRaw)
+        for index in alias.attachments.indices {
+            try Task.checkCancellation()
+            let original = alias.attachments[index]
+            guard original.remoteReference == nil else { return nil }
+            alias.attachments[index].id = Self.hash(destination.mailID + ":attachment:" + String(index))
+            if let stored = original.storedPath {
+                let origin = URL(fileURLWithPath: stored).standardizedFileURL
+                guard origin.path.hasPrefix(root.appendingPathComponent("attachments").standardizedFileURL.path + "/"),
+                      origin.resolvingSymlinksInPath().path.hasPrefix(ownedRoot + "/attachments/"),
+                      let info = try? manager.attributesOfItem(atPath: origin.path), info[.type] as? FileAttributeType == .typeRegular,
+                      (info[.size] as? NSNumber)?.intValue == original.byteCount else { return nil }
+                let target = root.appendingPathComponent("attachments/" + alias.attachments[index].id)
+                guard target.resolvingSymlinksInPath().path.hasPrefix(ownedRoot + "/attachments/"), !manager.fileExists(atPath: target.path) else { return nil }
+                try manager.linkItem(at: origin, to: target); created.append(target)
+                alias.attachments[index].storedPath = target.path; alias.attachments[index].data = Data()
+            } else if original.data.isEmpty && original.byteCount > 0 { return nil }
+        }
+        let saved = try upsert(alias); committed = true; return saved
+    }
     private enum StoredMailFlag: String { case read = "isRead", star = "isStarred" }
     /// Only changed server flags reach this path. A local edit made after the
     /// inventory began wins, checked in the same transaction as the update.
@@ -593,9 +666,74 @@ public actor MailStore {
         var m = try decoder.decode(MailMessage.self, from: bytes(s, 0))
         if sqlite3_column_type(s, 1) != SQLITE_NULL { m.contentRevision = string(s, 1) }; return m
     }
+    /// One bounded, read-only lookup for an agent's selected evidence batch.
+    public func messages(ids: [String]) throws -> [MailMessage] {
+        guard ids.count <= AgentAnswerBudget.maximumBatchMails else { throw MailError.message("一次最多读取12封邮件。") }
+        var seen = Set<String>(); let selected = ids.filter { seen.insert($0).inserted }
+        guard !selected.isEmpty else { return [] }
+        let placeholders = Array(repeating: "?", count: selected.count).joined(separator: ",")
+        let query = try statement("SELECT m.json,p.content_revision FROM messages m LEFT JOIN message_projections p ON p.message=m.id WHERE m.id IN (" + placeholders + ")", selected.map(Value.text))
+        defer { sqlite3_finalize(query) }
+        var result: [String: MailMessage] = [:]
+        while sqlite3_step(query) == SQLITE_ROW {
+            try Task.checkCancellation()
+            var mail = try decoder.decode(MailMessage.self, from: bytes(query, 0))
+            if sqlite3_column_type(query, 1) != SQLITE_NULL { mail.contentRevision = string(query, 1) }
+            result[mail.id] = mail
+        }
+        return selected.compactMap { result[$0] }
+    }
+    /// Commit a server-confirmed MOVE using the complete cached original.
+    /// COPYUID is authoritative; no destination-wide inventory/body fetch is needed.
+    public func commitMovedMessage(source: MailMessage, destination: MailFolder, receipt: MailMoveReceipt?, localOnly: Bool = false) throws -> MailMessage {
+        guard let current = try message(source.id), current.accountID == source.accountID,
+              current.folder == source.folder, current.uid == source.uid, current.uidValidity == source.uidValidity,
+              current.contentAvailability == nil || current.contentAvailability == .complete else { throw MailError.message("邮件位置已变化或正文不完整，未覆盖本机记录。") }
+        let targetID = localOnly ? current.id : receipt.flatMap { receipt in
+            receipt.destinationValidity.flatMap { validity in receipt.destinationUID.map { current.accountID + ":" + destination.path + ":" + String(validity) + ":" + String($0) } }
+        }
+        let target = try targetID.flatMap { try message($0) }
+        let prepared = try MailMovePersistence.prepare(source: current, target: target, destination: destination, receipt: receipt, localOnly: localOnly, root: root)
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let saved = try upsert(prepared.message)
+            if saved.id != current.id {
+                let indexed = try statement("SELECT 1 FROM vectors WHERE message=? LIMIT 1", [.text(current.id)])
+                let preserveVectors = sqlite3_step(indexed) == SQLITE_ROW; sqlite3_finalize(indexed)
+                if preserveVectors {
+                    try execute("DELETE FROM vectors WHERE message=?", [.text(saved.id)])
+                    try execute("UPDATE vectors SET message=? WHERE message=?", [.text(saved.id), .text(current.id)])
+                    try execute("INSERT OR REPLACE INTO index_state(message,hash,model) SELECT ?,hash,model FROM index_state WHERE message=?", [.text(saved.id), .text(current.id)])
+                    try execute("INSERT OR REPLACE INTO index_inputs(message,model,input_key,hash) SELECT ?,model,input_key,hash FROM index_inputs WHERE message=?", [.text(saved.id), .text(current.id)])
+                }
+                try remove(kind: "mail-download", id: current.id)
+                try execute("DELETE FROM messages WHERE id=?", [.text(current.id)])
+            }
+            try execute("COMMIT")
+            if saved.id != current.id { cleanupRemovedMessageFiles(current) }
+            return saved
+        } catch { try? execute("ROLLBACK"); prepared.rollbackFiles(); throw error }
+    }
     public func deleteMessage(_ id: String) throws {
-        if let m = try message(id) { for a in m.attachments { if let path = a.storedPath { try? FileManager.default.removeItem(atPath: path) }; try remove(kind: "attachment-text", id: a.id) }; try? FileManager.default.removeItem(at: rawURL(id)) }
+        let cleanupNow = sqlite3_get_autocommit(db) != 0
+        let removed = try message(id)
         try execute("DELETE FROM messages WHERE id=?", [.text(id)])
+        if cleanupNow, let removed { cleanupRemovedMessageFiles(removed) }
+    }
+    private func cleanupRemovedMessageFiles(_ removed: MailMessage) {
+        try? FileManager.default.removeItem(at: rawURL(removed.id))
+        // Header projections contain attachment paths without full body blobs.
+        // Missing legacy projections make cleanup conservative, never destructive.
+        guard let absent = try? statement("SELECT 1 FROM messages m LEFT JOIN message_projections p ON p.message=m.id WHERE p.message IS NULL LIMIT 1") else { return }
+        let legacy = sqlite3_step(absent) == SQLITE_ROW; sqlite3_finalize(absent)
+        guard !legacy else { return }
+        for attachment in removed.attachments {
+            guard let query = try? statement("SELECT 1 FROM message_projections p,json_each(p.json,'$.projectedMessage.attachments') a WHERE json_extract(a.value,'$.id')=? OR json_extract(a.value,'$.storedPath')=? LIMIT 1", [.text(attachment.id), .text(attachment.storedPath ?? "")]) else { continue }
+            let status = sqlite3_step(query); sqlite3_finalize(query)
+            guard status == SQLITE_DONE else { continue }
+            if let path = attachment.storedPath { try? FileManager.default.removeItem(atPath: path) }
+            try? remove(kind: "attachment-text", id: attachment.id)
+        }
     }
     public func deleteAccount(_ id: String) throws {
         for cursor in try load(MailFolderSyncCursor.self, kind: "mail-sync-cursor") where cursor.accountID == id { try remove(kind: "mail-sync-cursor", id: cursor.id) }
@@ -606,7 +744,21 @@ public actor MailStore {
     }
     public func rawData(_ message: MailMessage) throws -> Data { message.raw.isEmpty ? try Data(contentsOf: rawURL(message.id)) : message.raw }
     public func queuedMailDownloads() throws -> [MailDownloadJob] {
-        try load(MailDownloadJob.self, kind: "mail-download").sorted { $0.downloadedAt < $1.downloadedAt }
+        let jobs = try load(MailDownloadJob.self, kind: "mail-download").sorted { $0.downloadedAt < $1.downloadedAt }
+        var valid: [MailDownloadJob] = []
+        for job in jobs {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: rawURL(job.id).path)
+            if attributes?[.type] as? FileAttributeType == .typeRegular,
+               (attributes?[.size] as? NSNumber)?.intValue == job.byteCount, job.byteCount > 0 {
+                valid.append(job)
+            } else {
+                // An interrupted/lost cache cannot reserve this UID forever.
+                // Completed message rows remain intact; missing bodies become
+                // eligible for the next incremental download.
+                try discardQueuedMailDownload(job)
+            }
+        }
+        return valid
     }
     public func mailDownloadQueueState() throws -> MailDownloadQueueState {
         let jobs = try queuedMailDownloads(); return .init(count: jobs.count, bytes: jobs.reduce(0) { $0 + $1.byteCount })

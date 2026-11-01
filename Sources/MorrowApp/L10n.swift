@@ -113,6 +113,8 @@ enum L10n {
         "已完成，继续处理…": (" complete; continuing…", "完了・処理を継続中…"),
         "正在修复模型执行方案…": ("Repairing the model plan…", "モデルの実行計画を修復中…"),
         "下载 {0}/{1} · 本轮已保存原文 {2}": ("Downloaded {0}/{1} · Raw messages saved this sync: {2}", "ダウンロード {0}/{1}・今回の原文保存：{2}件"),
+        "本轮进度 {0}/{1} · 本地复用 {2} · 新下载 {3}": ("This sync {0}/{1} · Reused locally {2} · New downloads {3}", "今回 {0}/{1}・ローカル再利用 {2}・新規ダウンロード {3}"),
+        "本地复用 {0} 封，本轮没有待下载正文": ("Reused {0} local messages; no bodies to download this sync", "ローカルの{0}件を再利用・今回の本文ダウンロードなし"),
         "核对 {0}/{1} · 已保存原文 {2}": ("Checked {0}/{1} · Raw messages saved: {2}", "照合 {0}/{1}・原文保存済み：{2}件"),
         "重试后台加工": ("Retry processing", "後処理を再試行"),
         "服务器大小查询 {0} 秒 · 正文下载 {1} 秒": ("Server size query: {0}s · Body download: {1}s", "サーバーのサイズ照会：{0}秒・本文取得：{1}秒"),
