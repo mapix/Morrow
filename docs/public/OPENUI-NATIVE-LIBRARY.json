@@ -1,6 +1,6 @@
 {
   "id": "smail-native",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "root": "Stack",
   "schema": {
     "properties": {
@@ -51,6 +51,18 @@
       },
       "Citation": {
         "$ref": "#/$defs/Citation"
+      },
+      "BarChart": {
+        "$ref": "#/$defs/BarChart"
+      },
+      "LineChart": {
+        "$ref": "#/$defs/LineChart"
+      },
+      "PieChart": {
+        "$ref": "#/$defs/PieChart"
+      },
+      "Steps": {
+        "$ref": "#/$defs/Steps"
       }
     },
     "$defs": {
@@ -380,6 +392,136 @@
             ]
           }
         ]
+      },
+      "BarChart": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "series": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ]
+            }
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "data"
+        ]
+      },
+      "LineChart": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "series": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ]
+            }
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "data"
+        ]
+      },
+      "PieChart": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "series": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ]
+            }
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "data"
+        ]
+      },
+      "Steps": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "title",
+          "items"
+        ]
       }
     },
     "actions": {
@@ -493,6 +635,22 @@
     "Citation": {
       "signature": "Citation(sourceId: string, label?: string)",
       "description": "Morrow native Citation"
+    },
+    "BarChart": {
+      "signature": "BarChart(title: string, data: {label: string, value: number, series?: string}[], description?: string)",
+      "description": "Read-only native chart using actual tool data"
+    },
+    "LineChart": {
+      "signature": "LineChart(title: string, data: {label: string, value: number, series?: string}[], description?: string)",
+      "description": "Read-only native chart using actual tool data"
+    },
+    "PieChart": {
+      "signature": "PieChart(title: string, data: {label: string, value: number, series?: string}[], description?: string)",
+      "description": "Read-only native chart using actual tool data"
+    },
+    "Steps": {
+      "signature": "Steps(title: string, items: string[])",
+      "description": "Read-only ordered workflow"
     }
   },
   "actions": {

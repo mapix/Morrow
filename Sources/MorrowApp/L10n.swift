@@ -57,6 +57,22 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}", "决策复核 {0}/{1} · {2}"]
     static let catalog: [String: (String, String)] = [
+        "自己写的、伙伴生成的，以及等待投递的邮件集中保存在这里。": ("Your drafts, AI drafts, and queued messages are kept here.", "自分で書いた下書き、AIの下書き、送信待ちメールをまとめて表示します。"),
+        "搜索主题、收件人或正文": ("Search subject, recipient, or message", "件名・宛先・本文を検索"),
+        "编辑与预览": ("Edit and preview", "編集とプレビュー"),
+        "正在准备正文预览…": ("Preparing the message preview…", "本文プレビューを準備中…"),
+        "发送前预览 · 尚未发送": ("Preview before sending · Not sent", "送信前プレビュー・未送信"),
+        "预览效果": ("Preview", "プレビュー"),
+        "返回编辑": ("Back to editing", "編集に戻る"),
+        "邮件预览": ("Email preview", "メールプレビュー"),
+        "已保存到草稿箱 · 点击编辑与预览": ("Saved to Drafts · Click to edit and preview", "下書きに保存済み・クリックして編集とプレビュー"),
+        "⌘Enter / Ctrl+Enter 发送 · Enter 换行": ("⌘Enter / Ctrl+Enter to send · Enter for a new line", "⌘Enter / Ctrl+Enterで送信・Enterで改行"),
+        "发送（⌘Enter / Ctrl+Enter）": ("Send (⌘Enter / Ctrl+Enter)", "送信（⌘Enter / Ctrl+Enter）"),
+        "复制": ("Copy", "コピー"),
+        "代码": ("Code", "コード"),
+        "数据表": ("Data table", "データ表"),
+        "图表": ("Chart", "グラフ"),
+        "草稿箱": ("Drafts", "下書き"),
         "发件邮箱白名单（必填）": ("Sender email allowlist (required)", "送信者メールの許可リスト（必須）"),
         "允许触发的发件邮箱": ("Allowed sender emails", "起動を許可する送信者メール"),
         "尚未允许任何来源，不能启用。": ("No sender is allowed yet. This responder cannot be enabled.", "許可された送信元がありません。有効化できません。"),

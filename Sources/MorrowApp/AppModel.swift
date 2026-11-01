@@ -1043,6 +1043,7 @@ enum Destination: String, CaseIterable, Identifiable {
             var toolHistory: [PartnerChat] = work == nil ? Array(taskChatHistory.dropLast()) : []
             let workDelegations: [Delegation] = work == nil ? delegations : delegations.filter { $0.id == work?.delegationID }
             var plan: PartnerPlan?
+            var statisticalPresentation: ChatStatisticsPresentation?
             for _ in 0..<4 {
                 try Task.checkCancellation()
                 if let runID, agentRuns.first(where: { $0.id == runID })?.phase == .paused { throw CancellationError() }
@@ -1057,9 +1058,14 @@ enum Destination: String, CaseIterable, Identifiable {
                         receipts.append(try await sidebarQuery(query, context: uiContext))
                     } else if query.type == "stats" {
                         if uiContext?.page == "materials" { throw MailError.message("本轮仅限带入资料，未读取邮箱统计。") }
+                        if uiContext?.page == "drafts" { receipts.append("当前草稿箱：" + String(drafts.filter { $0.state != "sent" }.count) + "份未发送草稿；未读取邮箱邮件。请基于草稿目录回答。"); continue }
                         let inventory = primaryMails.filter { allowedIDs?.contains($0.id) ?? true }
                         let incoming = inventory.filter { m in let role = folders.first { $0.accountID == m.accountID && $0.path == m.folder }?.role; return role != "trash" && role != "junk" && role != "sent" && !isOutbound(m) }
                         receipts.append("\(allowedIDs == nil ? "本机全部范围" : "本轮指定范围")邮件 \(inventory.count)，收件及归档 \(incoming.count)，未读 \(incoming.filter { !$0.isRead }.count)，待处理 \(incoming.filter(\.actionable).count)，已分析 \(inventory.filter { $0.analysis != nil && $0.analysis?.source != "规则分析" }.count)。这些是本机当前数据，不代表尚未同步的服务器邮件。")
+                        let mode = query.kind ?? (instruction.localizedCaseInsensitiveContains("趋势") || instruction.localizedCaseInsensitiveContains("trend") ? "monthly" : "categories")
+                        let scope = uiContext?.label ?? "本机范围"
+                        let display = await Task.detached(priority: .utility) { ChatStatisticsPresentation.make(mails: incoming, mode: mode, scope: scope) }.value
+                        statisticalPresentation = display; receipts.append(display.summary)
                     } else if query.type == "search", let text = query.text {
                         sidebarToolStatus = L10n.t("正在检索邮件…")
                         let hits: [SearchHit]
@@ -1088,10 +1094,17 @@ enum Destination: String, CaseIterable, Identifiable {
                 sidebarToolStatus = L10n.t("正在整理答案…")
             }
             guard let plan else { throw MailError.message("伙伴尚未形成执行方案。") }
-            if let source = plan.openUI, let program = try? OpenUILang.parse(source), (try? program.root()) != nil { await saveOpenUIInteraction(OpenUIInteraction(source: source, runID: runID)) }
+            var preparedPresentation: OpenUIInteraction?
+            var requiresChoice = false
+            if let source = plan.openUI, let root = try? OpenUILang.parse(source).root(), (try? root.validatePresentation()) != nil {
+                preparedPresentation = OpenUIInteraction(source: source, runID: runID); requiresChoice = root.needsUserInput
+            } else if ChatStatisticsPresentation.requested(instruction), let statistics = statisticalPresentation {
+                preparedPresentation = OpenUIInteraction(source: statistics.chartSource, runID: runID)
+            }
             var results: [String] = []
+            var preparedDrafts: [ComposeDraft] = []
             for op in plan.operations ?? [] where !["search", "rerank", "read", "stats", "contacts", "attachments", "readAttachment"].contains(op.type) {
-                if plan.openUI?.isEmpty == false { results.append("等待你完成结构化选择，未执行依赖该选择的操作。"); break }
+                if requiresChoice { results.append("等待你完成结构化选择，未执行依赖该选择的操作。"); break }
                 if let runID, agentRuns.first(where: { $0.id == runID })?.phase == .paused { break }
                 if work?.agreement != nil && uiContext == nil {
                     guard op.type == "draft" else { results.append("此工作约定只准备成果。\(op.type)未执行；可另外形成委托。"); continue }
@@ -1100,13 +1113,20 @@ enum Destination: String, CaseIterable, Identifiable {
                 do {
                     try Task.checkCancellation()
                     try validateChatOperation(op, context: uiContext, agreement: work?.agreement, capturedMailIDs: scopeIsExplicit ? selectedSources : nil)
-                    let receipt = op.type == "updateDraft" ? try await applySidebarDraftEdit(op, snapshot: composeSnapshot) : try await execute(op); results.append(receipt)
-                    if ["label", "star", "markRead", "complete", "snooze", "archive", "addContact"].contains(op.type) { await log("委托操作已完成", detail: receipt, messageIDs: op.messageID.map { [$0] } ?? [], kind: "operation") }
+                    if op.type == "draft" {
+                        let draft = try await createAgentDraft(op); preparedDrafts.append(draft); results.append("已保存到草稿箱：" + draft.subject + "（尚未发送）")
+                    } else if op.type == "updateDraft" { let edited = try await performSidebarDraftEdit(op, snapshot: composeSnapshot); preparedDrafts.append(edited.draft); results.append(edited.message) }
+                    else { results.append(try await execute(op)) }
+                    if ["label", "star", "markRead", "complete", "snooze", "archive", "addContact"].contains(op.type) { await log("委托操作已完成", detail: results.last ?? "", messageIDs: op.messageID.map { [$0] } ?? [], kind: "operation") }
                 } catch { results.append("未完成：" + error.localizedDescription); break }
             }
             let unresolved = (plan.operations ?? []).contains { ["search", "read", "stats", "contacts", "attachments", "readAttachment"].contains($0.type) }
             let answer = (unresolved ? "本轮已读取检索资料，但还没有形成完整结论。可以缩小范围或继续查询。" : plan.answer) + (results.isEmpty ? "" : "\n\n实际执行结果：\n" + results.joined(separator: "\n"))
-            let response = PartnerChat(role: "partner", text: answer, messageIDs: plan.messageIDs ?? []); try await recordChat(response)
+            var response = PartnerChat(role: "partner", text: answer, messageIDs: plan.messageIDs ?? [])
+            response.sessionID = taskSessionID; response.draftIDs = preparedDrafts.map(\.id)
+            if var page = preparedPresentation { page.sessionID = response.sessionID; page.chatID = response.id; page.sourceMailIDs = relevant.map(\.id); response.openUIID = page.id; preparedPresentation = page }
+            try await recordChat(response, presentation: preparedPresentation)
+            if let draft = preparedDrafts.first { followPreparedDraft(draft, submittedContext: uiContext, sessionID: taskSessionID) }
             await reload()
         } catch {
             let response = PartnerChat(role: "partner", text: "这次委托还没有完成：\(error.localizedDescription)\n你可以重试，或在设置中检查本地模型。")
@@ -1119,9 +1139,7 @@ enum Destination: String, CaseIterable, Identifiable {
         switch operation.type {
         case "showSearch", "navigate", "select", "selectContact", "selectAttachment", "sync", "reply", "replyAll", "forward", "compose", "markUnread", "unstar", "trash", "move", "createFolder", "exportMail", "saveAttachment", "undo": return try await performSidebarOperation(operation)
         case "draft":
-            var draft = ComposeDraft(); draft.accountID = operation.accountID.flatMap { id in accounts.first { $0.id == id }?.id } ?? mail?.accountID ?? realAccounts.first?.id ?? accounts.first?.id ?? ""
-            draft.to = operation.recipient ?? mail?.from.email ?? ""; draft.subject = operation.subject ?? mail.map { "Re: " + $0.normalizedSubject } ?? "待补充主题"; draft.body = operation.text ?? ""; draft.inReplyTo = mail?.messageID ?? ""; draft.references = mail?.references ?? ""
-            try await persistDraft(draft); await log("草稿已准备", detail: draft.subject, messageIDs: mail.map { [$0.id] } ?? [], kind: "draft"); return "已建立草稿：" + draft.subject
+            let draft = try await createAgentDraft(operation); return "已保存到草稿箱：" + draft.subject + "（尚未发送）"
         case "delegate":
             var d = Delegation(); d.title = operation.subject ?? "新的委托"; d.instruction = operation.text ?? ""; d.kind = ["watch": "watch", "followup": "followUp", "briefing": "briefing", "organize": "organize", "reply": "reply"][(operation.kind ?? "watch").lowercased()] ?? "watch"; d.match = operation.match ?? ""; d.recipient = operation.recipient ?? ""; d.intervalHours = max(1, min(168, operation.hours ?? 24))
             if d.kind == "briefing" || d.kind == "followUp" { d.nextRun = operation.start.flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date().addingTimeInterval(Double(d.intervalHours * 3600)) }

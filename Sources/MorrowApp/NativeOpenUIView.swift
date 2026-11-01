@@ -43,6 +43,10 @@ struct NativeOpenUIView: View {
         case "TextContent", "Text": return AnyView(Text(arg(0).text).font(arg(1).text.contains("large") ? Theme.heading : Theme.body).foregroundStyle(Theme.ink).fixedSize(horizontal: false, vertical: true).textSelection(.enabled))
         case "Markdown": return AnyView(WorkMarkdownContent(text: arg(0).text))
         case "Table": return AnyView(OpenUITable(columns: arg(0).children))
+        case "BarChart", "LineChart", "PieChart":
+            if let data = try? OpenUIChartData(node: node) { return AnyView(OpenUIChartView(kind: node.name, data: data)) }
+            return AnyView(Text(L10n.t("图表数据无效，未绘制。")).foregroundStyle(Theme.secondary))
+        case "Steps": return AnyView(OpenUIStepsView(title: arg(0).text, items: arg(1).children.map(\.text)))
         case "FormControl":
             if current.completedAt != nil, case .node(let child) = arg(1), ["Input", "TextArea"].contains(child.name) {
                 return AnyView(HStack(alignment: .top, spacing: 16) {
@@ -114,7 +118,7 @@ struct NativeOpenUIView: View {
                 let rules = (try? node.arguments[3].json().object) ?? [:]; let name = node.arguments[0].text
                 let text = values[(nextOwner ?? "page") + ":" + name]?.text ?? node.arguments[2].text
                 if rules["required"]?.truth == true && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenUIError.message(L10n.t("请填写：") + name) }
-                if rules["email"]?.truth == true && !text.isEmpty && !(name == "sender" ? MailResponder.validSender(text) : MailAddress.isValid(text)) { throw OpenUIError.message(L10n.t("邮箱地址格式无效：") + name) }
+                if rules["email"]?.truth == true && !text.isEmpty && !(name == "sender" ? (!MailResponder.parseAllowlist(text).isEmpty && MailResponder.parseAllowlist(text).allSatisfy(MailResponder.validSender)) : MailAddress.isValid(text)) { throw OpenUIError.message(L10n.t("邮箱地址格式无效：") + name) }
                 if case .number(let length) = rules["minLength"], Double(text.count) < length { throw OpenUIError.message(L10n.t("内容太短：") + name) }
             }
             for child in node.arguments { try walk(child, owner: nextOwner) }

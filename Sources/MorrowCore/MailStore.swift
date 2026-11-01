@@ -746,12 +746,13 @@ extension MailStore {
             try save(current, kind: "chat-session", id: current.id); try execute("COMMIT"); return current
         } catch { try? execute("ROLLBACK"); throw error }
     }
-    public func commitChat(_ message: PartnerChat, session: ChatSession) throws -> ChatSession {
+    public func commitChat(_ message: PartnerChat, session: ChatSession, presentation: OpenUIInteraction? = nil) throws -> ChatSession {
         try execute("BEGIN IMMEDIATE")
         do {
             var current = try object(ChatSession.self, kind: "chat-session", id: session.id) ?? session
             if current.title == "新对话" && message.role == "user" { current.title = String(message.text.replacingOccurrences(of: "\n", with: " ").prefix(24)) }
             current.updatedAt = max(current.updatedAt, message.date)
+            if let presentation { guard presentation.chatID == message.id && presentation.sessionID == message.sessionID && message.openUIID == presentation.id else { throw MailError.message("结构化结果不属于这条回复。") }; try save(presentation, kind: "openui-interaction", id: presentation.id) }
             try save(message, kind: "chat", id: message.id); try save(current, kind: "chat-session", id: current.id); try execute("COMMIT"); return current
         } catch { try? execute("ROLLBACK"); throw error }
     }

@@ -157,7 +157,8 @@ extension AppModel {
             let response = PartnerChat(role: "partner", text: result.text, messageIDs: Array(Set(evidence.map(\.id)))); try await recordChat(response)
         } catch { let response = PartnerChat(role: "partner", text: "附件分析未完成：" + error.localizedDescription); try? await recordChat(response) }
     }
-    func applySidebarDraftEdit(_ operation: PartnerOperation, snapshot: ComposeDraft?) async throws -> String {
+    func applySidebarDraftEdit(_ operation: PartnerOperation, snapshot: ComposeDraft?) async throws -> String { try await performSidebarDraftEdit(operation, snapshot: snapshot).message }
+    func performSidebarDraftEdit(_ operation: PartnerOperation, snapshot: ComposeDraft?) async throws -> (message: String, draft: ComposeDraft) {
         guard let snapshot, snapshot.id == operation.kind, let body = operation.text else { throw MailError.message("草稿目标或正文缺失。") }
         var draft = snapshot
         let current = try await sidebarDraft(id: snapshot.id)
@@ -173,13 +174,13 @@ extension AppModel {
         if !changed, let latest = liveSidebarDraft(id: snapshot.id), !sameDraftContent(latest, snapshot) {
             if draftIsEditable(latest) { _ = try await persistWorkingDraft(latest, artifactID: artifactID) }
             draft.id = UUID().uuidString; draft.scheduledAt = nil; draft.error = nil
-            _ = try await persistWorkingDraft(draft)
-            return "你在准备过程中修改了原稿，修改已保留；AI建议另存为草稿。"
+            let alternative = try await persistWorkingDraft(draft)
+            return ("你在准备过程中修改了原稿，修改已保留；AI建议另存为草稿。", alternative)
         }
         if !changed && composer?.id == saved.id { composer = saved }
         if !changed && workingDraft?.id == saved.id { workingDraft = saved }
-        if immutable { return "原稿已发送、正在排队或发送结果待核对，状态已保留；AI建议另存为草稿，尚未发送。" }
-        return changed ? "你在等待期间修改了原稿，已保留你的修改；AI建议存为另一份草稿供比较。" : (composer?.id == draft.id || workingDraft?.id == draft.id ? "已更新左侧这份草稿，尚未发送。" : "已更新固定范围的草稿，尚未发送。")
+        if immutable { return ("原稿已发送、正在排队或发送结果待核对，状态已保留；AI建议另存为草稿，尚未发送。", saved) }
+        return (changed ? "你在等待期间修改了原稿，已保留你的修改；AI建议存为另一份草稿供比较。" : (composer?.id == draft.id || workingDraft?.id == draft.id ? "已更新左侧这份草稿，尚未发送。" : "已更新固定范围的草稿，尚未发送。"), saved)
     }
     func sidebarDraft(id: String?) async throws -> ComposeDraft {
         guard let id else { throw MailError.message("未固定草稿目标，未修改邮件。") }

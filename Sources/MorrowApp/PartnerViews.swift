@@ -119,20 +119,24 @@ struct DelegationEditor: View {
 struct DraftsView: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @EnvironmentObject var model: AppModel
+    @State private var query = ""
+    @State private var accountID = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text(L10n.t("准备好了，等你决定。")).font(Theme.title).padding(.top, 12)
-            Text(L10n.t("伙伴生成的草稿、定时邮件和等待发送的邮件都在这里。")).foregroundStyle(Theme.muted)
-            let drafts = model.drafts.filter { $0.state != "sent" }.sorted { $0.updatedAt > $1.updatedAt }
+            HStack { Text(L10n.t("草稿箱")).font(Theme.title); Spacer(); Button(L10n.t("写邮件")) { Task { await model.compose() } }.buttonStyle(PrimaryButtonStyle()) }
+            Text(L10n.t("自己写的、伙伴生成的，以及等待投递的邮件集中保存在这里。")).foregroundStyle(Theme.muted)
+            HStack { TextField(L10n.t("搜索主题、收件人或正文"), text: $query).textFieldStyle(PaperFieldStyle()); Picker(L10n.t("发件邮箱"), selection: $accountID) { Text(L10n.t("全部邮箱")).tag(""); ForEach(model.accounts) { Text($0.email).tag($0.id) } }.frame(maxWidth: 220) }
+            let drafts = model.drafts.filter { $0.state != "sent" && (accountID.isEmpty || $0.accountID == accountID) && (query.isEmpty || ($0.subject + $0.to + $0.body).localizedCaseInsensitiveContains(query)) }.sorted { $0.updatedAt > $1.updatedAt }
             if drafts.isEmpty { EmptyRegion(icon: "doc", title: L10n.t("还没有草稿"), detail: L10n.t("自己写一封，或让伙伴根据原邮件准备回复。"), action: L10n.t("写邮件"), perform: { Task { await model.compose() } }) }
             else {
                 ScrollView { VStack(spacing: 0) { ForEach(drafts) { d in
                     VStack(alignment: .leading, spacing: 12) {
                         HStack { Text(d.subject.isEmpty ? L10n.t("无主题草稿") : d.subject).font(Theme.heading); Spacer(); Text(state(d)).font(Theme.label).foregroundStyle(d.state == "uncertain" ? Theme.error : Theme.muted) }
                         Text(d.to.isEmpty ? L10n.t("待填写收件人") : d.to).font(Theme.label).foregroundStyle(Theme.muted)
+                        Text(model.accounts.first(where: { $0.id == d.accountID })?.email ?? L10n.t("尚未选择发件邮箱")).font(Theme.label).foregroundStyle(Theme.muted)
                         Text(d.body).lineLimit(3).foregroundStyle(Theme.muted)
                         if let error = d.error { Text(error).font(Theme.label).foregroundStyle(Theme.error) }
-                        HStack { if d.state == "queued" { Button(L10n.t("撤回到草稿")) { Task { await model.cancelSend(d) } }.buttonStyle(.link) } else if d.state != "sending" { Button(L10n.t("打开草稿")) { model.composer = d }.buttonStyle(.link); Button(L10n.t("删除草稿")) { Task { await model.discardDraft(d) } }.buttonStyle(.link) } }
+                        HStack { if d.state == "queued" { Button(L10n.t("撤回到草稿")) { Task { await model.cancelSend(d) } }.buttonStyle(.link) } else if d.state != "sending" { Button(L10n.t("编辑与预览")) { model.openDraft(d) }.buttonStyle(.link); Button(L10n.t("删除草稿")) { Task { await model.discardDraft(d) } }.buttonStyle(.link) } }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 24).overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }
                 } } }
             }

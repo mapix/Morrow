@@ -1,7 +1,27 @@
 import Foundation
 
 extension OpenUINativeLibrary {
-    public static let librarySpecData = Data(#"""
+
+    public static var librarySpecData: Data {
+        var root = (try! JSONSerialization.jsonObject(with: baseLibrarySpecData)) as! [String: Any]
+        root["version"] = version
+        var schema = root["schema"] as! [String: Any]
+        var properties = schema["properties"] as! [String: Any]
+        var definitions = schema["$defs"] as! [String: Any]
+        var components = root["components"] as! [String: Any]
+        for name in ["BarChart", "LineChart", "PieChart"] {
+            properties[name] = ["$ref": "#/$defs/" + name]
+            definitions[name] = ["type": "object", "properties": ["title": ["type": "string"], "data": ["type": "array", "maxItems": 200, "items": ["type": "object", "properties": ["label": ["type": "string"], "value": ["type": "number"], "series": ["type": "string"]], "required": ["label", "value"]]], "description": ["type": "string"]], "required": ["title", "data"]]
+            components[name] = ["signature": name + "(title: string, data: {label: string, value: number, series?: string}[], description?: string)", "description": "Read-only native chart using actual tool data"]
+        }
+        properties["Steps"] = ["$ref": "#/$defs/Steps"]
+        definitions["Steps"] = ["type": "object", "properties": ["title": ["type": "string"], "items": ["type": "array", "maxItems": 20, "items": ["type": "string"]]], "required": ["title", "items"]]
+        components["Steps"] = ["signature": "Steps(title: string, items: string[])", "description": "Read-only ordered workflow"]
+        schema["properties"] = properties; schema["$defs"] = definitions
+        root["schema"] = schema; root["components"] = components
+        return try! JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+    }
+    private static let baseLibrarySpecData = Data(#"""
 {
   "id": "morrow-native",
   "version": "0.1.0",

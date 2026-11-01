@@ -59,6 +59,7 @@ extension AppModel {
             guard let id = event.params["draftId"]?.text, let draft = drafts.first(where: { $0.id == id }) else { throw OpenUIError.message("这份草稿暂不可用。") }; composer = draft
         case "OpenMailSource":
             guard let id = event.params["sourceId"]?.text, let mail = mails.first(where: { $0.id == id }) else { throw OpenUIError.message("这封原邮件暂不可用。") }
+            if let allowed = page.sourceMailIDs, !allowed.contains(id) { throw OpenUIError.message("这封邮件不在这条回复的依据范围内。") }
             if let runID = page.runID, let scope = agentRuns.first(where: { $0.id == runID })?.agreement?.resolvedScope, !scope.contains(mail) { throw OpenUIError.message("这封邮件不在当前工作范围内。") }
             workspacePage = .mail; selectedID = mail.id; selectedFolder = mail.folder; selectedAccount = mail.accountID
         default: throw OpenUIError.unsupported("动作 " + event.type)

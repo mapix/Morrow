@@ -19,17 +19,18 @@ struct ComposerView: View {
     @State private var showCC = false
     @State private var autosave: Task<Void, Never>?
     @State private var rich = true
+    @State private var previewing = false
     @State private var connecting = false
     @StateObject private var richActions = RichTextActions()
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text(L10n.t("写邮件")).font(Theme.title); Spacer(); Text(L10n.t("草稿自动保存在本机")).font(Theme.label).foregroundStyle(Theme.muted); Button { close() } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle()).help(L10n.t("关闭并保留草稿")) }
+            HStack { Text(previewing ? L10n.t("邮件预览") : L10n.t("写邮件")).font(Theme.title); Spacer(); Text(L10n.t("草稿自动保存在本机")).font(Theme.label).foregroundStyle(Theme.muted); Button { if rich { richActions.flush?() }; previewing.toggle() } label: { Label(previewing ? L10n.t("返回编辑") : L10n.t("预览效果"), systemImage: previewing ? "square.and.pencil" : "eye") }.buttonStyle(QuietButtonStyle()).accessibilityIdentifier("draft.toggle-preview"); Button { close() } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle()).help(L10n.t("关闭并保留草稿")) }
             Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
                 GridRow { Text(L10n.t("发件人")).foregroundStyle(Theme.muted); Picker(L10n.t("发件人"), selection: $draft.accountID) { ForEach(model.accounts) { a in Text(a.name + " <" + a.email + ">").tag(a.id) } }.labelsHidden() }
                 GridRow { Text(L10n.t("收件人")).foregroundStyle(Theme.muted); HStack { TextField(L10n.t("name@example.com，多个地址用逗号分隔"), text: $draft.to).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("收件人")); Button(showCC ? L10n.t("收起") : L10n.t("抄送/密送")) { showCC.toggle() }.buttonStyle(.link).font(Theme.label) } }
                 if showCC { GridRow { Text(L10n.t("抄送")).foregroundStyle(Theme.muted); TextField("name@example.com", text: $draft.cc).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("抄送")) }; GridRow { Text(L10n.t("密送")).foregroundStyle(Theme.muted); TextField("name@example.com", text: $draft.bcc).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("密送")) } }
                 GridRow { Text(L10n.t("主题")).foregroundStyle(Theme.muted); TextField(L10n.t("邮件主题"), text: $draft.subject).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("主题")) }
-            }
+            }.disabled(!editable)
             Divider().overlay(Theme.rule)
             HStack(spacing: 16) {
                 Toggle(L10n.t("格式化正文"), isOn: $rich).toggleStyle(.checkbox).font(Theme.label)
@@ -40,7 +41,8 @@ struct ComposerView: View {
                     Button { richActions.link() } label: { Image(systemName: "link") }.buttonStyle(IconButtonStyle()).help(L10n.t("添加链接"))
                 }; Spacer()
             }
-            if rich { RichMailEditor(text: $draft.body, html: $draft.htmlBody, actions: richActions).frame(minHeight: 240).background(Theme.sheet) }
+            if previewing { DraftBodyPreview(draft: draft).frame(minHeight: 240).background(Theme.sheet) }
+            else if rich { RichMailEditor(text: $draft.body, html: $draft.htmlBody, actions: richActions).frame(minHeight: 240).background(Theme.sheet) }
             else { TextEditor(text: $draft.body).font(Theme.reader).lineSpacing(5).scrollContentBackground(.hidden).frame(minHeight: 240).padding(8).background(Theme.sheet).accessibilityLabel(L10n.t("邮件正文")) }
             if !draft.attachments.isEmpty {
                 ScrollView(.horizontal) { HStack(spacing: 16) { ForEach(draft.attachments) { a in HStack(spacing: 8) { Image(systemName: "paperclip"); Text(a.name).lineLimit(1); Text(a.size).foregroundStyle(Theme.muted); Button { draft.attachments.removeAll { $0.id == a.id }; saveSoon() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help(L10n.t("移除附件")) }.font(Theme.label).padding(10).background(Theme.paper) } } }
@@ -55,7 +57,7 @@ struct ComposerView: View {
                 Spacer()
                 Button(L10n.t("保留草稿")) { close() }.buttonStyle(QuietButtonStyle())
                 Button(schedule ? L10n.t("安排发送") : L10n.t("发送")) {
-                    if rich { richActions.flush?() } else { draft.htmlBody = nil }
+                if rich && !previewing { richActions.flush?() } else if !rich { draft.htmlBody = nil }
                     draft.scheduledAt = schedule ? date : nil
                     do { try draft.validate(); busy = true; closing = true; autosave?.cancel(); Task { do { try await model.queueSend(draft); finishClose() } catch { closing = false; self.error = error.localizedDescription }; busy = false } } catch { self.error = error.localizedDescription }
                 }.buttonStyle(PrimaryButtonStyle()).disabled(busy || !canSend || !editable || model.partnerBusy)

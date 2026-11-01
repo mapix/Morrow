@@ -218,12 +218,12 @@ public enum OpenUILang {
 
 public enum OpenUINativeLibrary {
     public static let id = "morrow-native"
-    public static let version = "0.1.0"
+    public static let version = "0.2.0"
     /// Parameter order is part of the OpenUI LibrarySpec, not dictionary sorting.
-    public static let components: [String: [String]] = ["Stack": ["children"], "Card": ["children"], "CardHeader": ["title", "subtitle"], "TextContent": ["text", "style"], "Text": ["text"], "Markdown": ["text"], "Table": ["columns"], "Col": ["label", "data"], "Form": ["name", "children"], "FormControl": ["label", "child"], "Input": ["name", "placeholder", "value", "rules"], "TextArea": ["name", "placeholder", "value", "rules"], "Choice": ["name", "label", "options", "value"], "Buttons": ["children", "direction"], "Button": ["label", "action", "variant"], "Citation": ["sourceId", "label"]]
+    public static let components: [String: [String]] = ["BarChart": ["title", "data", "description"], "LineChart": ["title", "data", "description"], "PieChart": ["title", "data", "description"], "Steps": ["title", "items"], "Stack": ["children"], "Card": ["children"], "CardHeader": ["title", "subtitle"], "TextContent": ["text", "style"], "Text": ["text"], "Markdown": ["text"], "Table": ["columns"], "Col": ["label", "data"], "Form": ["name", "children"], "FormControl": ["label", "child"], "Input": ["name", "placeholder", "value", "rules"], "TextArea": ["name", "placeholder", "value", "rules"], "Choice": ["name", "label", "options", "value"], "Buttons": ["children", "direction"], "Button": ["label", "action", "variant"], "Citation": ["sourceId", "label"]]
     public static let actions: [String: [String]] = ["OpenMailSource": ["sourceId"], "OpenDraft": ["draftId"], "ConfigureResponder": [], "SaveResponder": []]
     public static var prompt: String {
-        "OpenUI Lang 1.0 的 Morrow 原生 profile。只返回完整的 Lang 命名语句，首行 root = ...，不要 HTML、JS、Markdown代码围栏或JSON组件树。可用组件参数顺序如下：\n" + components.sorted { $0.key < $1.key }.map { "\($0.key)(\($0.value.joined(separator: ", ")))" }.joined(separator: "\n") + "\nInput/TextArea 第三个参数是值或 $绑定，第四个是规则对象（required、email、minLength）。Form(name, children)限定字段范围；Choice options为字符串数组或{label,value}对象数组。按钮动作使用 @ToAssistant(message, context?) 或 @SaveResponder()、@ConfigureResponder()、@OpenMailSource(sourceId)、@OpenDraft(draftId)。所有动作只在用户点击时触发，不能声称动作已完成。禁止 Query、Mutation、外部URL。引用可以前向定义。标题与正文用中文。"
+        "OpenUI Lang 1.0 的 Morrow 原生 profile。只返回完整的 Lang 命名语句，首行 root = ...，不要 HTML、JS、Markdown代码围栏或JSON组件树。可用组件参数顺序如下：\n" + components.sorted { $0.key < $1.key }.map { "\($0.key)(\($0.value.joined(separator: ", ")))" }.joined(separator: "\n") + "\nInput/TextArea 第三个参数是值或 $绑定，第四个是规则对象（required、email、minLength）。Form(name, children)限定字段范围；Choice options为字符串数组或{label,value}对象数组。按钮动作使用 @ToAssistant(message, context?) 或 @SaveResponder()、@ConfigureResponder()、@OpenMailSource(sourceId)、@OpenDraft(draftId)。所有动作只在用户点击时触发，不能声称动作已完成。禁止 Query、Mutation、外部URL。引用可以前向定义。图表data为实际数据对象数组，每项{label:字符串,value:数值,series:可选字符串}，最多200项。Steps的items是步骤字符串数组。分析比较、统计、趋势优先用图表或Table；严禁编造数据。标题与正文按用户语言。"
     }
 }
 
@@ -238,6 +238,8 @@ public struct OpenUIActionEvent: Codable, Sendable {
 public struct OpenUIFieldState: Codable, Sendable { public var value: OpenUIJSON; public var componentType: String?; public init(value: OpenUIJSON, componentType: String? = "input") { self.value = value; self.componentType = componentType } }
 public struct OpenUIInteraction: Codable, Identifiable, Sendable {
     public var sessionID: String?
+    public var chatID: String?
+    public var sourceMailIDs: [String]?
     public var id = UUID().uuidString
     public var runID: String?
     public var source: String

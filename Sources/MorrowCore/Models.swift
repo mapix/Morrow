@@ -312,6 +312,8 @@ public struct PartnerEvent: Codable, Identifiable, Sendable {
 }
 
 public struct PartnerChat: Codable, Identifiable, Sendable {
+    public var openUIID: String?
+    public var draftIDs: [String]?
     public var sessionID: String?
     public var memoryIDs: [String]?
     public var materials: [ChatMaterial]?

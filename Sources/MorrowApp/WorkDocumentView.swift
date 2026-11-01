@@ -662,70 +662,34 @@ private struct WorkSourceReader: View {
 struct WorkMarkdownContent: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     let text: String
-    private var blocks: [String] {
-        var result: [String] = []; var paragraph: [String] = []
-        for line in text.components(separatedBy: .newlines) {
-            if line.trimmingCharacters(in: .whitespaces).isEmpty {
-                if !paragraph.isEmpty { result.append(paragraph.joined(separator: "\n")); paragraph = [] }
-            } else if headingText(line) != nil {
-                if !paragraph.isEmpty { result.append(paragraph.joined(separator: "\n")); paragraph = [] }
-                result.append(line)
-            } else { paragraph.append(line) }
-        }
-        if !paragraph.isEmpty { result.append(paragraph.joined(separator: "\n")) }
-        return result
-    }
+    var body: some View { WorkMarkdownBlocks(blocks: WorkMarkdownDocument(text).blocks).accessibilityIdentifier("morrow.markdown") }
+}
+private struct WorkMarkdownBlocks: View {
+    let blocks: [WorkMarkdownBlock]
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { item in
-                if let title = headingText(item.element) {
-                    Text(attributed(title)).font(Theme.heading).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else if tableRows(item.element).count > 1 {
-                    let rows = tableRows(item.element)
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(rows.enumerated()), id: \.offset) { row in
-                            HStack(alignment: .top, spacing: 20) {
-                                ForEach(Array(row.element.enumerated()), id: \.offset) { cell in
-                                    Text(attributed(cell.element))
-                                        .font(row.offset == 0 ? Theme.body.weight(.medium) : Theme.reader)
-                                        .textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }.padding(.vertical, 12)
-                            WorkDocumentRule()
-                        }
-                    }
-                } else {
-                    Text(attributed(listText(item.element))).font(Theme.reader).lineSpacing(7).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in render(block) }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    private func listText(_ value: String) -> String {
-        value.components(separatedBy: .newlines).map { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("* ") || trimmed.hasPrefix("- ") { return "• " + String(trimmed.dropFirst(2)) }
-            return line
-        }.joined(separator: "\n")
-    }
-    private func attributed(_ value: String) -> AttributedString {
-        (try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
-    }
-    private func headingText(_ line: String) -> String? {
-        let hashes = line.prefix { $0 == "#" }.count
-        guard hashes > 0 && hashes <= 6, line.dropFirst(hashes).first == " " else { return nil }
-        return String(line.dropFirst(hashes + 1))
-    }
-    private func tableRows(_ block: String) -> [[String]] {
-        let lines = block.components(separatedBy: .newlines)
-        guard lines.count > 1, lines[0].contains("|"), lines[1].contains("-"), lines[1].allSatisfy({ "|-: \t".contains($0) }) else { return [] }
-        return lines.enumerated().filter { $0.offset != 1 }.map { item in
-            var cells = item.element.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-            if cells.first == "" { cells.removeFirst() }
-            if cells.last == "" { cells.removeLast() }
-            return cells
+    private func render(_ block: WorkMarkdownBlock) -> AnyView {
+        switch block {
+        case .paragraph(let text): return AnyView(Text(text).font(Theme.reader).lineSpacing(5).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading))
+        case .heading(let level, let text): return AnyView(Text(text).font(level <= 2 ? Theme.heading : Theme.body.weight(.semibold)).textSelection(.enabled).padding(.top, 4).frame(maxWidth: .infinity, alignment: .leading))
+        case .listItem(let marker, let checked, let children):
+            return AnyView(HStack(alignment: .top, spacing: 10) { Text(checked.map { $0 ? "☑" : "☐" } ?? marker).font(Theme.reader).foregroundStyle(Theme.secondary).frame(minWidth: 18, alignment: .trailing); WorkMarkdownBlocks(blocks: children) })
+        case .quote(let children): return AnyView(HStack(alignment: .top, spacing: 12) { Rectangle().fill(Theme.rule).frame(width: 3); WorkMarkdownBlocks(blocks: children).foregroundStyle(Theme.secondary) }.fixedSize(horizontal: false, vertical: true))
+        case .code(let language, let content):
+            return AnyView(VStack(alignment: .leading, spacing: 8) {
+                HStack { Text(language.isEmpty ? L10n.t("代码") : language).font(Theme.label).foregroundStyle(Theme.muted); Spacer(); Button(L10n.t("复制")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(content, forType: .string) }.buttonStyle(.link).font(Theme.label) }
+                ScrollView(.horizontal) { Text(content).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: true, vertical: true).frame(maxWidth: .infinity, alignment: .leading) }
+            }.padding(12).background(Theme.sidebar, in: RoundedRectangle(cornerRadius: Theme.radius)))
+        case .table(let rows):
+            return AnyView(ScrollView(.horizontal) { VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { row, cells in HStack(alignment: .top, spacing: 12) {
+                    ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in Text(cell).font(row == 0 ? Theme.body.weight(.semibold) : Theme.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(width: 140, alignment: .leading) }
+                }.padding(.vertical, 10); Rectangle().fill(Theme.rule).frame(height: 1) }
+            } })
+        case .rule: return AnyView(Rectangle().fill(Theme.rule).frame(height: 1))
         }
     }
 }

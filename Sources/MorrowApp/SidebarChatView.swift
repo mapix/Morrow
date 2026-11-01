@@ -39,7 +39,7 @@ struct SidebarChatView: View {
                         Button(L10n.t("找出待回复事项")) { MediaTextView.finishFocusedComposition(); model.chatInput = L10n.t("找出当前范围的待回复事项，列出下一步并引用邮件。"); model.chatFocusNonce += 1 }.buttonStyle(.plain).foregroundStyle(Theme.accent2).font(Theme.body)
                     }.padding(.vertical, 24) }
                     ForEach(Array(model.visibleChat.suffix(historyLimit))) { entry in ChatMessageView(entry: entry).id(entry.id) }
-                    ForEach(model.openUIInteractions.filter { $0.completedAt == nil && ($0.sessionID ?? "legacy") == model.activeSessionID && ($0.runID == nil || $0.runID == context.runID) }) { interaction in NativeOpenUIView(interaction: interaction) }
+                    ForEach(model.openUIInteractions.filter { $0.chatID == nil && $0.completedAt == nil && ($0.sessionID ?? "legacy") == model.activeSessionID && ($0.runID == nil || $0.runID == context.runID) }) { interaction in NativeOpenUIView(interaction: interaction) }
                     if model.currentSessionBusy { VStack(alignment: .leading, spacing: 6) { HStack(spacing: 10) { ProgressView().controlSize(.small); Text(model.mailboxConnectionStatus ?? model.sidebarToolStatus ?? L10n.t("正在处理…")).font(Theme.label).foregroundStyle(Theme.secondary) }; if !model.sidebarEvidenceMailIDs.isEmpty { Text(L10n.format("本轮提供了 {0} 封邮件", "\(model.sidebarEvidenceMailIDs.count)")).font(Theme.small).foregroundStyle(Theme.secondary) } }.id("busy") }
                 }.padding(.horizontal, 20).padding(.vertical, 8) }
                 .onAppear { if let id = model.scrollChatID { revealChat(id, proxy: proxy) } else if let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
@@ -81,15 +81,16 @@ struct SidebarChatView: View {
             scopeAnchor
             if !model.chatMaterials.isEmpty { ScrollView(.horizontal) { HStack(spacing: 12) { ForEach(model.chatMaterials) { material in HStack(spacing: 6) { ChatMaterialPreview(material: material, compact: true); Text(material.name).font(Theme.label).lineLimit(1); Button { model.chatMaterials.removeAll { $0.id == material.id } } label: { Image(systemName: "xmark").font(Theme.small) }.buttonStyle(.plain).frame(width: 24, height: 28).help(L10n.t("移除文件：") + material.name).accessibilityLabel(L10n.t("移除文件：") + material.name) }.frame(maxWidth: 210) } } }.frame(height: 48) }
             VStack(alignment: .leading, spacing: 4) {
-                RichChatInput(text: Binding(get: { model.chatEditorInput(in: sessionID) }, set: { model.setChatEditorInput($0, in: sessionID) }), pasteMedia: model.pasteChatMaterials, focusTrigger: model.chatFocusNonce, sessionID: sessionID, currentText: { model.chatEditorInput(in: sessionID) }, placeholder: model.newChatWork ? L10n.t("把这件事交给我…") : L10n.t("说说下一步，或带上文件…")).id(sessionID).frame(height: model.compactLayout ? 64 : 80).disabled(voice.preparing || voice.recording || voice.finalizing)
+                RichChatInput(text: Binding(get: { model.chatEditorInput(in: sessionID) }, set: { model.setChatEditorInput($0, in: sessionID) }), pasteMedia: model.pasteChatMaterials, submit: { if sessionID == model.activeSessionID && !voice.preparing && !voice.recording && !voice.finalizing { model.beginSidebarChat() } }, focusTrigger: model.chatFocusNonce, sessionID: sessionID, currentText: { model.chatEditorInput(in: sessionID) }, placeholder: model.newChatWork ? L10n.t("把这件事交给我…") : L10n.t("说说下一步，或带上文件…")).id(sessionID).frame(height: model.compactLayout ? 64 : 80).disabled(voice.preparing || voice.recording || voice.finalizing)
                     .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in let targetID = model.activeSessionID; for provider in providers { _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in await model.addChatFile(url, sessionID: targetID) } } } }; return true }
                 HStack(spacing: 12) {
                     Menu { Button(L10n.t("添加文件…")) { model.pickChatFiles() }; Button(L10n.t("截取Morrow窗口")) { model.captureWorkspace() }; Button(L10n.t("粘贴截图或文件")) { model.pasteChatMaterials() } } label: { Image(systemName: "plus").frame(width: 28, height: 32) }.menuStyle(.borderlessButton).frame(width: 28).help(L10n.t("添加文件或截图")).accessibilityLabel(L10n.t("添加文件或截图"))
                     Button { if voice.recording { voice.stop() } else { MediaTextView.finishFocusedComposition(); voiceBase = model.chatInput; voiceSessionID = model.activeSessionID; Task { await voice.start() } } } label: { Image(systemName: voice.recording ? "stop.circle.fill" : "mic").foregroundStyle(voice.recording ? Theme.accent2 : Theme.secondary) }.buttonStyle(.plain).frame(width: 28, height: 32).disabled(voice.preparing || voice.finalizing).help(voice.recording ? L10n.t("结束语音输入") : L10n.t("语音输入")).accessibilityLabel(voice.recording ? L10n.t("结束语音输入") : L10n.t("语音输入"))
                     Spacer()
-                    Button { if model.currentSessionBusy, let task = model.sidebarTask { task.cancel() } else { MediaTextView.finishFocusedComposition(); voice.stop(); model.beginSidebarChat() } } label: { Image(systemName: model.currentSessionBusy ? "stop.fill" : "arrow.up") }.buttonStyle(ChatSendButtonStyle()).disabled(voice.recording || voice.preparing || voice.finalizing || (!model.currentSessionBusy && (model.sidebarTask != nil || model.partnerBusy || model.materialBusy || (model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatMaterials.isEmpty)))).keyboardShortcut(.return, modifiers: .command).help(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送（⌘Return）")).accessibilityLabel(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送"))
+                    Button { if model.currentSessionBusy, let task = model.sidebarTask { task.cancel() } else { MediaTextView.finishFocusedComposition(); voice.stop(); model.beginSidebarChat() } } label: { Image(systemName: model.currentSessionBusy ? "stop.fill" : "arrow.up") }.buttonStyle(ChatSendButtonStyle()).disabled(voice.recording || voice.preparing || voice.finalizing || (!model.currentSessionBusy && (model.sidebarTask != nil || model.partnerBusy || model.materialBusy || (model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatMaterials.isEmpty)))).help(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送（⌘Enter / Ctrl+Enter）")).accessibilityLabel(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送"))
                 }.padding(.horizontal, 8).padding(.bottom, 8)
             }.background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.fieldEdge))
+            Text(L10n.t("⌘Enter / Ctrl+Enter 发送 · Enter 换行")).font(Theme.small).foregroundStyle(Theme.muted)
             if model.sidebarTask != nil && !model.currentSessionBusy { Text(L10n.t("另一段对话正在处理；当前输入会保留。")).font(Theme.label).foregroundStyle(Theme.secondary) }
             if voice.finalizing { Text(L10n.t("正在完成转写…")).font(Theme.label).foregroundStyle(Theme.secondary) }
             if voice.preparing { Text(L10n.t("正在准备语音输入…")).font(Theme.label).foregroundStyle(Theme.secondary) }
@@ -114,7 +115,11 @@ private struct ChatMessageView: View {
                     Button { showingDetails = true } label: { Image(systemName: "info.circle").font(Theme.small).foregroundStyle(Theme.muted) }.buttonStyle(.plain).frame(width: 20, height: 28).help(L10n.t("查看提交时间与原范围")).accessibilityLabel(L10n.t("查看提交时间与原范围"))
                         .popover(isPresented: $showingDetails) { VStack(alignment: .leading, spacing: 8) { Text(entry.date.uiFormatted()).font(Theme.label); if let context = entry.context { Text(L10n.t("提交范围：") + context.label).font(Theme.body) } }.padding(18).frame(maxWidth: 300) }
                 }
-            } else { WorkMarkdownContent(text: entry.text).help(L10n.t("回复于 ") + entry.date.uiFormatted()).accessibilityHint(Text(L10n.t("回复于 ") + entry.date.uiFormatted())) }
+            } else {
+                if let id = entry.openUIID, let page = model.openUIInteractions.first(where: { $0.id == id && ($0.sessionID ?? "legacy") == (entry.sessionID ?? "legacy") }) { NativeOpenUIView(interaction: page) }
+                if !entry.text.isEmpty { WorkMarkdownContent(text: entry.text).help(L10n.t("回复于 ") + entry.date.uiFormatted()).accessibilityHint(Text(L10n.t("回复于 ") + entry.date.uiFormatted())) }
+                if let ids = entry.draftIDs { ForEach(ids, id: \.self) { id in if let draft = model.drafts.first(where: { $0.id == id }) { Button { model.openDraft(draft) } label: { HStack { Image(systemName: "doc.text"); VStack(alignment: .leading) { Text(draft.subject.isEmpty ? L10n.t("无主题草稿") : draft.subject); Text(L10n.t("已保存到草稿箱 · 点击编辑与预览")).font(Theme.label).foregroundStyle(Theme.secondary) }; Spacer(); Image(systemName: "arrow.up.right") }.padding(12).background(Theme.sidebar, in: RoundedRectangle(cornerRadius: Theme.radius)) }.buttonStyle(.plain).accessibilityIdentifier("chat.open-draft") } } }
+            }
             if let materials = entry.materials { ForEach(materials) { material in ChatMaterialPreview(material: material) } }
             if !sources.isEmpty { DisclosureGroup(L10n.format("依据邮件（{0}）", "\(sources.count)")) { ForEach(sources) { mail in Button { model.revealMail(mail) } label: { Label(mail.subject, systemImage: "envelope").font(Theme.label).lineLimit(2) }.buttonStyle(.plain).foregroundStyle(Theme.accent2).padding(.vertical, 4) } }.font(Theme.label).foregroundStyle(Theme.secondary) }
             if let ids = entry.memoryIDs, !ids.isEmpty { Button(L10n.format("记忆依据（{0}）", "\(ids.count)")) { model.revealMemories(ids) }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.accent2) }
@@ -125,6 +130,7 @@ private struct ChatMessageView: View {
 private struct RichChatInput: NSViewRepresentable {
     @Binding var text: String
     var pasteMedia: () -> Void
+    var submit: () -> Void
     var focusTrigger: Int
     var sessionID: String = "legacy"
     var currentText: (() -> String)? = nil
@@ -143,6 +149,7 @@ private struct RichChatInput: NSViewRepresentable {
         editor.textContainer?.containerSize = NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude)
         editor.textContainer?.lineFragmentPadding = 0
         editor.sessionID = sessionID; editor.mediaPaste = pasteMedia; editor.placeholder = placeholder
+        editor.submitChat = submit
         editor.string = currentText?() ?? text
         editor.delegate = context.coordinator
         editor.committedEdit = { [weak coordinator = context.coordinator] view in coordinator?.publish(view) }
@@ -158,7 +165,7 @@ private struct RichChatInput: NSViewRepresentable {
         let coordinator = context.coordinator
         guard let editor = scroll.documentView as? MediaTextView, editor.sessionID == sessionID else { return }
         coordinator.parent = self
-        editor.mediaPaste = pasteMedia; editor.placeholder = placeholder
+        editor.mediaPaste = pasteMedia; editor.placeholder = placeholder; editor.submitChat = submit
         if editor.isEditable != enabled { if !enabled { editor.finishComposition() }; editor.isEditable = enabled }
         if coordinator.displayTheme != Theme.current, !editor.hasMarkedText() {
             coordinator.displayTheme = Theme.current
@@ -192,6 +199,7 @@ private struct RichChatInput: NSViewRepresentable {
         // Detaching a conversation is an intentional editing boundary. Preserve
         // the visible composition in that old session, never in the new one.
         editor.committedEdit = nil; editor.delegate = nil
+        editor.submitChat = nil
         if let window = editor.window, window.firstResponder === editor { window.makeFirstResponder(nil) }
         if editor.hasMarkedText() { editor.unmarkText(); editor.inputContext?.discardMarkedText() }
         let value = editor.string, binding = coordinator.parent.$text
@@ -222,10 +230,30 @@ private struct RichChatInput: NSViewRepresentable {
     }
 }
 
-private final class MediaTextView: NSTextView {
+final class MediaTextView: NSTextView {
     var sessionID = "legacy"
     var mediaPaste: (() -> Void)?
     var committedEdit: ((MediaTextView) -> Void)?
+    var submitChat: (() -> Void)?
+    private func isSendChord(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        return [36, 76].contains(event.keyCode) && (modifiers == .command || modifiers == .control)
+    }
+    private func handleSendChord(_ event: NSEvent) {
+        guard !event.isARepeat, isEditable else { return }
+        // Candidates belong to the IME. A send chord never emits unfinished
+        // pinyin or clears composition; confirm candidates before sending.
+        guard !hasMarkedText() else { return }
+        committedEdit?(self); submitChat?()
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if isSendChord(event), window == nil || window?.firstResponder === self { handleSendChord(event); return true }
+        return super.performKeyEquivalent(with: event)
+    }
+    override func keyDown(with event: NSEvent) {
+        if isSendChord(event) { handleSendChord(event); return }
+        super.keyDown(with: event)
+    }
     var placeholder = "" { didSet { if oldValue != placeholder { needsDisplay = true } } }
     var placeholderColor = NSColor(Theme.muted) { didSet { needsDisplay = true } }
     override func paste(_ sender: Any?) {

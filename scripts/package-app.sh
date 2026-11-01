@@ -49,8 +49,8 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>app.smail.desktop</string>
 <key>CFBundleExecutable</key><string>Morrow</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.12.3</string>
-<key>CFBundleVersion</key><string>123</string>
+<key>CFBundleShortVersionString</key><string>0.12.4</string>
+<key>CFBundleVersion</key><string>124</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>NSHighResolutionCapable</key><true/>
@@ -74,6 +74,8 @@ python3 scripts/prepare-sandbox-bundle.py "$app_path/Contents/Resources/SandboxR
 mkdir -p "$app_path/Contents/Resources/Notices"
 cp .build/checkouts/mlx-swift/LICENSE "$app_path/Contents/Resources/Notices/MLX-LICENSE"
 cp .build/checkouts/mlx-swift-lm/LICENSE "$app_path/Contents/Resources/Notices/MLX-LM-LICENSE"
+cp .build/checkouts/swift-markdown/LICENSE.txt "$app_path/Contents/Resources/Notices/Swift-Markdown-LICENSE"
+cp .build/checkouts/swift-cmark/COPYING "$app_path/Contents/Resources/Notices/CMark-LICENSE"
 cp .build/checkouts/swift-transformers/LICENSE "$app_path/Contents/Resources/Notices/Transformers-LICENSE"
 cp LICENSE "$app_path/Contents/Resources/Notices/EmbeddingGemma2-LICENSE"
 cp Tests/Fixtures/OpenUI/LICENSE "$app_path/Contents/Resources/Notices/OpenUI-MIT-LICENSE"

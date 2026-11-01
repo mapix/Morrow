@@ -117,12 +117,13 @@ extension AppModel {
             if let other = chatSessions.first(where: { !$0.archived }) { switchChatSession(other.id) } else { _ = await createChatSession() }
         }
     }
-    func recordChat(_ value: PartnerChat) async throws {
+    func recordChat(_ value: PartnerChat, presentation: OpenUIInteraction? = nil) async throws {
         var message = value; message.sessionID = value.sessionID ?? taskSessionID
         let id = message.sessionID!
         if message.role == "partner", message.memoryIDs == nil { message.memoryIDs = retrievedMemoryIDs[id] }
         let session = chatSessions.first { $0.id == id } ?? ChatSession(id: id)
-        let saved = try await store.commitChat(message, session: session)
+        let saved = try await store.commitChat(message, session: session, presentation: presentation)
+        if let presentation { if let i = openUIInteractions.firstIndex(where: { $0.id == presentation.id }) { openUIInteractions[i] = presentation } else { openUIInteractions.append(presentation) } }
         if let i = chatSessions.firstIndex(where: { $0.id == id }) { chatSessions[i].title = saved.title; chatSessions[i].updatedAt = saved.updatedAt } else { chatSessions.append(saved) }
         if let i = chat.firstIndex(where: { $0.id == message.id }) { chat[i] = message } else { chat.append(message) }
         if message.role == "user" { scheduleMemoryExtraction(message) }
