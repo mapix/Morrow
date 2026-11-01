@@ -1,13 +1,14 @@
 # Native Agent engine
 
-Morrow's macOS Chat uses Deep Agents 1.16.2, built on LangChain and LangGraph.
-The SDK owns the model/tool loop, virtual files, task planning, delegated tasks,
-context summarization, and resumable interrupts. The native Swift app owns email
+Morrow's macOS Chat uses OpenAI Agents SDK 0.21.0.
+The SDK owns the model/tool loop, specialist agents, sessions and resumable
+approval interruptions. Tools provide virtual files and explicit task planning.
+The native Swift app owns email
 access, credentials, UI, model transports and application permissions.
 
 ```mermaid
 flowchart LR
-  Chat[SwiftUI Chat] --> SDK[Local Deep Agents process]
+  Chat[SwiftUI Chat] --> SDK[Local OpenAI Agents process]
   SDK -->|model requests| Models[Swift model transport]
   Models --> Ollama[Ollama]
   Models --> GPT[Compatible API or GPT login]
@@ -31,7 +32,7 @@ request. Registered handlers remain available, subject to native checks.
 - Draft creation, edits, rendered review, export, forwarding and calendar setup.
 - Responses, continued work, memory, Chat sessions and presentation/model settings.
 - Report publishing, OpenUI charts/forms and source citations.
-- Virtual file tools, planning and subagents supplied by the SDK.
+- Virtual file tools, structured planning and SDK specialist agents.
 - Shell analysis through SRT with staged source evidence and no default network.
 
 `review_send` opens a real draft for user review. It does not bypass the native
@@ -60,7 +61,9 @@ so the model cannot accidentally spend many turns reading tiny fragments.
 - Node's JavaScript heap is limited to256MiB; protocol and tool payloads are bounded.
 - Runs have model/tool/time budgets, and native inference keeps its concurrency gate.
 - Model text streams into a throttled progress preview; input composition is separate.
-- OpenUI forms use SDK interrupts and resume the same checkpoint.
+- OpenUI forms use SDK approval interruptions and resume the same run state.
+- Plans and actual tool executions are displayed separately, with model and tool timings.
+- Gateway and Ollama presets retain their own endpoint and model settings.
 - SDK virtual files are not copies of the mailbox or a database backup.
 
 The local macOS engine uses Node22.12or newer, installed or bundled. iOS retains
@@ -68,5 +71,5 @@ its Swift planner until a supported SDK execution host is configured. Apple
 Intelligence continues to support native analysis; this SDK tool engine requires
 a model with tool calling.
 
-References: [Deep Agents](https://docs.langchain.com/oss/javascript/deepagents/overview),
-[supported models](https://docs.langchain.com/oss/javascript/deepagents/models).
+References: [OpenAI Agents SDK](https://developers.openai.com/api/docs/guides/agents/sdk),
+[running agents](https://developers.openai.com/api/docs/guides/agents/running-agents).

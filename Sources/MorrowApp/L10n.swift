@@ -57,6 +57,13 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}", "决策复核 {0}/{1} · {2}"]
     static let catalog: [String: (String, String)] = [
+        "正在执行": ("Running", "実行中"),
+        "模型正在响应": ("Model is responding", "モデルが応答中"),
+        "实际步骤（{0}）": ("Executed steps ({0})", "実際の手順（{0}）"),
+        "排队 {0} · 请求 {1}": ("Queue {0} · Request {1}", "待機 {0}・リクエスト {1}"),
+        "处理输入 {0} · 生成 {1}": ("Input {0} · Generation {1}", "入力処理 {0}・生成 {1}"),
+        "网关模型": ("Gateway model", "ゲートウェイモデル"),
+        "模型选择已保存": ("Model selection saved", "モデル選択を保存しました"),
         "正在决定下一步…": ("Deciding the next step…", "次の手順を検討中…"),
         "已完成，继续处理…": (" complete; continuing…", "完了・処理を継続中…"),
         "正在修复模型执行方案…": ("Repairing the model plan…", "モデルの実行計画を修復中…"),

@@ -13,6 +13,7 @@ public struct AgentModelResponse: Codable, Sendable {
     public var finishReason: String
     public var usage: OpenUIJSON?
     public var replay: [OpenUIJSON]?
+    public var timing: OpenUIJSON?
     public func json() throws -> OpenUIJSON { try JSONDecoder().decode(OpenUIJSON.self, from: JSONEncoder().encode(self)) }
 }
 
@@ -25,8 +26,13 @@ public actor AgentToolModel {
     public func respond(_ input: OpenUIJSON, settings: AgentSettings, images: [Data] = [], priority: AIRequestPriority = .interactive,
         delta: @escaping @Sendable (String) async throws -> Void) async throws -> AgentModelResponse {
         guard settings.enabled else { throw MailError.message("伙伴已暂停，请在设置中启用。") }
+        let queuedAt = Date()
         return try await NetworkOperationGate.inference.withPermit(priority: priority) {
-            try await self.request(input, settings: settings, images: images, delta: delta)
+            let startedAt = Date()
+            var response = try await self.request(input, settings: settings, images: images, delta: delta)
+            var timing = response.timing?.object ?? [:]
+            timing["queueMs"] = .number(startedAt.timeIntervalSince(queuedAt) * 1000); timing["requestMs"] = .number(Date().timeIntervalSince(startedAt) * 1000)
+            response.timing = .object(timing); return response
         }
     }
     private func request(_ input: OpenUIJSON, settings: AgentSettings, images: [Data], delta: @escaping @Sendable (String) async throws -> Void) async throws -> AgentModelResponse {
@@ -59,6 +65,7 @@ public actor AgentToolModel {
         if !tools.isEmpty { payload["tools"] = try foundation(.array(tools)) }
         if compatible {
             payload["max_completion_tokens"] = maxTokens
+            payload["stream_options"] = ["include_usage": true]
             if !tools.isEmpty { payload["tool_choice"] = fields["toolChoice"]?.text ?? "auto" }
         } else { payload["think"] = false; payload["options"] = ["temperature": 0.2, "num_ctx": 16384, "num_predict": maxTokens] }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 120
@@ -180,6 +187,8 @@ public struct AgentModelStream {
     private let compatible: Bool
     private var text = "", calls: [Int: (String, String, String)] = [:], localCalls: [AgentModelToolCall] = []
     private var finish = "", complete = false, outputBytes = 0
+    private var timing: [String: OpenUIJSON] = [:]
+    private var usage: OpenUIJSON?
     public init(compatible: Bool) { self.compatible = compatible }
     public mutating func feed(_ line: String) throws -> String? {
         if line.isEmpty || line.hasPrefix(":") || line.hasPrefix("event:") { return nil }
@@ -187,6 +196,7 @@ public struct AgentModelStream {
         if raw == "[DONE]" { return nil }
         guard let data = raw.data(using: .utf8), let reply = try? JSONDecoder().decode(OpenUIJSON.self, from: data) else { throw MailError.message("Agent 模型返回了无效的响应记录。") }
         let fields = reply.object
+        if let value = fields["usage"], value != .null { usage = value; timing["outputTokens"] = value.object["completion_tokens"] ?? value.object["output_tokens"] }
         if fields["error"] != nil { throw MailError.message("本地 Agent 模型未完成工具调用。") }
         var content = ""
         if compatible {
@@ -210,7 +220,12 @@ public struct AgentModelStream {
                     localCalls.append(try Self.call(id: value["id"]?.text, name: function["name"]?.text ?? "", arguments: function["arguments"] ?? .object([:])))
                 }
             }
-            if fields["done"] == .bool(true) { finish = fields["done_reason"]?.text ?? "stop"; complete = true }
+            if fields["done"] == .bool(true) {
+                finish = fields["done_reason"]?.text ?? "stop"; complete = true
+                for (source, target) in [("load_duration", "loadMs"), ("prompt_eval_duration", "promptMs"), ("eval_duration", "generationMs"), ("total_duration", "serverMs")] { if let value = Double(fields[source]?.text ?? "") { timing[target] = .number(value / 1_000_000) } }
+                timing["outputTokens"] = fields["eval_count"]
+                if let input = fields["prompt_eval_count"], let output = fields["eval_count"] { usage = .object(["input_tokens": input, "output_tokens": output]) }
+            }
         }
         outputBytes += content.utf8.count
         guard outputBytes <= 1024 * 1024, calls.count <= 16, localCalls.count <= 16 else { throw MailError.message("Agent 模型输出超过预算。") }
@@ -220,7 +235,7 @@ public struct AgentModelStream {
         guard complete, finish != "length" else { throw MailError.message("Agent 模型响应未完成或被截断；会话状态已保存。") }
         let values = compatible ? try calls.keys.sorted().map { index in let value = calls[index]!; return try Self.call(id: value.0, name: value.1, arguments: .string(value.2)) } : localCalls
         guard !text.isEmpty || !values.isEmpty else { throw MailError.message("Agent 模型没有返回文本或工具调用。") }
-        return .init(content: text, toolCalls: values, model: model, finishReason: values.isEmpty ? "stop" : "tool_calls")
+        return .init(content: text, toolCalls: values, model: model, finishReason: values.isEmpty ? "stop" : "tool_calls", usage: usage, timing: .object(timing))
     }
     static func call(id: String?, name: String, arguments: OpenUIJSON) throws -> AgentModelToolCall {
         guard !name.isEmpty, name.utf8.count <= 128 else { throw MailError.message("Agent 工具名称无效。") }

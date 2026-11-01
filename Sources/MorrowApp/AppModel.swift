@@ -172,6 +172,7 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var sidebarEvidenceMailIDs = Set<String>()
     @Published var sidebarToolStatus: String?
     @Published var sdkStreamingText = ""
+    @Published var sdkLiveTrace: AgentExecutionTrace?
     let agentToolModel: AgentToolModel
     let usesAgentSDK: Bool
     private var lastSyncFailure: String?

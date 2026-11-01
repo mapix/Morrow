@@ -16,6 +16,7 @@ import MorrowCore
     var sourceText: [String] = []
     var awaitingInput = false
     var stream = ""
+    var trace = AgentExecutionTrace()
     var lastStreamUpdate = Date.distantPast
     var sandbox: ResponderSandboxRuntime?
     var materials: [ChatMaterial] = []
@@ -31,8 +32,8 @@ import MorrowCore
 extension AppModel {
     func askSDKPartner(_ instruction: String, runID: String?, uiContext: WorkspaceContext?, materials: [ChatMaterial]) async {
         guard !partnerBusy, !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        partnerBusy = true; sdkStreamingText = ""
-        defer { partnerBusy = false; sidebarToolStatus = nil; sdkStreamingText = "" }
+        partnerBusy = true; sdkStreamingText = ""; sdkLiveTrace = AgentExecutionTrace()
+        defer { partnerBusy = false; sidebarToolStatus = nil; sdkStreamingText = ""; sdkLiveTrace = nil }
         var human = PartnerChat(role: "user", text: instruction); human.context = uiContext; human.materials = materials
         do {
             try await recordChat(human)
@@ -78,7 +79,7 @@ extension AppModel {
             sidebarToolStatus = L10n.t("正在决定下一步…")
             let result = try await runtime.run(request, handle: { [weak self] method, params, delta in
                 guard let self else { throw CancellationError() }
-                if method.hasPrefix("checkpoint.") { return try await checkpoints.handle(method: method, params: params, sessionID: session) }
+                if method.hasPrefix("checkpoint.") || method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: session) }
                 if method == "model" { return try await self.agentToolModel.respond(params, settings: modelSettings, images: images, delta: delta).json() }
                 if method == "tool" { return try await self.performSDKTool(params, context: context) }
                 throw MailError.message("未知 Agent 原生请求。")
@@ -90,6 +91,7 @@ extension AppModel {
             } else { try await store.remove(kind: "agent-sdk-waiting", id: session) }
             var reply = PartnerChat(role: "partner", text: result.text, messageIDs: context.citedIDs.isEmpty ? Array(context.evidenceIDs.prefix(60)) : context.citedIDs)
             reply.sessionID = session; reply.draftIDs = context.draftIDs
+            context.trace.finishedAt = Date(); context.trace.status = result.paused == true ? "paused" : "completed"; reply.executionTrace = context.trace
             if context.presentation == nil, ChatStatisticsPresentation.requested(instruction), let statistics = context.statistics { context.presentation = OpenUIInteraction(source: statistics.chartSource, runID: runID) }
             if var page = context.presentation { page.sessionID = session; page.chatID = reply.id; reply.openUIID = page.id; context.presentation = page }
             try await recordChat(reply, presentation: context.presentation)
@@ -102,6 +104,7 @@ extension AppModel {
     }
     private func receiveSDKEvent(_ event: OpenUIJSON, context: SDKChatContext) {
         let value = event.object
+        if ["phase", "plan", "model_timing"].contains(value["type"]?.text ?? "") { context.trace.consume(event); sdkLiveTrace = context.trace }
         if value["type"]?.text == "text_delta" {
             context.stream += value["text"]?.text ?? ""
             if Date().timeIntervalSince(context.lastStreamUpdate) >= 0.12 { sdkStreamingText = String(context.stream.suffix(1800)); context.lastStreamUpdate = Date() }

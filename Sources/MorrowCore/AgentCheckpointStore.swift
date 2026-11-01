@@ -57,6 +57,21 @@ public actor AgentCheckpointStore {
     }
     public func handle(method: String, params: OpenUIJSON, sessionID: String) throws -> OpenUIJSON {
         let fields = params.object
+        if method.hasPrefix("state.") {
+            let key = fields["key"]?.text ?? "history"
+            guard ["history", "run", "files", "plan"].contains(key), sessionID.utf8.count <= 256 else { throw MailError.message("Agent 会话状态标识无效。") }
+            switch method {
+            case "state.get":
+                let query = try statement("SELECT json FROM agent_sdk_checkpoints WHERE thread=? AND ns='openai' AND id=?", [.text(sessionID), .text(key)]); defer { sqlite3_finalize(query) }
+                guard sqlite3_step(query) == SQLITE_ROW else { return .null }
+                return try JSONDecoder().decode(OpenUIJSON.self, from: bytes(query, 0))
+            case "state.set":
+                let value = fields["value"] ?? .null, data = try JSONEncoder().encode(value); try budget(data)
+                try execute("INSERT INTO agent_sdk_checkpoints(thread,ns,id,json) VALUES(?,'openai',?,?) ON CONFLICT(thread,ns,id) DO UPDATE SET json=excluded.json", [.text(sessionID), .text(key), .blob(data)]); return .null
+            case "state.remove": try execute("DELETE FROM agent_sdk_checkpoints WHERE thread=? AND ns='openai' AND id=?", [.text(sessionID), .text(key)]); return .null
+            default: throw MailError.message("未知 Agent 会话状态操作。")
+            }
+        }
         if method == "checkpoint.delete" {
             guard fields["threadId"]?.text == sessionID else { throw MailError.message("Agent 状态不属于当前会话。") }
             try execute("BEGIN IMMEDIATE")

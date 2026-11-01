@@ -24,12 +24,12 @@ public final class AgentSDKRuntime: @unchecked Sendable {
         let resources = Bundle.main.resourceURL
         let sourceRuntime = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
         let candidates = [runtimeDirectory, resources?.appendingPathComponent("AgentRuntime"), URL(fileURLWithPath: files.currentDirectoryPath).appendingPathComponent("Runtime/AgentRuntime"), sourceRuntime].compactMap { $0 }
-        guard let runtime = candidates.first(where: { files.fileExists(atPath: $0.appendingPathComponent("bridge.mjs").path) && files.fileExists(atPath: $0.appendingPathComponent("node_modules/deepagents/package.json").path) }) else { throw MailError.message("Deep Agents SDK 尚未安装。") }
+        guard let runtime = candidates.first(where: { files.fileExists(atPath: $0.appendingPathComponent("bridge.mjs").path) && files.fileExists(atPath: $0.appendingPathComponent("node_modules/@openai/agents/package.json").path) }) else { throw MailError.message("OpenAI Agents SDK 尚未安装。") }
         bridge = runtime.appendingPathComponent("bridge.mjs")
         var nodes = [runtime.appendingPathComponent("node"), resources?.appendingPathComponent("SandboxRuntime/node"), URL(fileURLWithPath: "/usr/local/bin/node"), URL(fileURLWithPath: "/opt/homebrew/bin/node")].compactMap { $0 }
         let versions = files.homeDirectoryForCurrentUser.appendingPathComponent(".nvm/versions/node")
         if let entries = try? files.contentsOfDirectory(at: versions, includingPropertiesForKeys: nil) { nodes += entries.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedDescending }.map { $0.appendingPathComponent("bin/node") } }
-        guard let executable = nodes.first(where: { files.isExecutableFile(atPath: $0.path) }) else { throw MailError.message("Deep Agents SDK 的 Node.js 运行时不可用。") }
+        guard let executable = nodes.first(where: { files.isExecutableFile(atPath: $0.path) }) else { throw MailError.message("OpenAI Agents SDK 的 Node.js 运行时不可用。") }
         node = executable.resolvingSymlinksInPath()
     }
     public func run(_ request: OpenUIJSON, maximumSeconds: Int = 900,
@@ -89,10 +89,10 @@ public final class AgentSDKRuntime: @unchecked Sendable {
         } onCancel: { if process.isRunning { process.terminate() } }
     }
     #else
-    public init(runtimeDirectory: URL? = nil) throws { throw MailError.message("Deep Agents SDK 的本地工具引擎需要在 Mac 执行。") }
+    public init(runtimeDirectory: URL? = nil) throws { throw MailError.message("OpenAI Agents SDK 的本地工具引擎需要在 Mac 执行。") }
     public func run(_ request: OpenUIJSON, maximumSeconds: Int = 900,
         handle: @escaping @Sendable (String, OpenUIJSON, @escaping @Sendable (String) async throws -> Void) async throws -> OpenUIJSON,
-        event: @escaping @Sendable (OpenUIJSON) async -> Void) async throws -> AgentSDKResult { throw MailError.message("Deep Agents SDK 的本地工具引擎需要在 Mac 执行。") }
+        event: @escaping @Sendable (OpenUIJSON) async -> Void) async throws -> AgentSDKResult { throw MailError.message("OpenAI Agents SDK 的本地工具引擎需要在 Mac 执行。") }
     #endif
 }
 

@@ -5,7 +5,7 @@ import MorrowCore
 final class SDKChatIntegrationTests: XCTestCase {
     @MainActor private func fixture(mode: String) async throws -> (AppModel, MailMessage, MailMessage) {
         let runtime = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
-        guard FileManager.default.fileExists(atPath: runtime.appendingPathComponent("node_modules/deepagents/package.json").path) else { throw XCTSkip("Install pinned SDK dependencies") }
+        guard FileManager.default.fileExists(atPath: runtime.appendingPathComponent("node_modules/@openai/agents/package.json").path) else { throw XCTSkip("Install pinned SDK dependencies") }
         SDKChatHTTPFixture.reset(mode)
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SDKChatHTTPFixture.self]
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -79,6 +79,26 @@ final class SDKChatIntegrationTests: XCTestCase {
         XCTAssertEqual(page["nextOffset"] as? Int, 4000)
         XCTAssertEqual(SDKChatHTTPFixture.count, 2)
     }
+    @MainActor func testSDKPlanAndActualToolsArePersistedSeparately() async throws {
+        let (model, _, _) = try await fixture(mode: "plan"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("制定计划，只读检索并整理结果", uiContext: model.currentContext)
+        let trace = try XCTUnwrap(model.visibleChat.last?.executionTrace)
+        XCTAssertEqual(trace.plan.first?.title, "查找相关邮件")
+        XCTAssertEqual(trace.plan.first?.status, "completed")
+        XCTAssertTrue(trace.tools.contains(where: { $0.tool == "search_mail" && $0.status == "completed" }))
+        XCTAssertTrue(trace.models.allSatisfy { $0.seconds != nil })
+    }
+    @MainActor func testQuickModelSwitchPreservesBothEndpointsAndModels() async throws {
+        let (model, _, _) = try await fixture(mode: "search"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        model.settings.openAIModel = "gpt-6.1-terra"; model.settings.model = "qwen3.8:27b-mlx"
+        try await model.selectModelPreset(local: true)
+        XCTAssertEqual(model.settings.provider, "ollama")
+        XCTAssertEqual(model.settings.openAIModel, "gpt-6.1-terra")
+        try await model.selectModelPreset(local: false)
+        XCTAssertEqual(model.settings.provider, "openai")
+        XCTAssertEqual(model.settings.model, "qwen3.8:27b-mlx")
+        XCTAssertEqual(model.settings.openAIURL, "https://sdk-chat-fixture.invalid/v1")
+    }
 }
 
 private final class SDKChatHTTPFixture: URLProtocol {
@@ -101,11 +121,14 @@ private final class SDKChatHTTPFixture: URLProtocol {
         let (call, mode) = Self.lock.withLock { Self.calls += 1; return (Self.calls, Self.mode) }
         let operation: (String, [String: Any])?
         let answer: String
-        if mode == "page-size" {
+        if mode == "plan" {
+            operation = call == 1 ? ("write_plan", ["steps": [["id": "search", "title": "查找相关邮件", "status": "in_progress"]]]) : call == 2 ? ("search_mail", ["query": "game monetization"]) : call == 3 ? ("write_plan", ["steps": [["id": "search", "title": "查找相关邮件", "status": "completed"]]]) : nil
+            answer = "SDK plan completed"
+        } else if mode == "page-size" {
             operation = call == 1 ? ("read_mail", ["messageID": "target", "limit": 256]) : nil
             answer = "SDK efficient page"
         } else if mode == "responder" {
-            operation = call == 1 ? ("setup_responder", ["instruction": "只响应trusted@example.invalid", "title": "Synthetic rule", "accountID": "a", "senderAllowlist": ["trusted@example.invalid"]]) : nil
+            operation = call == 1 ? ("find_tools", ["query": "responder"]) : call == 2 ? ("setup_responder", ["instruction": "只响应trusted@example.invalid", "title": "Synthetic rule", "accountID": "a", "senderAllowlist": ["trusted@example.invalid"]]) : nil
             answer = "SDK responder prepared"
         } else if mode == "form" {
             operation = call == 1 ? ("render_ui", ["source": "root = Form(\"choice\", [TextArea(\"response\", \"你的选择\", \"\"), Button(\"继续\", @ToAssistant(\"选择 A\"))])"]) : nil

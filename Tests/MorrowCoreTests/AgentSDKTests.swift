@@ -14,7 +14,7 @@ final class AgentSDKTests: XCTestCase {
         let lockedSettings = settings
         let request = try json(#"{"type":"start","sessionID":"live-sdk-synthetic","instruction":"请用search_mail查询今年的游戏变现邮件，再根据工具中的真实合成资料简短回答；这是测试数据，不发送或修改邮件。","systemPrompt":"你在验收本机SDK。必须先调用search_mail，query包含game monetization。回答使用工具实际结果，不需要文件、分任务或保存报告。不要访问其他资料。","tools":[{"name":"search_mail","description":"Search synthetic mail; no user mailbox access","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}"#)
         let result = try await runtime.run(request, maximumSeconds: 180, handle: { method, params, delta in
-            if method.hasPrefix("checkpoint.") { return try await checkpoints.handle(method: method, params: params, sessionID: "live-sdk-synthetic") }
+            if method.hasPrefix("checkpoint.") || method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: "live-sdk-synthetic") }
             if method == "model" { return try await model.respond(params, settings: lockedSettings, delta: delta).json() }
             guard method == "tool", params.object["name"]?.text == "search_mail" else { throw MailError.message("Unknown synthetic tool") }
             return try self.json(#"{"rows":[{"messageID":"synthetic-only","subject":"SDK_GAME_REVENUE_TEST","date":"2026-10-20","text":"A game team reports in-app purchase revenue grew 12 percent. Synthetic fixture only."}],"coverage":"one synthetic mail, not the real mailbox"}"#)
@@ -54,13 +54,13 @@ final class AgentSDKTests: XCTestCase {
     func testActualSDKToolsRunAndCheckpointsResumeAcrossProcessesWithoutAnotherDatabase() async throws {
         #if os(macOS)
         let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
-        guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("node_modules/deepagents/package.json").path) else { throw XCTSkip("Install the pinned AgentRuntime dependencies to run SDK tests") }
+        guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("node_modules/@openai/agents/package.json").path) else { throw XCTSkip("Install the pinned AgentRuntime dependencies to run SDK tests") }
         let runtime = try AgentSDKRuntime(runtimeDirectory: directory)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer { try? FileManager.default.removeItem(at: root) }
         let mail = try MailStore(root: root), checkpoints = try AgentCheckpointStore(root: root), spy = SDKFixture()
         let request = try json(#"{"type":"start","sessionID":"sdk-fixture","instruction":"Find game monetization mail","systemPrompt":"Search before answering. Cite only tool evidence.","tools":[{"name":"search_mail","description":"Search mail","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}"#)
         let handle: @Sendable (String, OpenUIJSON, @escaping @Sendable (String) async throws -> Void) async throws -> OpenUIJSON = { method, params, delta in
-            if method.hasPrefix("checkpoint.") { return try await checkpoints.handle(method: method, params: params, sessionID: "sdk-fixture") }
+            if method.hasPrefix("checkpoint.") || method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: "sdk-fixture") }
             return try await spy.handle(method, params)
         }
         let first = try await runtime.run(request, maximumSeconds: 30, handle: handle, event: { _ in })

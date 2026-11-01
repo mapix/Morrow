@@ -97,6 +97,7 @@ struct SettingsView: View {
                 section(L10n.t("伙伴")) {
                     Toggle(L10n.t("让伙伴主动整理和推进委托"), isOn: runtimeBinding(\.enabled))
                     Toggle(L10n.t("自动阅读新邮件，准备事项和回复建议"), isOn: runtimeBinding(\.autoAnalyze))
+                    ModelQuickSwitchView { modelDraft = model.settings; modelKey = "" }
                     ModelSettingsView(draft: $modelDraft, key: $modelKey, saveFeedback: saveFeedback, onEdited: { saveFeedback.edited() })
                     HStack { Button(L10n.t("启用重要事项通知")) { Task { await model.requestNotifications() } }.buttonStyle(QuietButtonStyle()); Text(model.settings.notifications ? L10n.t("通知已启用") : L10n.t("通知未启用")).font(Theme.label).foregroundStyle(Theme.muted) }
                 }

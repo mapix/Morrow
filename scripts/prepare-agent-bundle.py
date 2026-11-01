@@ -6,8 +6,8 @@ import argparse, shutil
 parser = argparse.ArgumentParser()
 parser.add_argument('runtime', type=Path)
 root = parser.parse_args().runtime.resolve()
-if not (root / 'bridge.mjs').is_file() or not (root / 'node_modules/deepagents/package.json').is_file():
-    raise SystemExit('Not a prepared Deep Agents runtime')
+if not (root / 'bridge.mjs').is_file() or not (root / 'node_modules/@openai/agents/package.json').is_file():
+    raise SystemExit('Not a prepared OpenAI Agents runtime')
 bins = root / 'node_modules/.bin'
 if bins.is_dir(): shutil.rmtree(bins)
 for path in root.rglob('*'):
@@ -20,4 +20,4 @@ for path in root.rglob('*'):
     if path.suffix in {'.js', '.mjs', '.cjs', '.ts'}:
         if data.startswith(b'#!'): path.write_bytes(data.split(b'\n', 1)[1])
         path.chmod(0o644)
-print('Deep Agents JavaScript runtime prepared')
+print('OpenAI Agents JavaScript runtime prepared')
