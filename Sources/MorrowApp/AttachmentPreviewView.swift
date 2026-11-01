@@ -86,6 +86,7 @@ struct AttachmentPreviewView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let attachment: MailAttachment
+    var onAnalyze: (() -> Void)? = nil
     @State private var content: PreparedAttachmentPreview?
     @State private var failure: String?
     @State private var loading = true
@@ -121,7 +122,7 @@ struct AttachmentPreviewView: View {
             Divider().overlay(Theme.rule)
             HStack {
                 Button(L10n.t("查看提取文字")) { dismiss(); Task { await model.previewText(attachment) } }.buttonStyle(QuietButtonStyle())
-                Button(L10n.t("让伙伴分析")) { dismiss(); model.analyzeSelectedAttachments() }.buttonStyle(QuietButtonStyle())
+                if let onAnalyze { Button(L10n.t("让伙伴分析")) { dismiss(); onAnalyze() }.buttonStyle(QuietButtonStyle()) }
                 Spacer()
                 Button(L10n.t("保存附件…")) { Task { await model.attachment(attachment, save: true) } }.buttonStyle(CompactButtonStyle())
             }.padding(20)

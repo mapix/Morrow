@@ -9,7 +9,7 @@ final class BulkIMAPFlagTests: XCTestCase {
         let client = try await connect(server); defer { Task { await client.close() } }
         let fetched = try await client.fetchMany(folder: "INBOX", uids: [101, 102], expectedValidity: 42)
         XCTAssertEqual(fetched[101], Data(first.utf8)); XCTAssertEqual(fetched[102], Data(second.utf8))
-        XCTAssertEqual(server.commands.filter { $0.hasPrefix("UID FETCH ") }, ["UID FETCH 101,102 (UID BODY.PEEK[])"])
+        XCTAssertEqual(server.commands.filter { $0.hasPrefix("UID FETCH ") }, ["UID FETCH 101,102 (UID RFC822.SIZE)", "UID FETCH 101,102 (UID BODY.PEEK[])"])
         XCTAssertFalse(server.commands.contains { $0.hasPrefix("UID STORE ") })
     }
     func testUIDCompressionDeduplicationAndCommandBoundaries() throws {
@@ -143,6 +143,9 @@ private final class BulkFlagServer: @unchecked Sendable {
             else if command.hasPrefix("LOGIN ") { }
             else if command.hasPrefix("SELECT ") { guard send("* 1201 EXISTS\r\n* OK [UIDVALIDITY \(validity)] validity\r\n", fd: fd) else { return } }
             else if command == "UID SEARCH UNSEEN" { guard send("* SEARCH " + unseen.map(String.init).joined(separator: " ") + "\r\n* 1202 EXISTS\r\n", fd: fd) else { return } }
+            else if command.hasPrefix("UID FETCH ") && command.hasSuffix("(UID RFC822.SIZE)") {
+                for (uid, body) in bodies { guard send("* \(uid) FETCH (UID \(uid) RFC822.SIZE \(body.utf8.count))\r\n", fd: fd) else { return } }
+            }
             else if command.hasPrefix("UID FETCH ") && command.hasSuffix("(UID BODY.PEEK[])") {
                 for (uid, body) in bodies.sorted(by: { $0.key > $1.key }) {
                     guard send("* \(uid) FETCH (BODY[] {\(body.utf8.count)}\r\n" + body + " UID \(uid))\r\n", fd: fd) else { return }

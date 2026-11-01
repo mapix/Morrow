@@ -4,6 +4,8 @@ import AppKit
 import UniformTypeIdentifiers
 import CoreGraphics
 
+@MainActor func finishFocusedChatComposition() { MediaTextView.finishFocusedComposition() }
+
 struct SidebarChatView: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @EnvironmentObject var model: AppModel

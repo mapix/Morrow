@@ -467,7 +467,7 @@ enum Destination: String, CaseIterable, Identifiable {
                                     do {
                                         readyBodies = try await transport.fetchMany(account, folder: folder.path, uids: batch, validity: validity, password: secret)
                                         MailReaderMetrics.record("sync_batch_fetch_and_parse", since: fetchStarted)
-                                    } catch { if Task.isCancelled { throw CancellationError() }; batchEnabled = false; readyBodies = [:] }
+                                    } catch { if Task.isCancelled { throw CancellationError() }; MailReaderMetrics.failure("sync_batch_fallback", error: error); batchEnabled = false; readyBodies = [:] }
                                 }
                                 var mail: MailMessage
                                 if let prepared = readyBodies.removeValue(forKey: uid) { mail = prepared }

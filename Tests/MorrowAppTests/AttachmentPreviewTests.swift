@@ -7,6 +7,42 @@ import MorrowCore
 @testable import MorrowApp
 
 final class AttachmentPreviewTests: XCTestCase {
+    func testGridUsesSmallImageAndPDFPageThumbnails() throws {
+        let inputs: [(Data, String, String)] = [(try image(.png), "image.png", "image/png"), (try image(.jpeg), "image.jpeg", "image/jpeg"), (try pdf(), "document.pdf", "application/pdf")]
+        for (data, name, mime) in inputs {
+            let thumbnail = try XCTUnwrap(AttachmentThumbnailCache.decode(.init(name: name, mimeType: mime, data: data), pixels: 256))
+            XCTAssertLessThanOrEqual(thumbnail.image.width, 256); XCTAssertLessThanOrEqual(thumbnail.image.height, 256)
+            XCTAssertLessThanOrEqual(thumbnail.cost, 256 * 256 * 4)
+        }
+    }
+    func testGridCacheBoundsMemoryAndWorkerConcurrency() async throws {
+        let cache = AttachmentThumbnailCache(maximumBytes: 256 * 256 * 4)
+        let data = try image(.png)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for i in 0..<20 {
+                var attachment = MailAttachment(name: "image-\(i).png", mimeType: "image/png", data: data)
+                attachment.contentRevision = "fixture-\(i)"
+                let input = attachment
+                group.addTask { _ = try await cache.image(input, pixels: 256) }
+            }
+            try await group.waitForAll()
+        }
+        XCTAssertLessThanOrEqual(cache.retainedBytes(), 256 * 256 * 4)
+        XCTAssertLessThanOrEqual(cache.maximumObservedConcurrency(), 2)
+    }
+    func testQueuedGridThumbnailCancelsWhenItsViewDisappears() async throws {
+        let queue = OperationQueue(); queue.isSuspended = true
+        let cache = AttachmentThumbnailCache(queue: queue)
+        let attachment = MailAttachment(name: "image.png", mimeType: "image/png", data: try image(.png))
+        let task = Task { try await cache.image(attachment) }
+        while queue.operationCount == 0 { await Task.yield() }
+        task.cancel()
+        do { _ = try await task.value; XCTFail("Queued thumbnail did not cancel") }
+        catch is CancellationError { }
+        catch { XCTFail("Unexpected thumbnail cancellation error") }
+        queue.isSuspended = false
+        XCTAssertEqual(cache.retainedBytes(), 0)
+    }
     private func image(_ type: UTType) throws -> Data {
         let context = try XCTUnwrap(CGContext(data: nil, width: 512, height: 256, bitsPerComponent: 8, bytesPerRow: 512 * 4,
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))

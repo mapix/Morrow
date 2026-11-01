@@ -80,8 +80,27 @@ public actor IMAPConnection {
         let current = try await select(folder)
         guard current == expectedValidity else { throw MailError.message("文件夹已在服务器重建，请重新同步。") }
         let set = uids.map(String.init).joined(separator: ",")
-        let reply = try await command("UID FETCH \(set) (UID BODY.PEEK[])")
-        return try Self.fetchedBodies(lines: reply.lines, literals: reply.literals, allowed: Set(uids))
+        let metadata = try await command("UID FETCH \(set) (UID RFC822.SIZE)")
+        var sizes: [UInt64: UInt64] = [:]
+        for line in metadata.lines {
+            guard let rawUID = MIMEParser.capture(#"(?i)\bUID\s+(\d+)\b"#, line), let uid = UInt64(rawUID),
+                  let rawSize = MIMEParser.capture(#"(?i)\bRFC822.SIZE\s+(\d+)\b"#, line), let size = UInt64(rawSize), Set(uids).contains(uid) else { continue }
+            if let old = sizes[uid], old != size { throw MailError.message("批量邮件大小响应不一致。") }
+            sizes[uid] = size
+        }
+        let eligible = Self.boundedBodyBatch(uids: uids, sizes: sizes)
+        guard !eligible.isEmpty else { return [:] }
+        let bodySet = eligible.map(String.init).joined(separator: ",")
+        let reply = try await command("UID FETCH \(bodySet) (UID BODY.PEEK[])")
+        return try Self.fetchedBodies(lines: reply.lines, literals: reply.literals, allowed: Set(eligible))
+    }
+    static func boundedBodyBatch(uids: [UInt64], sizes: [UInt64: UInt64], maximumBytes: UInt64 = 64 * 1024 * 1024) -> [UInt64] {
+        var selected: [UInt64] = [], used: UInt64 = 0
+        for uid in uids {
+            guard let size = sizes[uid], size > 0, size <= maximumBytes, size <= maximumBytes - used else { continue }
+            selected.append(uid); used += size
+        }
+        return selected
     }
     /// Associate literals with their enclosing FETCH response, including servers
     /// that put UID after BODY. Never assign a body by response order alone.
