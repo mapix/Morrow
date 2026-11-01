@@ -25,7 +25,9 @@ public actor MailStore {
         CREATE TABLE IF NOT EXISTS message_projections(message TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,account TEXT NOT NULL,folder TEXT NOT NULL,date REAL NOT NULL,json BLOB NOT NULL,content_revision TEXT NOT NULL,profile_signature TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS projection_scope_date ON message_projections(account,folder,date DESC);
         CREATE INDEX IF NOT EXISTS projection_date ON message_projections(date DESC,message);
-        CREATE VIRTUAL TABLE IF NOT EXISTS mail_fts USING fts5(id UNINDEXED,body,tokenize='unicode61');
+        -- Legacy FTS cache was never queried. Its unindexed ID made every
+        -- message save scan the corpus. Keyword search uses messages.search.
+        DROP TABLE IF EXISTS mail_fts;
         CREATE TABLE IF NOT EXISTS vectors(id TEXT PRIMARY KEY,message TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,chunk TEXT NOT NULL,vector BLOB NOT NULL,model TEXT NOT NULL,hash TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS vector_message ON vectors(message);
         CREATE INDEX IF NOT EXISTS vector_model_message ON vectors(model,message);
@@ -321,8 +323,6 @@ public actor MailStore {
         do {
             try execute("INSERT INTO messages(id,account,folder,uid,validity,date,search,json,canonical) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET account=excluded.account,folder=excluded.folder,uid=excluded.uid,validity=excluded.validity,date=excluded.date,search=excluded.search,json=excluded.json,canonical=excluded.canonical", [.text(m.id), .text(m.accountID), .text(m.folder), .int(Int64(m.uid)), .int(Int64(m.uidValidity)), .real(m.date.timeIntervalSince1970), .text(search), .blob(try encoder.encode(m)), .text(m.canonicalID)])
             try writeProjection(m)
-            try execute("DELETE FROM mail_fts WHERE id=?", [.text(m.id)])
-            try execute("INSERT INTO mail_fts(id,body) VALUES(?,?)", [.text(m.id), .text(search)])
             if ownsTransaction { try execute("COMMIT") }
         } catch { if ownsTransaction { try? execute("ROLLBACK") }; throw error }
         return m
@@ -502,13 +502,6 @@ public actor MailStore {
                 try execute("DELETE FROM message_projections WHERE NOT json_valid(json) AND message IN (" + placeholders + ")", chunk.map(Value.text))
                 try execute("UPDATE message_projections SET json=json_insert(CAST(json AS TEXT),'$.projectedMessage.labels[#]',?) WHERE message IN (" + placeholders + ")", [.text(label)] + chunk.map(Value.text))
             }
-            if !ordered.isEmpty {
-                // FTS5's id is UNINDEXED. A single set operation avoids a whole
-                // virtual-table scan for every small batch of message IDs.
-                let selected = Value.blob(try encoder.encode(ordered))
-                try execute("DELETE FROM mail_fts WHERE id IN (SELECT value FROM json_each(CAST(? AS TEXT)))", [selected])
-                try execute("INSERT INTO mail_fts(id,body) SELECT m.id,m.search FROM messages m JOIN json_each(CAST(? AS TEXT)) selected ON selected.value=m.id", [selected])
-            }
             try execute("COMMIT"); return changes
         } catch { try? execute("ROLLBACK"); throw error }
     }
@@ -528,7 +521,7 @@ public actor MailStore {
     }
     public func deleteMessage(_ id: String) throws {
         if let m = try message(id) { for a in m.attachments { if let path = a.storedPath { try? FileManager.default.removeItem(atPath: path) }; try remove(kind: "attachment-text", id: a.id) }; try? FileManager.default.removeItem(at: rawURL(id)) }
-        try execute("DELETE FROM messages WHERE id=?", [.text(id)]); try execute("DELETE FROM mail_fts WHERE id=?", [.text(id)])
+        try execute("DELETE FROM messages WHERE id=?", [.text(id)])
     }
     public func deleteAccount(_ id: String) throws {
         for record in try syncRecords(account: id, folder: nil) { try deleteMessage(record.id) }

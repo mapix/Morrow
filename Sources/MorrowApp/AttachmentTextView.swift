@@ -17,12 +17,18 @@ struct AttachmentTextView: View {
             if let failure = preview.result.failure { Text(failure).font(Theme.body).foregroundStyle(Theme.muted) }
             Group {
                 if let document { SecureHTMLView(document: document, failure: $displayFailure) }
+                else if let displayFailure { Text(displayFailure).font(Theme.body).foregroundStyle(Theme.secondary).padding(28) }
+                else if preview.result.text.isEmpty { Text(AttachmentPreviewWords.text("没有提取到可显示的文字。请返回附件查看原件。", "No displayable text was extracted. Return to the attachment to view the original.", "表示できるテキストを抽出できませんでした。添付ファイルに戻って原本を表示してください。")).font(Theme.body).foregroundStyle(Theme.secondary).padding(28) }
                 else { ProgressView() }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.sheet)
                 .task(id: Preparation(id: preview.id, text: preview.result.text, theme: Theme.current.rawValue)) {
+                    document = nil; displayFailure = nil
+                    guard !preview.result.text.isEmpty else { return }
                     let input = ReaderDocumentInput(mailID: "attachment-preview:" + preview.id, body: preview.result.text, usesHTML: false, allowsRemoteImages: false, themeCSS: Theme.htmlTokens, emptyMessage: "", attachments: [])
-                    let prepared = try? await ReaderDocumentCache.shared.prepare(input)
-                    guard !Task.isCancelled else { return }; document = prepared
+                    do {
+                        let prepared = try await ReaderDocumentCache.shared.prepare(input)
+                        guard !Task.isCancelled else { return }; document = prepared
+                    } catch { if !Task.isCancelled { displayFailure = AttachmentPreviewWords.text("文字预览暂时无法显示，请重试。", "The text preview could not be displayed. Try again.", "テキストプレビューを表示できませんでした。再試行してください。") } }
                 }.onDisappear { document = nil }
             Button(L10n.t("关闭")) { close() }.buttonStyle(QuietButtonStyle())
         }.padding(28).frame(width: inline ? nil : 760, height: inline ? nil : 700).background(Theme.paper)

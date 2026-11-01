@@ -4,6 +4,7 @@ import MorrowCore
 struct AttachmentWorkspaceView: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @EnvironmentObject var model: AppModel
+    @State private var previewAttachment: MailAttachment?
     private var query: String { model.attachmentQuery }
     private var kind: String { model.attachmentKind }
     private var entries: [MailAttachmentRecord] { model.filteredAttachments }
@@ -18,15 +19,16 @@ struct AttachmentWorkspaceView: View {
                     HStack(alignment: .top, spacing: 14) {
                         Button { if !model.selectedAttachmentIDs.contains(entry.id) && model.selectedAttachmentIDs.count >= 8 { model.error = L10n.t("一次分析最多选择8个附件。") } else { model.selectAttachment(entry.id, additive: true) } } label: { Image(systemName: model.selectedAttachmentIDs.contains(entry.id) ? "checkmark.square.fill" : "square").font(Theme.actionIcon).frame(width: 44, height: 44) }.buttonStyle(.plain).accessibilityLabel(L10n.t("选择附件：") + entry.attachment.name)
                         VStack(alignment: .leading, spacing: 9) {
-                            Button(entry.attachment.name) { model.selectAttachment(entry.id); Task { await model.previewText(entry.attachment) } }.buttonStyle(.plain).font(Theme.body.weight(.medium)).frame(minHeight: 30)
+                            Button(entry.attachment.name.isEmpty ? L10n.t("附件") : entry.attachment.name) { model.selectAttachment(entry.id); previewAttachment = entry.attachment }.buttonStyle(.plain).font(Theme.body.weight(.medium)).frame(minHeight: 30).accessibilityIdentifier("attachment.open-preview")
                             HStack(spacing: 12) { Text(entry.kind); Text(entry.attachment.size); Text(entry.mail.from.display).lineLimit(1); Spacer(); Text(entry.mail.date.uiFormatted(date: .abbreviated, time: .omitted)) }.font(Theme.label).foregroundStyle(Theme.muted)
                             Button(entry.mail.subject) { model.revealMail(entry.mail) }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.accent2).lineLimit(2)
                         }.frame(maxWidth: .infinity, alignment: .leading)
-                        Menu { Button(L10n.t("打开附件")) { Task { await model.attachment(entry.attachment) } }; Button(L10n.t("保存附件…")) { Task { await model.attachment(entry.attachment, save: true) } }; Button(L10n.t("提取文字与预览")) { model.selectAttachment(entry.id); Task { await model.previewText(entry.attachment) } }; Button(L10n.t("让伙伴分析")) { model.selectAttachment(entry.id); model.analyzeSelectedAttachments() } } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.menuStyle(.borderlessButton).frame(width: 44)
+                        Menu { Button(L10n.t("打开附件")) { model.selectAttachment(entry.id); previewAttachment = entry.attachment }; Button(L10n.t("保存附件…")) { Task { await model.attachment(entry.attachment, save: true) } }; Button(L10n.t("查看提取文字")) { model.selectAttachment(entry.id); Task { await model.previewText(entry.attachment) } }; Button(L10n.t("让伙伴分析")) { model.selectAttachment(entry.id); model.analyzeSelectedAttachments() } } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.menuStyle(.borderlessButton).frame(width: 44)
                     }.padding(.vertical, model.compactLayout ? 10 : 16).background(model.selectedAttachmentIDs.contains(entry.id) ? Theme.selected.opacity(0.5) : Theme.clear)
                     Rectangle().fill(Theme.rule).frame(height: 1)
                 } } }
             }
         }.padding(28).background(Theme.paper)
+            .sheet(item: $previewAttachment) { attachment in AttachmentPreviewView(attachment: attachment).environmentObject(model) }
     }
 }

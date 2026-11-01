@@ -14,7 +14,7 @@ final class BulkMetadataMutationTests: XCTestCase {
         return result
     }
     private func indexes(_ root: URL) throws -> [[String]] {
-        try [sql(root, "SELECT id||':'||hex(search) FROM messages ORDER BY id"), sql(root, "SELECT id||':'||hex(body) FROM mail_fts ORDER BY id"), sql(root, "SELECT id||':'||hex(vector)||':'||hash FROM vectors ORDER BY id"), sql(root, "SELECT message||':'||hash FROM index_state ORDER BY message")]
+        try [sql(root, "SELECT id||':'||hex(search) FROM messages ORDER BY id"), sql(root, "SELECT id||':'||hex(vector)||':'||hash FROM vectors ORDER BY id"), sql(root, "SELECT message||':'||hash FROM index_state ORDER BY message")]
     }
     func testBulkStarsUseMetadataAndUndoOnlyChangedCanonicalRows() async throws {
         let root = location(); defer { try? FileManager.default.removeItem(at: root) }
@@ -64,7 +64,8 @@ final class BulkMetadataMutationTests: XCTestCase {
         let alreadySearch = try sql(root, "SELECT hex(search) FROM messages WHERE id='label-000'")
         let changes = try await store.addLabel(ids: ids, label: target)
         XCTAssertEqual(Set(changes.map(\.id)), expected); XCTAssertTrue(changes.allSatisfy { $0.labels == ["existing"] })
-        XCTAssertEqual(try sql(root, "SELECT count(*) FROM mail_fts f JOIN messages m ON m.id=f.id WHERE f.body<>m.search"), ["0"])
+        let keywordHits = try await store.keywordSearch(target, allowedIDs: ids)
+        XCTAssertFalse(keywordHits.isEmpty)
         XCTAssertEqual(try sql(root, "SELECT hex(search) FROM messages WHERE id='label-000'"), alreadySearch)
         XCTAssertEqual(try sql(root, "SELECT hex(vector)||':'||hash FROM vectors"), vectorBefore)
         let full = try await store.message(reference!.id)

@@ -15,7 +15,6 @@ final class BulkReadStateTests: XCTestCase {
     }
     private func indexes(_ root: URL) throws -> [[String]] {
         try [
-            query(root, "SELECT id || ':' || hex(body) FROM mail_fts ORDER BY id"),
             query(root, "SELECT id || ':' || message || ':' || hex(chunk) || ':' || hex(vector) || ':' || model || ':' || hash FROM vectors ORDER BY id"),
             query(root, "SELECT message || ':' || model || ':' || hash FROM index_state ORDER BY message"),
             query(root, "SELECT id || ':' || hex(search) FROM messages ORDER BY id")
