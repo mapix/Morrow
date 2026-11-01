@@ -17,13 +17,15 @@ enum Destination: String, CaseIterable, Identifiable {
 @MainActor final class AppModel: ObservableObject {
     @Published var accounts: [MailAccount] = [] { didSet { rebuildMailboxMetadata() } }
     @Published var folders: [MailFolder] = [] { didSet { rebuildMailboxMetadata() } }
-    @Published var mails: [MailMessage] = [] { didSet { mailProjection.rebuild(mails); mailRevision += 1; visibleProjection = nil; scheduleSearchRefresh() } }
+    @Published var mails: [MailMessage] = [] { didSet { if let prepared = preparedMailProjection { mailProjection = prepared; preparedMailProjection = nil } else { mailProjection.rebuild(mails) }; mailRevision += 1; visibleProjection = nil; scheduleSearchRefresh() } }
     @Published private(set) var mailRevision = 0
     private var mailProjection = MailProjectionCache()
+    private var preparedMailProjection: MailProjectionCache?
     private var metadataRevision = 0
     private var mailboxEmails: [String: String] = [:]
     private var folderRoles: [String: String] = [:]
     private var visibleProjection: (MailViewProjectionKey, [MailMessage])?
+    private var visiblePositions: [String: Int] = [:]
     private var actionProjection: (Int, Int, Int)?
     private var unreadProjection: (Int, Int, [String: Int], Int)?
     private var searchResultsRevision = 0
@@ -210,7 +212,7 @@ enum Destination: String, CaseIterable, Identifiable {
         let clock = [.partner, .focus, .snoozed].contains(destination) ? Int(Date().timeIntervalSince1970 / 15) : 0
         let key = MailViewProjectionKey(revision: mailRevision, metadata: metadataRevision, destination: destination.rawValue, account: selectedAccount, folder: selectedFolder, category: category?.rawValue, unread: unreadOnly, search: searchMode, query: searchText, strategy: searchStrategy.rawValue, scope: searchScope.rawValue, results: searchResultsRevision, clockBucket: clock)
         if let cached = visibleProjection, cached.0 == key { return cached.1 }
-        if searchMode { let result = searchHits.map(\.message); visibleProjection = (key, result); return result }
+        if searchMode { let result = searchHits.map(\.message); visibleProjection = (key, result); visiblePositions = Dictionary(result.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first }); return result }
         let scope = currentMailListScope
         let filtered = mails.filter(scope.matches)
         var unique: [String: MailMessage] = [:]
@@ -218,7 +220,7 @@ enum Destination: String, CaseIterable, Identifiable {
         let result = unique.values.sorted {
             if scope.destination == .partner || scope.destination == .focus { let a = $0.analysis?.priority ?? 0; let b = $1.analysis?.priority ?? 0; if a != b { return a > b } }; return $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date
         }
-        visibleProjection = (key, result); return result
+        visibleProjection = (key, result); visiblePositions = Dictionary(result.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first }); return result
     }
     private var currentMailListScope: MailListScope { .init(destination: destination, account: selectedAccount, folder: selectedFolder, unreadOnly: unreadOnly, category: category, roles: folderRoles, ownEmails: mailboxEmails, now: Date()) }
     func matchesMailScope(_ mail: MailMessage) -> Bool { currentMailListScope.matches(mail) }
@@ -296,14 +298,23 @@ enum Destination: String, CaseIterable, Identifiable {
     func reload() async {
         reloadEpoch += 1; let request = reloadEpoch, mutationAtStart = localMutationEpoch
         do {
-            var loaded = try await store.messageSummaries().map(\.displayMessage)
-            guard request == reloadEpoch else { return }
-            for i in loaded.indices {
-                if (localMutationVersions[loaded[i].id] ?? 0) > mutationAtStart, let current = mailProjection.byID[loaded[i].id] { loaded[i] = current }
-                loaded[i] = Self.validatedMail(loaded[i])
+            let cache = mailProjection, store = store
+            let worker = Task.detached(priority: .utility) { () async throws -> ([MailMessage], MailProjectionCache) in
+                let loaded = try await store.messageSummaries().map { Self.validatedMail($0.displayMessage) }
+                try Task.checkCancellation()
+                var projection = cache; projection.rebuild(loaded)
+                return (loaded, projection)
             }
+            var (loaded, projection) = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+            guard request == reloadEpoch else { return }
+            var overrides: [MailMessage] = []
+            for i in loaded.indices {
+                if (localMutationVersions[loaded[i].id] ?? 0) > mutationAtStart, let current = mailProjection.byID[loaded[i].id] { loaded[i] = current; overrides.append(current) }
+            }
+            guard projection.applyMetadataUpdates(overrides) else { Task { await self.reload() }; return }
             // Mutating a @Published array element republishes and copies the
             // entire array. Prepare locally, then publish one validated snapshot.
+            preparedMailProjection = projection
             mails = loaded; indexCount = try await store.indexCount(); isDemo = !accounts.isEmpty && accounts.allSatisfy(\.isDemo)
             scheduleContactRefresh()
             if isDemo { syncStatus = "示例工作区，未连接真实邮箱" }
@@ -311,7 +322,7 @@ enum Destination: String, CaseIterable, Identifiable {
             if analysisTask == nil && !mails.isEmpty && primaryMails.allSatisfy({ $0.analysis != nil && $0.analysis?.source != "规则分析" }) { partnerStatus = "已整理，等待新邮件或你的委托" }
         } catch { self.error = error.localizedDescription }
     }
-    private static func validatedMail(_ original: MailMessage) -> MailMessage {
+    private nonisolated static func validatedMail(_ original: MailMessage) -> MailMessage {
         if original.contentAvailability == .preview { return original }
         var mail = original
         if var analysis = mail.analysis {
@@ -468,13 +479,13 @@ enum Destination: String, CaseIterable, Identifiable {
                     let analysis: MailAnalysis
                     if let reused { analysis = reused } else { analysis = try await partner.analyze(MailEvidence.forAnalysis(original, store: store), settings: settings) }
                     guard var current = try await store.message(original.id) else { continue }
-                    current.analysis = analysis; try await store.upsert(current)
+                    current.analysis = analysis; current = try await store.upsert(current)
                     if reused == nil && analysis.priority > 0 && current.actionable && !isOutbound(current) {
                         await log(analysis.action ?? "发现重要邮件", detail: analysis.summary, messageIDs: [current.id], kind: "attention")
                         await notify(id: "mail:" + current.id, title: "有件事需要你处理", body: analysis.action ?? current.subject)
                         if let deadline = analysis.deadline, deadline > Date() { await notify(id: "due:" + current.id, title: "事项即将到期", body: analysis.action ?? current.subject, at: max(Date().addingTimeInterval(1), deadline.addingTimeInterval(-1800))) }
                     }
-                    await reload()
+                    replaceCachedMails([current])
                 } catch { partnerStatus = "模型暂不可用：" + error.localizedDescription; return }
             }
             partnerStatus = "已整理，等待新邮件或你的委托"; await runDelegations()
@@ -562,21 +573,35 @@ enum Destination: String, CaseIterable, Identifiable {
         var updated = mails
         localMutationEpoch += 1
         for mail in updates { if let position = mailProjection.positions[mail.id], updated.indices.contains(position) { updated[position] = Self.validatedMail(mail); localMutationVersions[mail.id] = localMutationEpoch } }
+        publishMetadataSnapshot(updated, ids: Set(updates.map(\.id)))
+    }
+    private func publishMetadataSnapshot(_ updated: [MailMessage], ids: Set<String>) {
+        let changes = ids.compactMap { id in mailProjection.positions[id].flatMap { updated.indices.contains($0) ? updated[$0] : nil } }
+        var projection = mailProjection
+        let incremental = projection.applyMetadataUpdates(changes)
+        var visible = visibleProjection
+        let stableScope = [.inbox, .sent, .trash].contains(destination) && !unreadOnly && category == nil && !searchMode && visible?.0.destination == destination.rawValue && visible?.0.account == selectedAccount && visible?.0.folder == selectedFolder && visible?.0.unread == false && visible?.0.category == nil && visible?.0.search == false && visible?.0.metadata == metadataRevision
+        if incremental { preparedMailProjection = projection }
+        if incremental && stableScope, var cached = visible {
+            for mail in changes { if let position = visiblePositions[mail.id] { cached.1[position] = mail } }
+            visible = cached
+        } else { visible = nil }
         mails = updated
+        if var visible { visible.0.revision = mailRevision; visibleProjection = visible }
     }
     func cacheReadStates(_ states: [String: Bool], modifiedAt: Date) {
         guard !states.isEmpty else { return }
         var updated = mails; localMutationEpoch += 1
         for (id, value) in states { if let position = mailProjection.positions[id], updated.indices.contains(position) { updated[position].isRead = value; updated[position].localFlagModifiedAt = modifiedAt; localMutationVersions[id] = localMutationEpoch } }
-        mails = updated
+        publishMetadataSnapshot(updated, ids: Set(states.keys))
     }
     func cacheStarStates(_ states: [String: Bool], modifiedAt: Date) {
         guard !states.isEmpty else { return }; var updated = mails; localMutationEpoch += 1
-        for (id, value) in states { if let position = mailProjection.positions[id], updated.indices.contains(position) { updated[position].isStarred = value; updated[position].localFlagModifiedAt = modifiedAt; localMutationVersions[id] = localMutationEpoch } }; mails = updated
+        for (id, value) in states { if let position = mailProjection.positions[id], updated.indices.contains(position) { updated[position].isStarred = value; updated[position].localFlagModifiedAt = modifiedAt; localMutationVersions[id] = localMutationEpoch } }; publishMetadataSnapshot(updated, ids: Set(states.keys))
     }
     func cacheLabelAddition(_ ids: Set<String>, label: String) {
         guard !ids.isEmpty else { return }; var updated = mails; localMutationEpoch += 1
-        for id in ids { if let position = mailProjection.positions[id], updated.indices.contains(position) { if !updated[position].labels.contains(label) { updated[position].labels.append(label) }; localMutationVersions[id] = localMutationEpoch } }; mails = updated
+        for id in ids { if let position = mailProjection.positions[id], updated.indices.contains(position) { if !updated[position].labels.contains(label) { updated[position].labels.append(label) }; localMutationVersions[id] = localMutationEpoch } }; publishMetadataSnapshot(updated, ids: ids)
     }
     func noteBulkSeen(account: String, folder: String, validity: UInt64, uids: [UInt64], value: Bool, modifiedAt: Date) {
         for uid in uids { bulkSeenOverrides[.init(account: account, folder: folder, validity: validity, uid: uid)] = (value, modifiedAt) }

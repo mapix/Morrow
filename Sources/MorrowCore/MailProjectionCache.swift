@@ -11,6 +11,8 @@ public struct MailProjectionCache: Sendable {
     public private(set) var primary: [MailMessage] = []
     public private(set) var attachments: [MailAttachmentRecord] = []
     public private(set) var normalizationCount = 0
+    private var primaryPositions: [String: Int] = [:]
+    private var attachmentPositions: [String: [Int]] = [:]
     public init() {}
 
     public mutating func rebuild(_ mails: [MailMessage]) {
@@ -31,6 +33,24 @@ public struct MailProjectionCache: Sendable {
         byID = nextByID; positions = nextPositions
         primary = canonical.values.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
         attachments = MailAttachmentRecord.index(mails)
+        primaryPositions = Dictionary(uniqueKeysWithValues: primary.enumerated().map { ($0.element.id, $0.offset) })
+        attachmentPositions = [:]
+        for (index, record) in attachments.enumerated() { attachmentPositions[record.mail.id, default: []].append(index) }
+    }
+
+    /// Flags, analysis and notes do not alter membership, ordering or threads.
+    /// Structural changes request a full rebuild without partially mutating.
+    public mutating func applyMetadataUpdates(_ updates: [MailMessage]) -> Bool {
+        guard updates.allSatisfy({ mail in
+            guard let old = byID[mail.id] else { return false }
+            return old.accountID == mail.accountID && old.folder == mail.folder && old.canonicalID == mail.canonicalID && old.subject == mail.subject && old.date == mail.date && old.attachments == mail.attachments
+        }) else { return false }
+        for mail in updates {
+            byID[mail.id] = mail
+            if let position = primaryPositions[mail.id] { primary[position] = mail }
+            for position in attachmentPositions[mail.id] ?? [] { attachments[position].mail = mail }
+        }
+        return true
     }
 
     public func related(to mail: MailMessage) -> [MailMessage] {
