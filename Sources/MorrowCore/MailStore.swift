@@ -30,6 +30,7 @@ public actor MailStore {
         CREATE INDEX IF NOT EXISTS vector_message ON vectors(message);
         CREATE INDEX IF NOT EXISTS vector_model_message ON vectors(model,message);
         CREATE TABLE IF NOT EXISTS index_state(message TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,hash TEXT NOT NULL,model TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS index_inputs(message TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,model TEXT NOT NULL,input_key TEXT NOT NULL,hash TEXT NOT NULL);
         """
         guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK else { throw MailError.message("本地邮件库初始化失败。") }
         var columns: OpaquePointer?; var hasCanonical = false
@@ -362,6 +363,33 @@ public actor MailStore {
         return result
     }
     private enum StoredMailFlag: String { case read = "isRead", star = "isStarred" }
+    /// Only changed server flags reach this path. A local edit made after the
+    /// inventory began wins, checked in the same transaction as the update.
+    /// Raw MIME, body revisions, FTS and vectors are never rewritten.
+    public func applyRemoteFlagStates(_ updates: [MailRemoteFlagUpdate], inventoryStarted: Date) throws -> Int {
+        guard !updates.isEmpty else { return 0 }
+        guard inventoryStarted.timeIntervalSinceReferenceDate.isFinite,
+              updates.allSatisfy({ $0.overrideModifiedAt?.timeIntervalSinceReferenceDate.isFinite ?? true }) else { throw MailError.message("同步标记时间无效。") }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            var changed = 0
+            for update in updates {
+                try Task.checkCancellation()
+                let flags = "'$.isRead',json(?),'$.isStarred',json(?)"
+                var values: [Value] = [.text(update.read ? "true" : "false"), .text(update.starred ? "true" : "false")]
+                var extra = ""
+                if let modified = update.overrideModifiedAt { extra = ",'$.localFlagModifiedAt',?"; values.append(.real(modified.timeIntervalSinceReferenceDate)) }
+                try execute("UPDATE messages SET json=json_set(CAST(json AS TEXT)," + flags + extra + ") WHERE id=? AND coalesce(json_extract(CAST(json AS TEXT),'$.localFlagModifiedAt'),-1e99)<=? AND (json_extract(CAST(json AS TEXT),'$.isRead')<>? OR json_extract(CAST(json AS TEXT),'$.isStarred')<>?)", values + [.text(update.id), .real(inventoryStarted.timeIntervalSinceReferenceDate), .int(update.read ? 1 : 0), .int(update.starred ? 1 : 0)])
+                guard sqlite3_changes(db) > 0 else { continue }
+                changed += 1
+                try execute("DELETE FROM message_projections WHERE message=? AND NOT json_valid(json)", [.text(update.id)])
+                let projectionFlags = "'$.projectedMessage.isRead',json(?),'$.projectedMessage.isStarred',json(?)"
+                let projectionExtra = update.overrideModifiedAt == nil ? "" : ",'$.projectedMessage.localFlagModifiedAt',?"
+                try execute("UPDATE message_projections SET json=json_set(CAST(json AS TEXT)," + projectionFlags + projectionExtra + ") WHERE message=?", values + [.text(update.id)])
+            }
+            try execute("COMMIT"); return changed
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
     private func flagStates(ids: Set<String>, flag: StoredMailFlag, includeCanonicalCopies: Bool) throws -> [String: Bool] {
         let ordered = ids.sorted(); var states: [String: Bool] = [:]
         let path = "$." + flag.rawValue
@@ -572,6 +600,26 @@ public actor MailStore {
     }
     public func isIndexed(_ id: String, hash: String, model: String) throws -> Bool {
         let s = try statement("SELECT 1 FROM index_state WHERE message=? AND hash=? AND model=?", [.text(id), .text(hash), .text(model)]); defer { sqlite3_finalize(s) }; return sqlite3_step(s) == SQLITE_ROW
+    }
+    public func verifiedIndexInputs(model: String) throws -> [String: String] {
+        let s = try statement("SELECT v.message,v.input_key FROM index_inputs v JOIN index_state i ON i.message=v.message AND i.model=v.model AND i.hash=v.hash WHERE v.model=?", [.text(model)])
+        defer { sqlite3_finalize(s) }
+        var inputs: [String: String] = [:]
+        while true {
+            let code = sqlite3_step(s); if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else { throw databaseError() }
+            inputs[string(s, 0)] = string(s, 1)
+        }
+        return inputs
+    }
+    public func rememberIndexInput(_ mail: MailMessage, attachments: Bool, model: String, hash: String) throws {
+        guard let key = MailIndexInput.key(for: mail, attachments: attachments) else { return }
+        let s = try statement("SELECT p.json FROM message_projections p JOIN index_state i ON i.message=p.message WHERE p.message=? AND i.model=? AND i.hash=?", [.text(mail.id), .text(model), .text(hash)])
+        defer { sqlite3_finalize(s) }
+        guard sqlite3_step(s) == SQLITE_ROW,
+              let summary = try? decoder.decode(MailMessageSummary.self, from: bytes(s, 0)),
+              MailIndexInput.key(for: summary.displayMessage, attachments: attachments) == key else { return }
+        try execute("INSERT INTO index_inputs(message,model,input_key,hash) VALUES(?,?,?,?) ON CONFLICT(message) DO UPDATE SET model=excluded.model,input_key=excluded.input_key,hash=excluded.hash", [.text(mail.id), .text(model), .text(key), .text(hash)])
     }
     public func putVectors(messageID: String, chunks: [String], vectors: [[Float]], model: String, hash: String) throws {
         guard chunks.count == vectors.count, vectors.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isFinite) }) else { throw MailError.message("模型返回的向量无效。") }

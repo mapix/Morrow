@@ -10,6 +10,7 @@ struct SidebarChatView: View {
     @StateObject private var voice = NativeVoiceInput()
     @State private var voiceBase = ""
     @State private var voiceSessionID = ""
+    @State private var historyLimit = 60
     private var context: WorkspaceContext { model.chatPinnedContext ?? model.currentContext }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,21 +22,22 @@ struct SidebarChatView: View {
                 } label: { HStack(spacing: 8) { Text(model.activeSession?.title ?? L10n.t("新对话")).font(Theme.body.weight(.semibold)).lineLimit(1); Image(systemName: "chevron.down").font(Theme.small) } }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.horizontal, 20).padding(.top, 56).padding(.bottom, 20)
             ScrollViewReader { proxy in
-                ScrollView { LazyVStack(alignment: .leading, spacing: model.compactLayout ? 22 : 30) {
+                ScrollView { VStack(alignment: .leading, spacing: model.compactLayout ? 22 : 30) {
+                    if model.visibleChat.count > historyLimit { Button(L10n.t("查看更早的消息")) { historyLimit += 40 }.buttonStyle(QuietButtonStyle()) }
                     if model.visibleChat.isEmpty { VStack(alignment: .leading, spacing: 12) {
                         Text(L10n.t("从这里一起处理。")).font(Theme.heading)
                         Button(L10n.t("总结当前内容")) { MediaTextView.finishFocusedComposition(); model.chatInput = L10n.t("总结当前内容，说明需要我处理的事项并引用依据。"); model.chatFocusNonce += 1 }.buttonStyle(.plain).foregroundStyle(Theme.accent2).font(Theme.body)
                         Button(L10n.t("找出待回复事项")) { MediaTextView.finishFocusedComposition(); model.chatInput = L10n.t("找出当前范围的待回复事项，列出下一步并引用邮件。"); model.chatFocusNonce += 1 }.buttonStyle(.plain).foregroundStyle(Theme.accent2).font(Theme.body)
                     }.padding(.vertical, 24) }
-                    ForEach(model.visibleChat) { entry in ChatMessageView(entry: entry).id(entry.id) }
+                    ForEach(Array(model.visibleChat.suffix(historyLimit))) { entry in ChatMessageView(entry: entry).id(entry.id) }
                     ForEach(model.openUIInteractions.filter { $0.completedAt == nil && ($0.sessionID ?? "legacy") == model.activeSessionID && ($0.runID == nil || $0.runID == context.runID) }) { interaction in NativeOpenUIView(interaction: interaction) }
                     if model.currentSessionBusy { VStack(alignment: .leading, spacing: 6) { HStack(spacing: 10) { ProgressView().controlSize(.small); Text(model.mailboxConnectionStatus ?? model.sidebarToolStatus ?? L10n.t("正在处理…")).font(Theme.label).foregroundStyle(Theme.secondary) }; if !model.sidebarEvidenceMailIDs.isEmpty { Text(L10n.format("本轮提供了 {0} 封邮件", "\(model.sidebarEvidenceMailIDs.count)")).font(Theme.small).foregroundStyle(Theme.secondary) } }.id("busy") }
                 }.padding(.horizontal, 20).padding(.vertical, 8) }
-                .onAppear { if let id = model.scrollChatID { proxy.scrollTo(id, anchor: .center) } else if let last = model.visibleChat.last { proxy.scrollTo(last.id, anchor: .bottom) } }
-                .onChange(of: model.visibleChat.count) { if let last = model.visibleChat.last { proxy.scrollTo(last.id, anchor: .bottom) } }
-                .onChange(of: model.activeSessionID) { if let last = model.visibleChat.last { proxy.scrollTo(last.id, anchor: .bottom) } }
-                .onChange(of: model.currentSessionBusy) { if model.currentSessionBusy { proxy.scrollTo("busy", anchor: .bottom) } }
-                .onChange(of: model.scrollChatID) { if let id = model.scrollChatID { proxy.scrollTo(id, anchor: .center) } }
+                .onAppear { if let id = model.scrollChatID { revealChat(id, proxy: proxy) } else if let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
+                .onChange(of: model.visibleChat.count) { if let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
+                .onChange(of: model.activeSessionID) { historyLimit = 60; if let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
+                .onChange(of: model.currentSessionBusy) { if model.currentSessionBusy { scrollChat("busy", proxy: proxy) } }
+                .onChange(of: model.scrollChatID) { if let id = model.scrollChatID { revealChat(id, proxy: proxy) } }
             }
             composer
                 .onChange(of: model.chatInput) { model.scheduleSessionDraft() }
@@ -44,6 +46,14 @@ struct SidebarChatView: View {
                 .onChange(of: model.chatPinnedContext) { model.scheduleSessionDraft() }
                 .onChange(of: model.activeSessionID) { voice.cancel() }
         }.background(Theme.sheet).onDisappear { voice.cancel() }
+    }
+    private func scrollChat(_ id: String, proxy: ScrollViewProxy, anchor: UnitPoint = .bottom) {
+        // Scroll after the stack has finished the current layout transaction.
+        Task { @MainActor in await Task.yield(); proxy.scrollTo(id, anchor: anchor) }
+    }
+    private func revealChat(_ id: String, proxy: ScrollViewProxy) {
+        if let index = model.visibleChat.firstIndex(where: { $0.id == id }) { historyLimit = max(historyLimit, model.visibleChat.count - index) }
+        scrollChat(id, proxy: proxy, anchor: .center)
     }
     private var scopeAnchor: some View {
         Menu {
@@ -85,7 +95,7 @@ private struct ChatMessageView: View {
     let entry: PartnerChat
     @EnvironmentObject var model: AppModel
     @State private var showingDetails = false
-    private var sources: [MailMessage] { entry.messageIDs.compactMap { id in model.mails.first { $0.id == id } } }
+    private var sources: [MailMessage] { entry.messageIDs.compactMap(model.mailByID) }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if entry.role == "user" {

@@ -38,7 +38,7 @@ struct ReaderBodySource: Sendable {
     }
     static func load(id: String, store: MailStore) async throws -> Self {
         try Task.checkCancellation()
-        guard let mail = try await store.message(id) else { throw MailError.message("The message is no longer available locally.") }
+        guard let mail = try await store.readerMessage(id) else { throw MailError.message("The message is no longer available locally.") }
         try Task.checkCancellation()
         return try Self(mail)
     }

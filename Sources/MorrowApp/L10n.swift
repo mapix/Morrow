@@ -57,6 +57,7 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}", "决策复核 {0}/{1} · {2}"]
     static let catalog: [String: (String, String)] = [
+        "查看更早的消息": ("Show earlier messages", "以前のメッセージを表示"),
         "检索决策模型": ("Retrieval decision model", "検索判断モデル"),
         "召回后筛选与排序": ("Filter and rerank retrieved mail", "検索結果を絞り込み並べ替える"),
         "决策服务地址": ("Decision service URL", "判断サービス URL"),

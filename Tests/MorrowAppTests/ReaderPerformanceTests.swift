@@ -3,6 +3,16 @@ import MorrowCore
 @testable import MorrowApp
 
 final class ReaderPerformanceTests: XCTestCase {
+    func testIndependentReaderMatchesCommittedFullSourceAndRevision() async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let store=try MailStore(root:root)
+        let mail=MailMessage(accountID:"fixture",from:.init(email:"sender@example.invalid"),subject:"source",text:"complete body")
+        let saved=try await store.upsert(mail)
+        let actorRead=try await store.message(saved.id),independent=try await store.readerMessage(saved.id)
+        XCTAssertEqual(independent,actorRead);XCTAssertEqual(independent?.bodyVersion,saved.bodyVersion)
+        let missing=try await store.readerMessage("missing");XCTAssertNil(missing)
+    }
     func testReaderFetchesCompleteContentWhenListContainsOnlyPreview() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("reader-content-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

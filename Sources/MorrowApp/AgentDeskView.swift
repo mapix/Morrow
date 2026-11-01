@@ -136,7 +136,7 @@ struct RootView: View {
             else if model.destination == .contacts { PeopleWorkspaceView() }
             else if model.destination == .drafts { DraftsView() }
             else if model.destination == .delegations { DelegationsView() }
-            else { MailWorkspaceToolbar(); HSplitView { MailListView().frame(minWidth: 240, idealWidth: 290, maxWidth: 360); if let mail = model.selected { ReaderView(mail: mail).id(mail.id).frame(minWidth: 330) } else { EmptyRegion(icon: "envelope.open", title: L10n.t("选择一封邮件"), detail: L10n.t("也可以直接在对话里查询当前邮箱。"), action: nil) } } }
+            else { MailWorkspaceToolbar(); HSplitView { MailListView().frame(minWidth: 240, idealWidth: 290, maxWidth: 360); if let mail = model.selected { ReaderView(mail: mail).frame(minWidth: 330) } else { EmptyRegion(icon: "envelope.open", title: L10n.t("选择一封邮件"), detail: L10n.t("也可以直接在对话里查询当前邮箱。"), action: nil) } } }
         }
     }
     @ViewBuilder private var footer: some View {

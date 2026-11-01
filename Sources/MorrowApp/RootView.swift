@@ -221,11 +221,11 @@ struct MailListView: View {
             else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 0) {
+                        VStack(spacing: 0) {
                         ForEach(pageMails) { mail in
                             HStack(spacing: 0) {
                                 if selecting { Button { if selectedIDs.contains(mail.id) { selectedIDs.remove(mail.id) } else { selectedIDs.insert(mail.id) } } label: { Image(systemName: selectedIDs.contains(mail.id) ? "checkmark.square.fill" : "square").foregroundStyle(Theme.ink) }.buttonStyle(IconButtonStyle()).accessibilityLabel(L10n.t("选择") + mail.subject) }
-                                Button { model.select(mail) } label: { MailRow(mail: mail) }.buttonStyle(.plain)
+                                Button { model.select(mail) } label: { MailRow(mail: mail, selected: model.selectedID == mail.id, compact: model.compactLayout, accountName: model.accounts.count > 1 ? model.accounts.first(where: { $0.id == mail.accountID })?.name : nil).equatable() }.buttonStyle(.plain)
                             }.id(mail.id)
                                 .contextMenu { Button(mail.isRead ? L10n.t("标记未读") : L10n.t("标记已读")) { Task { await model.markRead(mail, !mail.isRead) } }; Button(mail.isStarred ? L10n.t("取消星标") : L10n.t("添加星标")) { Task { await model.star(mail) } }; Button(L10n.t("归档")) { Task { await model.move(mail, role: "archive") } }; Button(L10n.t("移到废纸篓")) { Task { await model.move(mail, role: "trash") } } }
                         }
@@ -257,21 +257,24 @@ struct MailListView: View {
     }
 }
 
-struct MailRow: View {
+struct MailRow: View, Equatable {
     @ObservedObject private var presentationState = PresentationPreferences.shared
-    @EnvironmentObject var model: AppModel
     var mail: MailMessage
+    var selected: Bool
+    var compact: Bool
+    var accountName: String?
+    static func == (a: Self, b: Self) -> Bool { a.mail == b.mail && a.selected == b.selected && a.compact == b.compact && a.accountName == b.accountName }
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack { MailReadState(read: mail.isRead); Text(mail.from.display).font(Theme.body.weight(mail.isRead ? .regular : .semibold)).lineLimit(1); Spacer(); if mail.isStarred { Image(systemName: "star.fill").font(Theme.small).foregroundStyle(Theme.secondary) }; Text(mail.date.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())).font(Theme.small).foregroundStyle(Theme.muted) }
             Text(mail.subject).font(Theme.body.weight(mail.isRead ? .regular : .semibold)).lineLimit(2)
             Text(mail.analysis?.summary ?? mail.preview).font(Theme.label).foregroundStyle(Theme.muted).lineLimit(2)
             HStack(spacing: 12) {
-                if let account = model.accounts.first(where: { $0.id == mail.accountID }), model.accounts.count > 1 { Text(account.name).foregroundStyle(Theme.secondary) }
+                if let accountName { Text(accountName).foregroundStyle(Theme.secondary) }
                 if let analysis = mail.analysis { Text(L10n.t(analysis.category.rawValue)); if analysis.needsReply && !mail.actionDone { Text(L10n.t("待回复")).foregroundStyle(Theme.error) } }
                 if !mail.attachments.isEmpty { Label("\(mail.attachments.count)", systemImage: "paperclip") }
                 ForEach(mail.labels.prefix(2), id: \.self) { Text($0) }
             }.font(Theme.small).foregroundStyle(Theme.muted)
-        }.padding(model.compactLayout ? 10 : 18).frame(maxWidth: .infinity, alignment: .leading).background(model.selectedID == mail.id ? Theme.selected : mail.isRead ? Theme.clear : Theme.unreadPaper.opacity(0.35)).overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }.contentShape(Rectangle()).overlay(alignment: .leading) { if !mail.isRead { Rectangle().fill(Theme.accent2).frame(width: 3) } }.accessibilityElement(children: .combine).accessibilityValue(mail.isRead ? L10n.t("已读") : L10n.t("未读"))
+        }.padding(compact ? 10 : 18).frame(maxWidth: .infinity, alignment: .leading).background(selected ? Theme.selected : mail.isRead ? Theme.clear : Theme.unreadPaper.opacity(0.35)).overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }.contentShape(Rectangle()).overlay(alignment: .leading) { if !mail.isRead { Rectangle().fill(Theme.accent2).frame(width: 3) } }.accessibilityElement(children: .combine).accessibilityValue(mail.isRead ? L10n.t("已读") : L10n.t("未读"))
     }
 }

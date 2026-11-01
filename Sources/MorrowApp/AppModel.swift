@@ -207,32 +207,21 @@ enum Destination: String, CaseIterable, Identifiable {
         actionProjection = (mailRevision, metadataRevision, count); return count
     }
     var visibleMails: [MailMessage] {
-        let key = MailViewProjectionKey(revision: mailRevision, metadata: metadataRevision, destination: destination.rawValue, account: selectedAccount, folder: selectedFolder, category: category?.rawValue, unread: unreadOnly, search: searchMode, query: searchText, strategy: searchStrategy.rawValue, scope: searchScope.rawValue, results: searchResultsRevision, clockBucket: Int(Date().timeIntervalSince1970 / 15))
+        let clock = [.partner, .focus, .snoozed].contains(destination) ? Int(Date().timeIntervalSince1970 / 15) : 0
+        let key = MailViewProjectionKey(revision: mailRevision, metadata: metadataRevision, destination: destination.rawValue, account: selectedAccount, folder: selectedFolder, category: category?.rawValue, unread: unreadOnly, search: searchMode, query: searchText, strategy: searchStrategy.rawValue, scope: searchScope.rawValue, results: searchResultsRevision, clockBucket: clock)
         if let cached = visibleProjection, cached.0 == key { return cached.1 }
         if searchMode { let result = searchHits.map(\.message); visibleProjection = (key, result); return result }
-        let filtered = mails.filter(matchesMailScope)
+        let scope = currentMailListScope
+        let filtered = mails.filter(scope.matches)
         var unique: [String: MailMessage] = [:]
         for mail in filtered { if unique[mail.canonicalID] == nil || mail.folder == "INBOX" { unique[mail.canonicalID] = mail } }
         let result = unique.values.sorted {
-            if destination == .partner || destination == .focus { let a = $0.analysis?.priority ?? 0; let b = $1.analysis?.priority ?? 0; if a != b { return a > b } }; return $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date
+            if scope.destination == .partner || scope.destination == .focus { let a = $0.analysis?.priority ?? 0; let b = $1.analysis?.priority ?? 0; if a != b { return a > b } }; return $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date
         }
         visibleProjection = (key, result); return result
     }
-    func matchesMailScope(_ mail: MailMessage) -> Bool {
-        if let selectedAccount, mail.accountID != selectedAccount { return false }
-        if let selectedFolder, mail.folder != selectedFolder { return false }
-        if unreadOnly && mail.isRead { return false }
-        if let category, mail.analysis?.category != category { return false }
-        let role = folderRoles[mail.accountID + "\u{1f}" + mail.folder] ?? "inbox"
-        switch destination {
-        case .focus, .partner: return mail.actionable && !isOutbound(mail) && role != "trash" && role != "junk" && (mail.snoozedUntil == nil || mail.snoozedUntil! <= Date())
-        case .starred: return mail.isStarred && role != "trash"
-        case .snoozed: return mail.snoozedUntil.map { $0 > Date() } ?? false
-        case .sent: return role == "sent"
-        case .trash: return role == "trash"
-        default: return selectedFolder != nil || role == "inbox"
-        }
-    }
+    private var currentMailListScope: MailListScope { .init(destination: destination, account: selectedAccount, folder: selectedFolder, unreadOnly: unreadOnly, category: category, roles: folderRoles, ownEmails: mailboxEmails, now: Date()) }
+    func matchesMailScope(_ mail: MailMessage) -> Bool { currentMailListScope.matches(mail) }
     func isOutbound(_ mail: MailMessage) -> Bool {
         guard let ownEmail = mailboxEmails[mail.accountID], mail.from.email.lowercased() == ownEmail else { return false }
         return mail.to.contains { $0.email.lowercased() != ownEmail } || folderRoles[mail.accountID + "\u{1f}" + mail.folder] == "sent"
@@ -333,7 +322,7 @@ enum Destination: String, CaseIterable, Identifiable {
         return MailMessageSummary(message: mail).displayMessage
     }
     func navigate(_ destination: Destination) { searchGeneration += 1; searchTask?.cancel(); searchRefreshTask?.cancel(); searchRefreshTask = nil; searchNeedsRefresh = false; searchMode = false; searchBusy = false; self.destination = destination; workspacePage = destination == .partner ? .desk : .mail; selectedAccount = nil; selectedFolder = nil; searchText = ""; searchScope = destination == .inbox ? .mailbox : .currentView; selectedID = nil; category = nil; unreadOnly = false }
-    func select(_ mail: MailMessage) { selectedID = mail.id; if !mail.isRead { Task { await markRead(mail, true) } } }
+    func select(_ mail: MailMessage) { guard selectedID != mail.id else { return }; let started = ProcessInfo.processInfo.systemUptime; selectedID = mail.id; MailReaderMetrics.record("selection_published", since: started); if !mail.isRead { Task { await markRead(mail, true) } } }
     func saveSettings() async {
         settings.replyLanguage = PresentationPreferences.shared.replyLanguageName
         if !settings.enabled || !settings.autoAnalyze { analysisTask?.cancel(); profileTask?.cancel() }
@@ -376,13 +365,19 @@ enum Destination: String, CaseIterable, Identifiable {
                     let (validity, flags) = try await transport.inventory(account, folder: folder.path, password: secret)
                     bulkSeenOverrides = bulkSeenOverrides.filter { key, value in key.account != account.id || key.folder != folder.path || (key.validity == validity && value.1 > inventoryStarted) }
                     let existing = try await store.syncRecords(account: account.id, folder: folder.path)
+                    let summaries = try await store.messageSummaries(account: account.id, folder: folder.path)
+                    let localFlags = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.displayMessage) })
+                    var flagUpdates: [MailRemoteFlagUpdate] = []
                     let byUID = Dictionary(uniqueKeysWithValues: existing.filter { $0.uidValidity == validity && $0.uid > 0 }.map { ($0.uid, $0) })
                     for (uid, flag) in flags.sorted(by: { $0.key > $1.key }) {
                         if let old = byUID[uid] {
-                            guard var mail = try await store.message(old.id) else { continue }
+                            guard let mail = localFlags[old.id] else { continue }
                             if mail.localFlagModifiedAt.map({ $0 > inventoryStarted }) == true { continue }
                             let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
-                            if mail.isRead != (seen?.0 ?? flag.read) || mail.isStarred != flag.starred { mail.isRead = seen?.0 ?? flag.read; mail.isStarred = flag.starred; if let seen { mail.localFlagModifiedAt = seen.1 }; try await store.upsert(mail) }
+                            if mail.isRead != (seen?.0 ?? flag.read) || mail.isStarred != flag.starred {
+                                flagUpdates.append(.init(id: mail.id, read: seen?.0 ?? flag.read, starred: flag.starred, overrideModifiedAt: seen?.1))
+                                if flagUpdates.count == 128 { _ = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted); flagUpdates.removeAll(keepingCapacity: true) }
+                            }
                         } else {
                             do {
                                 var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
@@ -393,6 +388,7 @@ enum Destination: String, CaseIterable, Identifiable {
                             } catch { failures.append(account.name + " / " + folder.name + " / UID \(uid)：" + error.localizedDescription) }
                         }
                     }
+                    _ = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
                     for old in existing where old.uid > 0 && (old.uidValidity != validity || flags[old.uid] == nil) { try await store.deleteMessage(old.id) }
                 }
             } catch { failures.append(account.name + "：" + error.localizedDescription) }
@@ -436,7 +432,9 @@ enum Destination: String, CaseIterable, Identifiable {
             defer { self.processingTask = nil; if continueBacklog && !Task.isCancelled { self.process() } }
             do { try await index.load(directory: settings.embeddingDirectory) }
             catch { indexFailure = error.localizedDescription; indexStatus = error.localizedDescription; return }
-            let snapshot = mails.map(\.id)
+            let snapshot: [String]
+            do { snapshot = try await index.pendingMessageIDs(mails, store: store, attachments: settings.indexAttachments) }
+            catch { indexFailure = error.localizedDescription; indexStatus = error.localizedDescription; return }
             var lastRefresh = Date.distantPast
             var lastProgressUpdate = Date.distantPast
             for (i, messageID) in snapshot.enumerated() {

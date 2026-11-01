@@ -208,6 +208,16 @@ public actor EmbeddingIndex {
         }
         return out
     }
+    public func pendingMessageIDs(_ summaries: [MailMessage], store: MailStore, attachments: Bool) async throws -> [String] {
+        let verified = try await store.verifiedIndexInputs(model: modelIdentity)
+        var pending: [String] = []
+        for mail in summaries {
+            try Task.checkCancellation()
+            if let key = MailIndexInput.key(for: mail, attachments: attachments), verified[mail.id] == key { continue }
+            pending.append(mail.id)
+        }
+        return pending
+    }
     public func index(_ message: MailMessage, store: MailStore, attachments: Bool) async throws -> Bool {
         guard message.contentAvailability == nil || message.contentAvailability == .complete else { throw MailError.message("索引需要完整邮件正文，请先读取邮件。") }
         defer { writeMemoryDiagnostics(to: store.root) }
@@ -229,8 +239,12 @@ public actor EmbeddingIndex {
         let hash = MailStore.hash(descriptor)
         guard let activeContainer = container else { throw MailError.message("向量模型尚未加载。") }
         let identity = modelIdentity
-        if try await store.isIndexed(message.id, hash: hash, model: identity) { return false }
-        if try await store.reuseVectors(canonical: message.canonicalID, targetID: message.id, model: identity, hash: hash) { return true }
+        if try await store.isIndexed(message.id, hash: hash, model: identity) {
+            try await store.rememberIndexInput(message, attachments: attachments, model: identity, hash: hash); return false
+        }
+        if try await store.reuseVectors(canonical: message.canonicalID, targetID: message.id, model: identity, hash: hash) {
+            try await store.rememberIndexInput(message, attachments: attachments, model: identity, hash: hash); return true
+        }
         for attachment in (attachments ? message.attachments : []) {
             try Task.checkCancellation()
             let data = try? await store.attachmentData(attachment, maximumBytes: 32 * 1024 * 1024)
@@ -243,7 +257,8 @@ public actor EmbeddingIndex {
         }
         let chunks = Self.chunks(text); var vectors: [[Float]] = []
         for chunk in chunks { try Task.checkCancellation(); vectors.append(try await embed(chunk, using: activeContainer)) }
-        try await store.putVectors(messageID: message.id, chunks: chunks, vectors: vectors, model: identity, hash: hash); return true
+        try await store.putVectors(messageID: message.id, chunks: chunks, vectors: vectors, model: identity, hash: hash)
+        try await store.rememberIndexInput(message, attachments: attachments, model: identity, hash: hash); return true
     }
     public func searchCoverage(store: MailStore, allowedIDs: Set<String>? = nil) async throws -> MailSearchCoverage {
         let identity = modelIdentity, isLoaded = container != nil

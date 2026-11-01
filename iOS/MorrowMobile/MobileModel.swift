@@ -328,13 +328,21 @@ import UniformTypeIdentifiers
                     let inventoryStarted = Date()
                     let (validity, flags) = try await transport.inventory(account, folder: folder.path, password: secret)
                     let local = try await store.syncRecords(account: account.id, folder: folder.path)
+                    let summaries = try await store.messageSummaries(account: account.id, folder: folder.path)
+                    let localFlags = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.displayMessage) })
+                    var flagUpdates: [MailRemoteFlagUpdate] = []
                     let existing = Dictionary(uniqueKeysWithValues: local.filter { $0.uidValidity == validity }.map { ($0.uid, $0) })
                     for (uid, flag) in flags.sorted(by: { $0.key > $1.key }) {
                         try Task.checkCancellation()
                         if let previous = existing[uid] {
-                            guard var current = try await store.message(previous.id), current.localFlagModifiedAt.map({ $0 <= inventoryStarted }) ?? true else { continue }
+                            guard let current = localFlags[previous.id], current.localFlagModifiedAt.map({ $0 <= inventoryStarted }) ?? true else { continue }
                             guard current.isRead != flag.read || current.isStarred != flag.starred else { continue }
-                            current.isRead = flag.read; current.isStarred = flag.starred; _ = try await store.upsert(current); changes += 1
+                            flagUpdates.append(.init(id: current.id, read: flag.read, starred: flag.starred))
+                            if flagUpdates.count == 128 {
+                                let changed = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
+                                changes += changed; flagUpdates.removeAll(keepingCapacity: true)
+                                if changed > 0 { await reload() }
+                            }
                         } else {
                             var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
                             mail.isRead = flag.read; mail.isStarred = flag.starred; mail.analysis = mail.analysis ?? PartnerEngine.baseline(mail)
@@ -342,9 +350,10 @@ import UniformTypeIdentifiers
                             job.analyzed = ["trash", "junk"].contains(folder.role)
                             _ = try await store.commitIncoming(mail, object: job, kind: Self.processingKind, id: job.id)
                             queueProcessing(job); changes += 1
+                            if changes % 10 == 0 { await reload() }
                         }
-                        if changes % 10 == 0 { await reload() }
                     }
+                    changes += try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
                     for old in local where old.uid > 0 && (old.uidValidity != validity || flags[old.uid] == nil) { try await store.deleteMessage(old.id) }
                 }
             } catch { failures.append(account.email + ": " + error.localizedDescription); if account.usesPOP { await transport.closePOP(account) } }

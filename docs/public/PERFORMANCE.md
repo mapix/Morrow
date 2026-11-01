@@ -42,3 +42,13 @@ These measurements verify the storage path and resource strategy. They do not ce
 ## 0.11.1 cache repair
 
 Header previews are bounded to 300 Swift graphemes both before and after line-ending normalization. CRLF is normalized as a unit. Invalid projections are repaired in bounded batches, releasing the first scan before full-message reads. A request performs at most one repair pass and one verification scan; a persistent failure is reported without recursion. Regression tests cover CRLF, Unicode boundaries, a legacy overlong preview, and a cache that remains invalid after rewriting.
+
+## Selection and layout updates
+
+Mail selection now keeps one WebKit reader instead of recreating it per message. Body retrieval uses a short-lived read-only WAL connection with cancellation and a bounded permit queue, separate from background indexing and metadata passes. Current-page selection avoids publishing an unchanged page index. Mail rows compare their displayed inputs and selection state; unrelated agent progress does not invalidate their bodies. Inbox projections do not expire on the snooze clock.
+
+Long chat replies use a bounded eagerly laid-out message window; earlier messages can be opened explicitly. Scroll operations wait until the current layout transaction has finished, preventing the observed SwiftUI lazy-stack layout loop.
+
+Mailbox filtering captures observable scope values once before scanning or sorting. Server flag synchronization reads header summaries and commits only changed flags in bounded batches. Each transaction checks the inventory timestamp, so a newer local edit wins; it preserves body revisions, original MIME, FTS and vectors.
+
+Index verification receipts represent the body revision, sender, subject, date, notes, labels, attachment revisions, model and extraction configuration. Subsequent passes compare these small inputs before opening bodies. A receipt is accepted only while its vector hash/model still match, and is never saved for a concurrent content change. Existing indexes undergo one verification pass; legacy attachments without a reliable revision continue through the full verification path.

@@ -1,8 +1,19 @@
 import XCTest
+import Combine
 import MorrowCore
 @testable import MorrowApp
 
 final class MailPaginationTests: XCTestCase {
+    @MainActor func testSelectionOnCurrentPageDoesNotRepublishPageState() {
+        let model=AppModel(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at:model.store.root) }
+        model.destination = .inbox
+        let mail=MailMessage(accountID:"fixture",from:.init(email:"sender@example.invalid"),subject:"fixture",text:"fixture")
+        model.mails=[mail];model.selectedID=mail.id
+        var changes=0;let subscription=model.$mailPageIndex.dropFirst().sink { _ in changes += 1 }
+        model.revealSelectedMailPage();model.revealSelectedMailPage()
+        XCTAssertEqual(changes,0);withExtendedLifetime(subscription) {}
+    }
     func testGmailSizedPagesClampAtDatasetBoundaries() {
         let empty = MailPageWindow(total: 0, index: 80)
         XCTAssertEqual(empty.range, 0..<0); XCTAssertFalse(empty.hasPrevious); XCTAssertFalse(empty.hasNext)

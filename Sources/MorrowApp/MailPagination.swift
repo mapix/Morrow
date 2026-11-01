@@ -29,7 +29,9 @@ extension AppModel {
     }
     func setMailPageSize(_ value: Int, persist: Bool = true) { mailPageSize = [25, 50, 100].contains(value) ? value : 50; mailPageIndex = 0; selectedID = nil; if persist { UserDefaults.standard.set(mailPageSize, forKey: MailPageWindow.preferenceKey) } }
     func revealSelectedMailPage() {
+        if let id = selectedID, pagedMails.contains(where: { $0.id == id }) { return }
         guard let id = selectedID, let position = visibleMails.firstIndex(where: { $0.id == id }) else { return }
-        mailPageIndex = position / mailPageSize
+        let target = position / mailPageSize
+        if target != mailPageIndex { mailPageIndex = target }
     }
 }

@@ -69,9 +69,7 @@ struct ReaderView: View {
             }
             Divider().overlay(Theme.rule)
             ZStack {
-                if let document {
-                    SecureHTMLView(document: document, failure: $failure).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else { Theme.sheet }
+                SecureHTMLView(document: document, failure: $failure).frame(maxWidth: .infinity, maxHeight: .infinity).opacity(document == nil ? 0 : 1).accessibilityHidden(document == nil)
                 if loading && document == nil { ProgressView(L10n.t("正在准备正文…")).font(Theme.label) }
                 if failure != nil {
                     VStack(spacing: 12) {
@@ -101,9 +99,15 @@ struct ReaderView: View {
             }.padding(.horizontal, 20).padding(.vertical, 14)
         }.background(Theme.sheet)
         .onAppear { note = mail.note }
+        .onChange(of: mail.id) {
+            bodySelection.cancel(); bodySource = nil; document = nil; related = []
+            plainText = false; remoteImages = MailReadingPreferences.loadsExternalImages()
+            loading = true; failure = nil; note = mail.note; showingDetails = false
+        }
         .onChange(of: mail.note) { if !showingDetails { note = mail.note } }
         .onChange(of: presentationState.loadExternalImagesByDefault) { remoteImages = presentationState.loadExternalImagesByDefault }
         .task(id: bodyRequest) {
+            let bodyStarted = ProcessInfo.processInfo.systemUptime
             let request = bodyRequest, ticket = bodySelection.begin(bodyRequest)
             if bodySource?.id != request.id { bodySource = nil; document = nil }
             loading = true
@@ -111,9 +115,10 @@ struct ReaderView: View {
                 let source = try await ReaderBodySource.load(id: request.id, store: model.store)
                 guard !Task.isCancelled, bodySelection.accepts(ticket), source.id == request.id else { return }
                 bodySource = source; failure = nil
+                MailReaderMetrics.record("body_loaded", since: bodyStarted)
             } catch { if !Task.isCancelled, bodySelection.accepts(ticket) { bodySource = nil; loading = false; failure = "body_unavailable" } }
         }
-        .task(id: model.mailRevision) {
+        .task(id: mail.id + "|" + String(model.mailRevision)) {
             related = model.relatedMails(to: mail).map { RelatedMail(id: $0.id, sender: $0.from.display, date: $0.date) }
         }
         .task(id: preparation) {
@@ -219,10 +224,11 @@ struct ReaderView: View {
 }
 
 struct SecureHTMLView: NSViewRepresentable {
-    let document: ReaderDocument
+    let document: ReaderDocument?
     @Binding var failure: String?
     func makeCoordinator() -> Coordinator { Coordinator(failure: $failure) }
     func makeNSView(context: Context) -> WKWebView {
+        let viewStarted = ProcessInfo.processInfo.systemUptime
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.websiteDataStore = ReaderWebKitContext.dataStore
@@ -232,6 +238,7 @@ struct SecureHTMLView: NSViewRepresentable {
         view.navigationDelegate = context.coordinator; view.uiDelegate = context.coordinator
         view.setValue(false, forKey: "drawsBackground")
         context.coordinator.view = view
+        MailReaderMetrics.record("webview_created", since: viewStarted)
         // CSP is installed before original head content; this extra WebKit rule
         // blocks remote resources even if an email contains malformed markup.
         context.coordinator.policyTask = Task { @MainActor [weak coordinator = context.coordinator] in
@@ -245,6 +252,7 @@ struct SecureHTMLView: NSViewRepresentable {
         guard !context.coordinator.disposed else { return }
         context.coordinator.failure = $failure
         context.coordinator.pending = document
+        if document == nil { view.stopLoading(); context.coordinator.loaded = ""; context.coordinator.assets.releaseAssets() }
         context.coordinator.loadPending()
     }
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
@@ -285,6 +293,7 @@ struct SecureHTMLView: NSViewRepresentable {
             else { decisionHandler(.cancel) }
         }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { MailReaderMetrics.record("navigation_finished", since: navigationStarted) }
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { MailReaderMetrics.record("navigation_committed", since: navigationStarted) }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { report(error) }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { report(error) }
         private func report(_ error: Error) { if !disposed, (error as NSError).code != NSURLErrorCancelled { failure.wrappedValue = "navigation" } }
