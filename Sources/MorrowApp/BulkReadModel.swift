@@ -29,6 +29,10 @@ extension AppModel {
     func markAllReadInCurrentList() async {
         guard !batchBusy else { return }
         guard let folderTargets = wholeReadFolders(), !folderTargets.isEmpty else { await bulkRead(Set(visibleMails.map(\.id)), value: true, all: true); return }
+        await markFoldersRead(folderTargets)
+    }
+    func markFoldersRead(_ folderTargets: [(MailAccount, String)]) async {
+        guard !batchBusy, !folderTargets.isEmpty else { return }
         batchBusy = true; defer { batchBusy = false }
         let known = Dictionary(accounts.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         var changes: [MailReadStateChange] = [], undoGroups: [ReadUndoGroup] = []

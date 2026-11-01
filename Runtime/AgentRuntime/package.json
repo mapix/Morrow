@@ -1,0 +1,12 @@
+{
+  "name": "morrow-agent-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22.12.0"},
+  "dependencies": {
+    "deepagents": "1.16.2",
+    "langchain": "1.6.0",
+    "@langchain/core": "1.3.2"
+  }
+}

@@ -28,7 +28,8 @@
     "iOS/MorrowMobileTests/",
     ".github/",
     "website/",
-    "Runtime/SandboxRuntime/"
+    "Runtime/SandboxRuntime/",
+    "Runtime/AgentRuntime/"
   ],
   "text_suffixes": [
     ".c",

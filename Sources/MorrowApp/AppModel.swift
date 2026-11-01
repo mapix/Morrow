@@ -171,6 +171,9 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var executingRunIDs = Set<String>()
     @Published var sidebarEvidenceMailIDs = Set<String>()
     @Published var sidebarToolStatus: String?
+    @Published var sdkStreamingText = ""
+    let agentToolModel: AgentToolModel
+    let usesAgentSDK: Bool
     private var lastSyncFailure: String?
     let store: MailStore
     let transport = MailTransport()
@@ -182,8 +185,12 @@ enum Destination: String, CaseIterable, Identifiable {
     lazy var cloudWorkspace = CloudWorkspaceModel(store: store)
     private let notifications: any MailNotificationManaging
 
-    init(root: URL? = nil, notifications: (any MailNotificationManaging)? = nil, partner: PartnerEngine? = nil) {
+    init(root: URL? = nil, notifications: (any MailNotificationManaging)? = nil, partner: PartnerEngine? = nil, agentToolModel: AgentToolModel? = nil) {
         self.partner = partner ?? PartnerEngine()
+        self.agentToolModel = agentToolModel ?? AgentToolModel()
+        // An explicitly injected legacy planner remains useful for its protocol
+        // tests. Normal desktop runs always use the SDK, including on failure.
+        self.usesAgentSDK = partner == nil || agentToolModel != nil
         self.notifications = notifications ?? NativeMailNotifications()
         let args = ProcessInfo.processInfo.arguments
         let customRoot = args.firstIndex(of: "--data-dir").flatMap { i in i + 1 < args.count ? URL(fileURLWithPath: args[i + 1]) : nil }
@@ -1006,7 +1013,12 @@ enum Destination: String, CaseIterable, Identifiable {
 
     func askPartner(_ instruction: String, runID: String? = nil, uiContext: WorkspaceContext? = nil, materials: [ChatMaterial] = []) async {
         let id = taskSessionID
-        await ChatTaskContext.$sessionID.withValue(id) { await askPartnerInSession(instruction, runID: runID, uiContext: uiContext, materials: materials) }
+        await ChatTaskContext.$sessionID.withValue(id) {
+            #if os(macOS)
+            if usesAgentSDK { await askSDKPartner(instruction, runID: runID, uiContext: uiContext, materials: materials); return }
+            #endif
+            await askPartnerInSession(instruction, runID: runID, uiContext: uiContext, materials: materials)
+        }
     }
     private func askPartnerInSession(_ instruction: String, runID: String?, uiContext: WorkspaceContext?, materials: [ChatMaterial]) async {
         guard !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !partnerBusy else { return }

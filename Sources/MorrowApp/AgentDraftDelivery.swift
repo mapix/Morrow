@@ -7,10 +7,12 @@ extension AppModel {
         workspacePage = .mail; destination = .drafts; selectedAccount = nil; selectedFolder = nil; selectedID = nil
         composer = draft
     }
-    func createAgentDraft(_ operation: PartnerOperation) async throws -> ComposeDraft {
+    func createAgentDraft(_ operation: PartnerOperation, stableID: String? = nil) async throws -> ComposeDraft {
+        if let stableID, let existing = try await store.object(ComposeDraft.self, kind: "draft", id: stableID) { return existing }
         guard let body = operation.text, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MailError.message("写作方案没有提供邮件正文，草稿尚未完成。") }
         let mail = operation.messageID.flatMap(mailByID)
         var draft = ComposeDraft()
+        if let stableID { draft.id = stableID }
         draft.accountID = operation.accountID.flatMap { id in accounts.first { $0.id == id }?.id } ?? mail?.accountID ?? realAccounts.first?.id ?? accounts.first?.id ?? ""
         draft.to = operation.recipient ?? mail?.from.email ?? ""
         draft.subject = operation.subject ?? mail.map { "Re: " + $0.normalizedSubject } ?? "待补充主题"

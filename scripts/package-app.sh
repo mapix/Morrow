@@ -49,8 +49,8 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>app.smail.desktop</string>
 <key>CFBundleExecutable</key><string>Morrow</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.12.6</string>
-<key>CFBundleVersion</key><string>126</string>
+<key>CFBundleShortVersionString</key><string>0.13.0</string>
+<key>CFBundleVersion</key><string>130</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>NSHighResolutionCapable</key><true/>
@@ -71,6 +71,11 @@ if [[ ! -f Runtime/SandboxRuntime/node_modules/@anthropic-ai/sandbox-runtime/pac
 fi
 ditto Runtime/SandboxRuntime "$app_path/Contents/Resources/SandboxRuntime"
 python3 scripts/prepare-sandbox-bundle.py "$app_path/Contents/Resources/SandboxRuntime"
+if [[ ! -f Runtime/AgentRuntime/node_modules/deepagents/package.json ]]; then
+  npm ci --ignore-scripts --omit=dev --no-audit --no-fund --prefix Runtime/AgentRuntime
+fi
+ditto Runtime/AgentRuntime "$app_path/Contents/Resources/AgentRuntime"
+python3 scripts/prepare-agent-bundle.py "$app_path/Contents/Resources/AgentRuntime"
 mkdir -p "$app_path/Contents/Resources/Notices"
 cp .build/checkouts/mlx-swift/LICENSE "$app_path/Contents/Resources/Notices/MLX-LICENSE"
 cp .build/checkouts/mlx-swift-lm/LICENSE "$app_path/Contents/Resources/Notices/MLX-LM-LICENSE"
@@ -79,6 +84,7 @@ cp .build/checkouts/swift-cmark/COPYING "$app_path/Contents/Resources/Notices/CM
 cp .build/checkouts/swift-transformers/LICENSE "$app_path/Contents/Resources/Notices/Transformers-LICENSE"
 cp LICENSE "$app_path/Contents/Resources/Notices/EmbeddingGemma2-LICENSE"
 cp Tests/Fixtures/OpenUI/LICENSE "$app_path/Contents/Resources/Notices/OpenUI-MIT-LICENSE"
+cp Runtime/AgentRuntime/node_modules/deepagents/LICENSE "$app_path/Contents/Resources/Notices/DeepAgents-MIT-LICENSE"
 cp docs/public/OPENUI-NATIVE-LIBRARY.json "$app_path/Contents/Resources/Notices/OpenUI-native-library.json"
 cp docs/public/EMBEDDING-MODEL-CARD.md "$app_path/Contents/Resources/Notices/EmbeddingGemma2-MODEL-CARD.md"
 codesign --force --deep --sign - "$app_path"
