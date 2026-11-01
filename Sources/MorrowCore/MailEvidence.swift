@@ -1,6 +1,16 @@
 import Foundation
 
 public enum MailEvidence {
+    public static func forAutomaticAnalysis(_ mail: MailMessage) -> MailMessage {
+        var evidence = mail
+        let names = mail.attachments.map(\.name)
+        let encoded = String(decoding: (try? JSONEncoder().encode(names)) ?? Data("[]".utf8), as: UTF8.self)
+        evidence.text = String(mail.text.prefix(1000)) + "\n\n附件名称：" + encoded + "\n仅分析正文前1000字符，未读取正文后段或附件内容；不据此声称已覆盖完整邮件。"
+        evidence.html = ""; evidence.raw = Data()
+        evidence.attachments = mail.attachments.map { value in var item = value; item.data = Data(); item.storedPath = nil; return item }
+        evidence.contentAvailability = .complete
+        return evidence
+    }
     public static let version = "mail-evidence-v1:" + AttachmentTextExtractor.version
     public static func forAnalysis(_ mail: MailMessage, store: MailStore) async throws -> MailMessage {
         let source: MailMessage

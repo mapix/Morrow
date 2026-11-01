@@ -3,6 +3,26 @@ import CMail
 @testable import MorrowCore
 
 final class IncrementalIMAPTests: XCTestCase {
+    func testLargeAttachmentSyncFetchesTextAndKeepsRemoteLinkWithoutDownloadingAttachment() async throws {
+        let headers = "From: fixture@example.invalid\r\nSubject: Large attachment fixture\r\nMessage-ID: <large@example.invalid>\r\nContent-Type: multipart/mixed; boundary=fixture\r\n\r\n"
+        let mime = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n"
+        let structure = #"(("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 12 1 NIL NIL NIL NIL)("APPLICATION" "PDF" ("NAME" "large.pdf") NIL NIL "BASE64" 94371840 NIL ("ATTACHMENT" ("FILENAME" "large.pdf")) NIL NIL) "MIXED")"#
+        let peer = try scripted("", [
+            (#"SELECT "INBOX""#, selected()),
+            ("UID FETCH 3 (UID RFC822.SIZE)", ["* 3 FETCH (UID 3 RFC822.SIZE 95000000)"]),
+            ("UID FETCH 3 (UID BODYSTRUCTURE BODY.PEEK[HEADER])", ["* 3 FETCH (UID 3 BODYSTRUCTURE " + structure + " BODY[HEADER] {\(headers.utf8.count)}", headers, ")"]),
+            ("UID FETCH 3 (BODY.PEEK[1]<0.12>)", ["* 3 FETCH (UID 3 BODY[1]<0> {12}", "Hello world!", ")"]),
+            ("UID FETCH 3 (BODY.PEEK[1.MIME])", ["* 3 FETCH (UID 3 BODY[1.MIME] {\(mime.utf8.count)}", mime, ")"])
+        ])
+        defer { peer.stop() }
+        let client = try await connect(peer)
+        let result = try await client.fetchForSync(accountID: "fixture", folder: "INBOX", uid: 3, expectedValidity: 42, attachmentLimit: 10 * 1024 * 1024)
+        guard case .selective(let mail) = result else { return XCTFail("Large message fetched whole") }
+        XCTAssertEqual(mail.text, "Hello world!"); XCTAssertEqual(mail.subject, "Large attachment fixture")
+        XCTAssertEqual(mail.attachments.first?.name, "large.pdf"); XCTAssertEqual(mail.attachments.first?.remoteReference?.section, "2"); XCTAssertTrue(mail.attachments.first?.isRemoteOnly == true)
+        XCTAssertTrue(mail.attachments.first?.data.isEmpty == true)
+        await client.close()
+    }
     private var account: MailAccount { var value = MailAccount(); value.id = "fixture"; value.email = "fixture@example.invalid"; return value }
     private func cursor(_ uids: Set<UInt64> = [1, 2, 3], validity: UInt64 = 42, mod: UInt64? = 10, next: UInt64? = 4) -> MailFolderSyncCursor {
         .init(account: account, folder: "INBOX", validity: validity, highestModSequence: mod, uidNext: next, knownUIDs: uids)

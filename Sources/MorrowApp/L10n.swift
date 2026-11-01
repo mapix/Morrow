@@ -57,6 +57,16 @@ enum L10n {
     }
     private static let statusTemplates = ["{0} 封邮件已建立向量索引", "正在连接 {0}", "正在同步 {0}", "正在下载 {0} / 邮件{1}", "索引 {0} / {1}", "同步于 {0}", "正在读：{0}", "模型暂不可用：{0}", "决策复核 {0}/{1} · {2}"]
     static let catalog: [String: (String, String)] = [
+        "每封邮件仅提供正文前1000字符和附件名称。": ("Each message provides only its first 1,000 body characters and attachment names.", "各メールの本文は先頭1000文字と添付ファイル名のみ提供します。"),
+        "仅关联": ("Linked only", "関連付けのみ"),
+        "自动下载不超过 {0} MB 的附件": ("Automatically download attachments up to {0} MB", "{0} MBまでの添付ファイルを自動取得"),
+        "自动邮件分析模型": ("Automatic mail analysis model", "メールの自動分析モデル"),
+        "聊天与委托模型": ("Chat and delegated work model", "チャット・委託作業モデル"),
+        "自动摘要、分类、事项提取和联系人资料使用此模型。已完成且有效的分析会继续复用。": ("Use this model for automatic summaries, categories, actions, and contact profiles. Existing valid analysis is reused.", "自動要約、分類、アクション抽出、連絡先情報に使用します。有効な既存の分析は再利用します。"),
+        "服务不可用时暂停分析并提示问题，不自动使用网关。远程 Ollama 地址会把邮件内容发送到该地址。": ("If unavailable, analysis pauses with an error and does not use the gateway. A remote Ollama address receives mail content.", "利用できない場合は問題を表示して分析を停止し、ゲートウェイへ切り替えません。リモートのOllamaにはメール内容を送信します。"),
+        "保存邮件分析设置": ("Save mail analysis settings", "メール分析設定を保存"),
+        "邮件分析设置已保存。": ("Mail analysis settings saved.", "メール分析設定を保存しました。"),
+        "聊天与委托内容会发给此服务。自动邮件分析使用单独的模型设置。": ("Chat and delegated work use this service. Automatic mail analysis has separate model settings.", "チャット・委託作業にはこのサービスを使用します。メールの自動分析は別のモデル設定を使用します。"),
         "所有简报": ("All briefs", "すべてのブリーフ"),
         "简报列表": ("Brief list", "ブリーフ一覧"),
         "本会话简报（{0}）": ("Briefs in this chat ({0})", "このチャットのブリーフ（{0}）"),

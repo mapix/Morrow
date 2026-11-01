@@ -240,7 +240,7 @@ public actor IMAPConnection {
     }
     public struct DownloadTiming: Sendable { public var sizeSeconds: Double = 0; public var bodySeconds: Double = 0; public var bytes = 0; public var count = 0 }
     public private(set) var downloadTiming = DownloadTiming()
-    public func fetchMany(folder: String, uids: [UInt64], expectedValidity: UInt64, maximumBatchBytes: UInt64 = 64 * 1024 * 1024 - 128 * 1024) async throws -> [UInt64: Data] {
+    public func fetchMany(folder: String, uids: [UInt64], expectedValidity: UInt64, maximumBatchBytes: UInt64 = 64 * 1024 * 1024 - 128 * 1024, maximumMessageBytes: UInt64 = 64 * 1024 * 1024) async throws -> [UInt64: Data] {
         guard !uids.isEmpty, uids.count <= 64, Set(uids).count == uids.count,
               uids.allSatisfy({ $0 > 0 && $0 <= UInt64(UInt32.max) }) else { throw MailError.message("批量读取的 UID 无效。") }
         let current = try await select(folder)
@@ -256,7 +256,7 @@ public actor IMAPConnection {
             if let old = sizes[uid], old != size { throw MailError.message("批量邮件大小响应不一致。") }
             sizes[uid] = size
         }
-        let eligible = Self.boundedBodyBatch(uids: uids, sizes: sizes, maximumBytes: maximumBatchBytes)
+        let eligible = Self.boundedBodyBatch(uids: uids.filter { (sizes[$0] ?? UInt64.max) <= maximumMessageBytes }, sizes: sizes, maximumBytes: maximumBatchBytes)
         guard !eligible.isEmpty else { return [:] }
         let bodySet = eligible.map(String.init).joined(separator: ",")
         let bodyStarted = ProcessInfo.processInfo.systemUptime
@@ -265,6 +265,57 @@ public actor IMAPConnection {
         downloadTiming.bodySeconds = ProcessInfo.processInfo.systemUptime - bodyStarted
         downloadTiming.bytes = bodies.values.reduce(0) { $0 + $1.count }; downloadTiming.count = bodies.count
         return bodies
+    }
+    public func fetchForSync(accountID: String, folder: String, uid: UInt64, expectedValidity: UInt64, attachmentLimit: Int) async throws -> MailSyncFetch {
+        guard try await select(folder) == expectedValidity else { throw MailError.message("文件夹已重建，请重新同步。") }
+        let size = try await command("UID FETCH \(uid) (UID RFC822.SIZE)")
+        guard let bytes = MIMEParser.capture(#"(?i)RFC822.SIZE\s+(\d+)"#, size.lines.joined(separator: " ")).flatMap(Int.init) else { throw MailError.message("服务器未返回邮件大小。") }
+        if bytes <= attachmentLimit { return .raw(try await fetch(folder: folder, uid: uid, expectedValidity: expectedValidity)) }
+        let metadata = try await command("UID FETCH \(uid) (UID BODYSTRUCTURE BODY.PEEK[HEADER])")
+        let headers = try Self.sectionLiteral(metadata, section: "HEADER")
+        var mail = MIMEParser.parse(headers, accountID: accountID, folder: folder, uid: uid, validity: expectedValidity)
+        mail.raw = Data(); mail.attachments = []; mail.contentAvailability = .complete
+        let parts = try IMAPBodyStructure.parts(lines: metadata.lines, literals: metadata.literals)
+        var remaining = 32 * 1024 * 1024
+        for part in parts {
+            try Task.checkCancellation()
+            let budget = part.body ? min(part.encodedBytes, 4 * 1024 * 1024) : part.encodedBytes
+            let eligible = part.body || (part.decodedUpperBound <= attachmentLimit && budget <= remaining)
+            if eligible && budget > 0 {
+                let data = try await fetchSection(part.section, folder: folder, uid: uid, expectedValidity: expectedValidity, count: budget)
+                let head: Data
+                if part.section == "TEXT" { head = headers }
+                else { let result = try await command("UID FETCH \(uid) (BODY.PEEK[\(part.section).MIME])"); head = try Self.sectionLiteral(result, section: part.section + ".MIME") }
+                var decoded = MIMEParser.parse(head + Data("\r\n".utf8) + data, accountID: accountID)
+                if part.body { if !decoded.text.isEmpty { mail.text += (mail.text.isEmpty ? "" : "\n\n") + decoded.text }; if !decoded.html.isEmpty { mail.html += decoded.html } }
+                else {
+                    if decoded.attachments.isEmpty { let bytes = part.encoding.uppercased() == "BASE64" ? Data(base64Encoded: data, options: .ignoreUnknownCharacters) ?? Data() : part.encoding.uppercased() == "QUOTED-PRINTABLE" ? MIMEParser.quotedPrintable(data) : data; decoded.attachments = [MailAttachment(name: part.name ?? "附件", mimeType: part.mimeType, data: bytes, contentID: part.contentID)] }
+                    for i in decoded.attachments.indices { decoded.attachments[i].id = MailStore.hash(mail.id + ":attachment:" + String(mail.attachments.count)); mail.attachments.append(decoded.attachments[i]) }
+                }
+                remaining -= budget
+            } else if !part.body {
+                var attachment = MailAttachment(name: part.name ?? "附件", mimeType: part.mimeType, data: Data(), contentID: part.contentID)
+                attachment.id = MailStore.hash(mail.id + ":attachment:" + String(mail.attachments.count)); attachment.byteCount = part.decodedUpperBound
+                attachment.remoteReference = .init(accountID: accountID, folder: folder, uid: uid, validity: expectedValidity, section: part.section, encoding: part.encoding, encodedBytes: part.encodedBytes)
+                mail.attachments.append(attachment)
+            }
+        }
+        if mail.text.isEmpty { mail.text = MIMEParser.plainText(mail.html) }
+        return .selective(mail)
+    }
+    public func fetchSection(_ section: String, folder: String, uid: UInt64, expectedValidity: UInt64, count: Int) async throws -> Data {
+        guard section.range(of: #"^(TEXT|[1-9]\d*(?:\.[1-9]\d*)*)$"#, options: .regularExpression) != nil, count > 0, count <= 64 * 1024 * 1024 else { throw MailError.message("附件读取参数无效或超过本机读取限制。") }
+        guard try await select(folder) == expectedValidity else { throw MailError.message("文件夹已重建，请重新同步。") }
+        let response = try await command("UID FETCH \(uid) (BODY.PEEK[\(section)]<0.\(count)>)")
+        return try Self.sectionLiteral(response, section: section)
+    }
+    private static func sectionLiteral(_ response: Reply, section: String) throws -> Data {
+        var index = 0
+        for line in response.lines where line.range(of: #"\{\d+\+?\}$"#, options: .regularExpression) != nil {
+            if line.range(of: "BODY[" + section + "]", options: .caseInsensitive) != nil, index < response.literals.count { return response.literals[index] }
+            index += 1
+        }
+        throw MailError.message("服务器未返回请求的邮件部件。")
     }
     static func boundedBodyBatch(uids: [UInt64], sizes: [UInt64: UInt64], maximumBytes: UInt64 = 64 * 1024 * 1024) -> [UInt64] {
         var selected: [UInt64] = [], used: UInt64 = 0

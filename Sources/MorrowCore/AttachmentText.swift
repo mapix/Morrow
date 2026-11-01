@@ -23,6 +23,7 @@ public actor AttachmentTextExtractor {
     private var tasks: [String: Task<AttachmentText, Never>] = [:]
     public init() {}
     public func extract(_ attachment: MailAttachment, store: MailStore, bytes: Data? = nil, force: Bool = false) async throws -> AttachmentText {
+        if attachment.isRemoteOnly && bytes == nil { return .init(text: "", source: "仅关联", failure: "附件未自动下载，未读取附件内容。") }
         let data: Data
         if let bytes { data = bytes } else { data = try await store.attachmentData(attachment) }
         let fingerprint = Self.version + ":" + MailStore.hash(data) + ":" + attachment.name + ":" + attachment.mimeType

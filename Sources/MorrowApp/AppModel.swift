@@ -166,7 +166,7 @@ enum Destination: String, CaseIterable, Identifiable {
     var realtimeSyncTask: Task<Void, Never>?
     private var processingTask: Task<Void, Never>?
     private var indexFailure: String?
-    private var analysisTask: Task<Void, Never>?
+    var analysisTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
     private var searchRefreshTask: Task<Void, Never>?
     private var searchNeedsRefresh = false
@@ -498,7 +498,7 @@ enum Destination: String, CaseIterable, Identifiable {
                                 let batch = Array(newUIDs[batchCursor..<min(batchCursor + 64, newUIDs.count)])
                                 batchCursor += batch.count
                                 do {
-                                    readyBodies = try await transport.fetchRawMany(account, folder: folder.path, uids: batch, validity: validity, password: secret)
+                                    readyBodies = try await transport.fetchRawMany(account, folder: folder.path, uids: batch, validity: validity, password: secret, attachmentLimit: max(1, min(50, settings.attachmentAutoDownloadLimitMB ?? 10)) * 1024 * 1024)
                                     mailProcessingProgress.networkSeconds = ProcessInfo.processInfo.systemUptime - fetchStarted
                                     mailProcessingProgress.networkCount = readyBodies.count
                                     mailProcessingProgress.networkBytes = readyBodies.values.reduce(0) { $0 + $1.count }
@@ -508,17 +508,23 @@ enum Destination: String, CaseIterable, Identifiable {
 
                         } catch { if Task.isCancelled { throw CancellationError() }; MailReaderMetrics.failure("sync_batch_fallback", error: error); batchEnabled = false; readyBodies = [:] }
                                 }
-                                let raw: Data
-                                if let prepared = readyBodies.removeValue(forKey: uid) { raw = prepared }
-                                else {
-                                    raw = try await transport.fetchRaw(account, folder: folder.path, uid: uid, validity: validity, password: secret)
-                                    MailReaderMetrics.record("sync_raw_download", since: fetchStarted)
-                                }
                                 if flags[uid] == nil {
                                     let missing = Array(newUIDs[position..<min(position + 64, newUIDs.count)]).filter { flags[$0] == nil }
                                     flags.merge(try await transport.syncFlags(account, folder: folder.path, uids: missing, validity: validity, password: secret), uniquingKeysWith: { _, new in new })
                                 }
                                 guard let flag = flags[uid] else { throw MailError.message("邮件已在服务器移除，下一次增量同步将更新清单。") }
+                                let result: MailSyncFetch
+                                if let prepared = readyBodies.removeValue(forKey: uid) { result = .raw(prepared) }
+                                else { result = try await transport.fetchForSync(account, folder: folder.path, uid: uid, validity: validity, password: secret, attachmentLimit: max(1, min(50, settings.attachmentAutoDownloadLimitMB ?? 10)) * 1024 * 1024) }
+                                let raw: Data
+                                switch result {
+                                case .raw(let data): raw = data
+                                case .selective(var mail):
+                                    mail.isRead = flag.read; mail.isStarred = flag.starred; mail.analysis = PartnerEngine.baseline(mail)
+                                    if let override = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted) { mail.isRead = override.0; mail.localFlagModifiedAt = override.1 }
+                                    let saved = try await store.upsert(mail); await reload(incoming: [saved]); process(); newCount += 1
+                                    continue
+                                }
                                 let job = MailDownloadJob(accountID: account.id, folder: folder.path, uid: uid, validity: validity,
                                     read: flag.read, starred: flag.starred, byteCount: raw.count, inventoryStarted: inventoryStarted)
                                 let staged = ProcessInfo.processInfo.systemUptime
@@ -625,7 +631,7 @@ enum Destination: String, CaseIterable, Identifiable {
                 do {
                     let reused = mails.first { $0.canonicalID == original.canonicalID && $0.analysis?.evidenceVersion == MailEvidence.version && $0.analysis?.source != "规则分析" }?.analysis
                     let analysis: MailAnalysis
-                    if let reused { analysis = reused } else { analysis = try await partner.analyze(MailEvidence.forAnalysis(original, store: store), settings: settings) }
+                    if let reused { analysis = reused } else { analysis = try await partner.analyze(MailEvidence.forAutomaticAnalysis(original), settings: settings.mailAnalysisModelSettings) }
                     guard var current = try await store.message(original.id) else { continue }
                     current.analysis = analysis; current = try await store.upsert(current)
                     if reused == nil && analysis.priority > 0 && current.actionable && !isOutbound(current) {
@@ -641,7 +647,7 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     func reanalyze(_ mail: MailMessage) async {
         guard !partnerBusy else { return }; partnerBusy = true; defer { partnerBusy = false }
-        do { let analysis = try await partner.analyze(MailEvidence.forAnalysis(mail, store: store), settings: settings); guard var m = try await store.message(mail.id) else { return }; m.analysis = analysis; try await store.upsert(m); await reload() } catch { self.error = error.localizedDescription }
+        do { let analysis = try await partner.analyze(MailEvidence.forAnalysis(mail, store: store), settings: settings.mailAnalysisModelSettings); guard var m = try await store.message(mail.id) else { return }; m.analysis = analysis; try await store.upsert(m); await reload() } catch { self.error = error.localizedDescription }
     }
     private func scheduleSearchRefresh() {
         // Sync/index reloads can arrive faster than retrieval completes. Let
@@ -984,6 +990,15 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     func attachment(_ attachment: MailAttachment, save: Bool = false) async {
         do {
+            if attachment.isRemoteOnly, let reference = attachment.remoteReference {
+                if !save { attachmentTextPreview = .init(id: attachment.id, name: attachment.name, result: .init(text: "", source: "仅关联", failure: "附件未自动下载。可选择保存附件后查看。")); return }
+                let panel = NSSavePanel(); panel.nameFieldStringValue = safeFilename(attachment.name)
+                guard panel.runModal() == .OK, let url = panel.url else { return }
+                guard let account = accounts.first(where: { $0.id == reference.accountID && $0.enabled }) else { throw MailError.message("附件所属邮箱不可用。") }
+                let secret = try await credentials.credential(account)
+                let data = try await transport.fetchRemoteAttachment(account, reference: reference, password: secret)
+                try data.write(to: url, options: .atomic); return
+            }
             let data = try await store.attachmentData(attachment)
             if save { let panel = NSSavePanel(); panel.nameFieldStringValue = safeFilename(attachment.name); if panel.runModal() == .OK, let url = panel.url { try data.write(to: url) } }
             else { let folder = FileManager.default.temporaryDirectory.appendingPathComponent("MorrowPreview/" + attachment.id); try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); let url = folder.appendingPathComponent(safeFilename(attachment.name)); try data.write(to: url); NSWorkspace.shared.open(url) }

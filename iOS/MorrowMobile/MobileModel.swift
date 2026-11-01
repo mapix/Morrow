@@ -349,7 +349,9 @@ import UniformTypeIdentifiers
                             flags.merge(try await transport.syncFlags(account, folder: folder.path, uids: missing, validity: validity, password: secret), uniquingKeysWith: { _, new in new })
                         }
                         guard let flag = flags[uid] else { continue }
-                        var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
+                        let fetched = try await transport.fetchForSync(account, folder: folder.path, uid: uid, validity: validity, password: secret, attachmentLimit: max(1, min(50, settings.attachmentAutoDownloadLimitMB ?? 10)) * 1024 * 1024)
+                        var mail: MailMessage
+                        switch fetched { case .raw(let data): mail = MIMEParser.parse(data, accountID: account.id, folder: folder.path, uid: uid, validity: validity); case .selective(let value): mail = value }
                         mail.isRead = flag.read; mail.isStarred = flag.starred; mail.analysis = mail.analysis ?? PartnerEngine.baseline(mail)
                         var job = ProcessingJob(id: mail.id, accountID: account.id)
                         job.analyzed = ["trash", "junk"].contains(folder.role)
@@ -370,7 +372,7 @@ import UniformTypeIdentifiers
         var failures: [String] = []
         if settings.autoAnalyze, mail.analysis == nil || mail.analysis?.source == "规则分析" {
             do {
-                let analysis = try await partner.analyze(try await MailEvidence.forAnalysis(mail, store: store), settings: settings)
+                let analysis = try await partner.analyze(MailEvidence.forAutomaticAnalysis(mail), settings: settings.mailAnalysisModelSettings)
                 if var current = try await store.message(mail.id) { current.analysis = analysis; mail = try await store.upsert(current) }
             } catch { failures.append(error.localizedDescription) }
         }

@@ -60,7 +60,7 @@ struct AttachmentWorkspaceView: View {
                                             Image(systemName: AttachmentFileSymbol.symbol(entry)).font(Theme.heading).foregroundStyle(Theme.muted).frame(width: 28).accessibilityHidden(true)
                                             VStack(alignment: .leading, spacing: 6) {
                                                 Text(displayName(entry)).font(Theme.body.weight(.medium)).lineLimit(2)
-                                                HStack(spacing: 10) { Text(L10n.t(entry.kind)); Text(entry.attachment.size).fixedSize(); Text(entry.mail.from.display).lineLimit(1); Spacer(minLength: 0); Text(entry.mail.date.uiFormatted(date: .abbreviated, time: .omitted)).font(Theme.small).fixedSize() }.font(Theme.label).foregroundStyle(Theme.muted)
+                                                HStack(spacing: 10) { Text(L10n.t(entry.kind)); Text(entry.attachment.size).fixedSize(); if entry.attachment.isRemoteOnly { Text(L10n.t("仅关联")) }; Text(entry.mail.from.display).lineLimit(1); Spacer(minLength: 0); Text(entry.mail.date.uiFormatted(date: .abbreviated, time: .omitted)).font(Theme.small).fixedSize() }.font(Theme.label).foregroundStyle(Theme.muted)
                                             }.frame(maxWidth: .infinity, alignment: .leading)
                                         }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
                                     }.buttonStyle(ListRowButtonStyle()).accessibilityIdentifier("attachment.open-preview")

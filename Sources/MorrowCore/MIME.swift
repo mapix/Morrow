@@ -216,7 +216,7 @@ public enum MIMEParser {
         for format in ["EEE, d MMM yyyy HH:mm:ss Z", "d MMM yyyy HH:mm:ss Z", "EEE, d MMM yyyy HH:mm Z", "d MMM yyyy HH:mm Z"] { f.dateFormat = format; if let date = f.date(from: s) { return date } }; return nil
     }
     static func capture(_ pattern: String, _ value: String) -> String? {
-        guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive), let m = re.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)), let r = Range(m.range(at: 1), in: value) else { return nil }; return String(value[r])
+        guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive), let m = re.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)), m.numberOfRanges > 1, let r = Range(m.range(at: 1), in: value) else { return nil }; return String(value[r])
     }
 }
 

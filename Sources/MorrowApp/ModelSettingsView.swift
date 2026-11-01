@@ -16,6 +16,7 @@ struct ModelSettingsView: View {
     private var configurationID: String { SettingsSaveFeedback.configurationID(draft) }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text(L10n.t("聊天与委托模型")).font(Theme.label.weight(.semibold))
             Picker(L10n.t("模型服务"), selection: $draft.provider) { Text(L10n.t("自动选择本机模型")).tag("auto"); Text("Ollama").tag("ollama"); Text(L10n.t("OpenAI兼容服务")).tag("openai"); Text("ChatGPT").tag("chatgpt"); Text("Apple Intelligence").tag("apple") }
             if draft.provider == "chatgpt" {
                 ChatGPTLoginView(draft: $draft)
@@ -60,7 +61,7 @@ struct ModelSettingsView: View {
                     }
                 }.buttonStyle(QuietButtonStyle())
             } else {
-                Text(draft.provider == "openai" ? L10n.t("分析内容会发给你配置的服务。密钥只保存在本机钥匙串。") : L10n.t("本机模型在这台Mac上处理邮件；远程地址会把内容发送给该服务。")).font(Theme.label).foregroundStyle(Theme.secondary)
+                Text(draft.provider == "openai" ? L10n.t("聊天与委托内容会发给此服务。自动邮件分析使用单独的模型设置。") : L10n.t("本机模型在这台Mac上处理邮件；远程地址会把内容发送给该服务。")).font(Theme.label).foregroundStyle(Theme.secondary)
             }
             Text(L10n.t("保存后应用；连接测试只使用当前填写的配置。")).font(Theme.small).foregroundStyle(Theme.secondary)
             RetrievalDecisionSettingsView(draft: $draft)

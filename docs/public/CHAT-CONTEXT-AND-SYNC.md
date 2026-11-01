@@ -18,6 +18,18 @@ The sync popover reports server size-query time, body-download time, last batch 
 
 ## Incremental IMAP and incoming-mail notifications
 
+Automatic mail understanding uses a separately configured Ollama model. Each
+mail provides only its first1,000body characters and attachment names; automatic
+contact extraction uses the same bounded evidence. Valid existing analysis is
+reused, and unavailable Ollama does not trigger a paid gateway fallback.
+
+Automatic attachment downloads default to10MiB. Larger messages use
+BODYSTRUCTURE plus BODY.PEEK for their text and permitted small parts; larger
+attachments retain their filename, size and server-part association. They do not
+enter automatic attachment extraction. Explicit saves may fetch a referenced
+part within the native64MiB wire limit; larger parts remain linked for download
+through the provider. Original read flags are preserved.
+
 Both clients retain a per-account, per-folder server cursor: UIDVALIDITY,
 HIGHESTMODSEQ, UIDNEXT and the known UID set. The first sync establishes a
 complete inventory; existing local messages and durable download jobs are reused.

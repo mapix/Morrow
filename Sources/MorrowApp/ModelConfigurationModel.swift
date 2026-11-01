@@ -2,6 +2,16 @@ import Foundation
 import MorrowCore
 
 extension AppModel {
+    func saveMailAnalysisConfiguration(_ draft: MailAnalysisSettings) async throws {
+        let value = try draft.validated()
+        let analysis = analysisTask, profiles = profileTask
+        analysis?.cancel(); profiles?.cancel()
+        var next = settings; next.mailAnalysis = value
+        try await store.save(next, kind: "settings", id: "main")
+        settings = next
+        await analysis?.value; await profiles?.value
+        process()
+    }
     /// Publish only a validated, persisted configuration to background work.
     func saveModelConfiguration(_ draft: AgentSettings, apiKey: String = "") async throws {
         var next = settings

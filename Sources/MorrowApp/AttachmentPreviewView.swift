@@ -38,6 +38,7 @@ enum AttachmentPreviewLoader {
     static let maximumDecodeDimension = 4096
 
     static func load(_ attachment: MailAttachment) async throws -> PreparedAttachmentPreview {
+        guard !attachment.isRemoteOnly else { throw MailError.message("附件仅保留关联，未自动下载。选择保存附件后可查看原件。") }
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
             let data: Data

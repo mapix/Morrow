@@ -107,9 +107,11 @@ struct SettingsView: View {
                     Toggle(L10n.t("使用长期记忆"), isOn: $model.workspacePreferences.memoryEnabled).onChange(of: model.workspacePreferences.memoryEnabled) { Task { await model.savePreferences() } }
                     Button(L10n.t("管理记忆")) { model.workspacePage = .memory }.buttonStyle(QuietButtonStyle())
                 }
+                section(L10n.t("自动邮件分析模型")) { MailAnalysisSettingsView() }
                 section(L10n.t("任务运行预算")) { AgentBudgetSettingsView() }
                 section("iCloud") { CloudWorkspaceSettingsView(cloud: model.cloudWorkspace) }
                 section(L10n.t("自动索引")) {
+                    Stepper(L10n.format("自动下载不超过 {0} MB 的附件", String(model.settings.attachmentAutoDownloadLimitMB ?? 10)), value: Binding(get: { model.settings.attachmentAutoDownloadLimitMB ?? 10 }, set: { model.settings.attachmentAutoDownloadLimitMB = $0; Task { await model.saveSettings() } }), in: 1...50).accessibilityIdentifier("settings.attachments.auto-limit")
                     HStack { Text("EmbeddingGemma 2").font(Theme.body.weight(.medium)); Spacer(); Text(L10n.format("{0} / {1} 封已索引", "\(model.indexCount)", "\(model.mailCount)")).font(Theme.label).foregroundStyle(Theme.muted) }
                     Text(model.indexStatus).font(Theme.label).foregroundStyle(Theme.muted)
                     HStack { TextField(L10n.t("本机模型文件夹"), text: runtimeBinding(\.embeddingDirectory)).textFieldStyle(PaperFieldStyle()); Button(L10n.t("选择…")) { let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; if panel.runModal() == .OK, let url = panel.url { runtimeBinding(\.embeddingDirectory).wrappedValue = url.path } }.buttonStyle(QuietButtonStyle()) }

@@ -78,6 +78,8 @@ public struct MailMoveReceipt: Sendable {
 }
 
 public struct MailAttachment: Codable, Identifiable, Hashable, Sendable {
+    public var remoteReference: MailRemoteAttachment?
+    public var isRemoteOnly: Bool { remoteReference != nil && data.isEmpty && storedPath == nil }
     public var id: String = UUID().uuidString
     public var name: String
     public var mimeType: String
@@ -248,6 +250,8 @@ public struct ComposeDraft: Codable, Identifiable, Sendable {
 }
 
 public struct AgentSettings: Codable, Sendable {
+    public var attachmentAutoDownloadLimitMB: Int?
+    public var mailAnalysis: MailAnalysisSettings?
     public var runBudget: AgentRunBudget?
     public var enabled: Bool = true
     public var provider: String = "auto"

@@ -109,12 +109,21 @@ public actor MailTransport {
         }
         return messages
     }
-    public func fetchRawMany(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String) async throws -> [UInt64: Data] {
+    public func fetchRawMany(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String, attachmentLimit: Int = 10 * 1024 * 1024) async throws -> [UInt64: Data] {
         let (bodies, timing) = try await withSession(account, password: password) { connection in
-            let bodies = try await connection.fetchMany(folder: folder, uids: uids, expectedValidity: validity, maximumBatchBytes: 16 * 1024 * 1024)
+            let bodies = try await connection.fetchMany(folder: folder, uids: uids, expectedValidity: validity, maximumBatchBytes: 16 * 1024 * 1024, maximumMessageBytes: UInt64(attachmentLimit))
             return (bodies, await connection.downloadTiming)
         }
         downloadTiming = timing; return bodies
+    }
+    public func fetchForSync(_ account: MailAccount, folder: String, uid: UInt64, validity: UInt64, password: String, attachmentLimit: Int = 10 * 1024 * 1024) async throws -> MailSyncFetch {
+        try await withSession(account, password: password) { try await $0.fetchForSync(accountID: account.id, folder: folder, uid: uid, expectedValidity: validity, attachmentLimit: attachmentLimit) }
+    }
+    public func fetchRemoteAttachment(_ account: MailAccount, reference: MailRemoteAttachment, password: String) async throws -> Data {
+        guard account.id == reference.accountID else { throw MailError.message("附件不属于当前邮箱。") }
+        let data = try await withSession(account, password: password) { try await $0.fetchSection(reference.section, folder: reference.folder, uid: reference.uid, expectedValidity: reference.validity, count: reference.encodedBytes) }
+        if reference.encoding.uppercased() == "BASE64" { guard let decoded = Data(base64Encoded: data, options: .ignoreUnknownCharacters) else { throw MailError.message("附件编码无效。") }; return decoded }
+        return reference.encoding.uppercased() == "QUOTED-PRINTABLE" ? MIMEParser.quotedPrintable(data) : data
     }
     public func fetchRaw(_ account: MailAccount, folder: String, uid: UInt64, validity: UInt64, password: String) async throws -> Data {
         try await withSession(account, password: password) { try await $0.fetch(folder: folder, uid: uid, expectedValidity: validity) }
