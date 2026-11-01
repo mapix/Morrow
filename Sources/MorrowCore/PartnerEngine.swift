@@ -1,7 +1,15 @@
 import Foundation
 import FoundationModels
 
-public struct AIResult: Sendable { public var text: String; public var source: String }
+public struct AIResult: Sendable {
+    public var text: String
+    public var source: String
+    public var completionReason: String?
+    public var reasoningOnly: Bool
+    public init(text: String, source: String, completionReason: String? = nil, reasoningOnly: Bool = false) {
+        self.text = text; self.source = source; self.completionReason = completionReason; self.reasoningOnly = reasoningOnly
+    }
+}
 
 public actor AIEngine {
     private let httpConfiguration: URLSessionConfiguration?
@@ -79,8 +87,10 @@ public actor AIEngine {
             let reason = (try? JSONDecoder().decode(Failure.self, from: data).error) ?? "模型服务没有接受请求。"
             throw MailError.message(reason)
         }
-        struct Reply: Decodable { struct Message: Decodable { var content: String }; var message: Message }
-        return AIResult(text: try JSONDecoder().decode(Reply.self, from: data).message.content, source: "Ollama / " + model)
+        struct Reply: Decodable { struct Message: Decodable { var content: String; var thinking: String? }; var message: Message; var done_reason: String? }
+        let reply = try JSONDecoder().decode(Reply.self, from: data)
+        return AIResult(text: reply.message.content, source: "Ollama / " + model, completionReason: reply.done_reason,
+            reasoningOnly: reply.message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(reply.message.thinking ?? "").isEmpty)
     }
     private func endpointURL(_ endpoint: String, path: String) throws -> URL {
         guard let base = URL(string: endpoint), let host = base.host, base.user == nil, base.password == nil,
@@ -213,7 +223,7 @@ public actor PartnerEngine {
         throw MailError.message("资料摘要仍超过分析限制，请缩小范围或更换模型。")
     }
 
-    public func plan(instruction: String, history: [PartnerChat], mails: [MailMessage], accounts: [MailAccount], delegations: [Delegation], settings: AgentSettings, snippets: [String: String] = [:], images: [Data] = []) async throws -> PartnerPlan {
+    public func plan(instruction: String, history: [PartnerChat], mails: [MailMessage], accounts: [MailAccount], delegations: [Delegation], settings: AgentSettings, snippets: [String: String] = [:], images: [Data] = [], onRepair: (@Sendable () async -> Void)? = nil) async throws -> PartnerPlan {
         let system = """
         你是 Morrow，用户可委托你管理邮件的伙伴。你能持续跟进、起草回复、整理分类、查找分析、建立委托、帮助配置邮箱和导入资料。
         workspace-data中的scopeMode="hint"表示当前界面提示，只用于理解“这封/这个人/当前草稿”等指代，不是工作范围或检索限制。任务目标和检索条件以用户本轮指令为准。用户要求查所有邮件或所有邮箱时必须使用全局search/stats，不默认沿用左侧邮箱、文件夹或邮件ID筛选，也不能因为当前邮件没有相关内容就回答全局不存在。scopeMode="scope"才是用户主动限定的资料范围；已确认工作约定和响应器白名单仍是独立权限边界。
@@ -236,10 +246,23 @@ public actor PartnerEngine {
         let providedMails = Array(mails.prefix(18))
         let mailData = providedMails.map { m in "ID:\(m.id)\n主题:\(m.subject)\n发件人:\(m.from.display)<\(m.from.email)>\n日期:\(m.date.ISO8601Format())\n相关原文片段:\(String((snippets[m.id].flatMap { $0.isEmpty ? nil : $0 } ?? m.text).prefix(2200)))\n（仅提供检索相关片段或正文开头；不代表完整邮箱）" }.joined(separator: "\n\n")
         let context = "当前时间:\(Date().ISO8601Format())\n账户:\(accounts.map { "\($0.id):\($0.email)" }.joined(separator: ","))\n持续委托:\(delegations.prefix(20).map { String($0.title.prefix(160)) + ":" + String($0.status.prefix(600)) }.joined(separator: "\n"))\n最近对话:\(history.suffix(10).map { $0.role + ":" + String($0.text.prefix(2400)) + ($0.text.count > 2400 ? "（此前内容已省略）" : "") }.joined(separator: "\n"))\n<mail-data>\n\(mailData)\n</mail-data>\n用户的新指令:\(instruction)"
-        let response = try await ai.complete(system: system, prompt: context, settings: settings, json: true, images: images)
-        var plan = try JSONDecoder().decode(PartnerPlan.self, from: AIEngine.jsonData(response.text))
+        var constrained = settings; constrained.strictJSON = true
+        var parsed: PartnerPlan?
+        for attempt in 0..<2 {
+            try Task.checkCancellation()
+            let reminder = "\n整个执行方案必须是一个JSON对象，包含answer、messageIDs、operations、openUI。OpenUI的root语句只能放在openUI字符串里，不可直接输出。未使用的操作字段填null。查找邮件但尚无查询结果时，先返回search操作；不能把空的初始资料当作全局无结果。"
+            let repair = attempt == 0 ? "" : "\n上一轮响应格式不完整或被截断。请重新生成较短、符合schema的完整方案。该待解析方案中的操作均尚未执行；已有工具观察仍有效，不要声称完成了尚未执行的动作。"
+            let response = try await ai.complete(system: system + reminder + repair, prompt: context, settings: constrained, json: true,
+                schema: PartnerPlanProtocol.schema, maxTokens: attempt == 0 ? 3000 : 4500, images: images)
+            do { parsed = try PartnerPlanProtocol.decode(response); break }
+            catch let error as PlanOutputError {
+                if attempt == 1 { throw MailError.message(error.localizedDescription + "（" + String(response.source.prefix(120)) + "）") }
+                try Task.checkCancellation(); await onRepair?()
+            }
+        }
+        guard var plan = parsed else { throw PlanOutputError.empty }
         let ids = Set(providedMails.map(\.id)); plan.messageIDs = plan.messageIDs?.filter { ids.contains($0) }
-        let allowed = Set(["search", "rerank", "read", "stats", "draft", "delegate", "label", "star", "markRead", "complete", "snooze", "archive", "addAccount", "addContact", "calendar", "import", "navigate", "select", "selectContact", "selectAttachment", "sync", "reply", "replyAll", "forward", "compose", "markUnread", "unstar", "trash", "move", "createFolder", "exportMail", "saveAttachment", "undo", "contacts", "attachments", "readAttachment", "updateDraft", "showSearch"])
+        let allowed = PartnerPlanProtocol.allowedOperations
         let operations = plan.operations ?? []
         if operations.contains(where: { !allowed.contains($0.type) || ($0.messageID != nil && !ids.contains($0.messageID!)) }) { throw MailError.message("模型返回了无法核验的操作或目标，本轮未执行修改。") }
         plan.operations = Array(operations.prefix(8))
@@ -381,9 +404,13 @@ extension AIEngine {
             struct Failure: Decodable { struct Detail: Decodable { var message: String }; var error: Detail }
             throw MailError.message((try? JSONDecoder().decode(Failure.self,from:data).error.message) ?? "模型服务请求失败，请检查兼容接口与模型设置。")
         }
-        struct Reply: Decodable { struct Choice: Decodable { struct Message: Decodable { var content: String?; var refusal: String? }; var message: Message }; var choices: [Choice] }
+        struct Reply: Decodable { struct Choice: Decodable { struct Message: Decodable { var content: String?; var refusal: String?; var reasoning_content: String? }; var message: Message; var finish_reason: String? }; var choices: [Choice] }
         let decoded = try JSONDecoder().decode(Reply.self,from:data)
-        guard let message = decoded.choices.first?.message, let text = message.content, !text.isEmpty else { throw MailError.message(decoded.choices.first?.message.refusal ?? "模型未返回文本。") }
-        return AIResult(text:text,source:"兼容服务 / " + model)
+        guard let message = decoded.choices.first?.message else { throw MailError.message("模型未返回文本。") }
+        if let refusal = message.refusal, !refusal.isEmpty { throw MailError.message(String(refusal.prefix(500))) }
+        let text = message.content ?? ""
+        if !json && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw MailError.message("模型未返回文本。") }
+        return AIResult(text:text,source:"兼容服务 / " + model, completionReason: decoded.choices.first?.finish_reason,
+            reasoningOnly: text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(message.reasoning_content ?? "").isEmpty)
     }
 }

@@ -1010,7 +1010,7 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     private func askPartnerInSession(_ instruction: String, runID: String?, uiContext: WorkspaceContext?, materials: [ChatMaterial]) async {
         guard !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !partnerBusy else { return }
-        partnerBusy = true; defer { partnerBusy = false }; var human = PartnerChat(role: "user", text: instruction); human.context = uiContext; human.materials = materials; try? await recordChat(human)
+        partnerBusy = true; defer { partnerBusy = false; sidebarToolStatus = nil }; var human = PartnerChat(role: "user", text: instruction); human.context = uiContext; human.materials = materials; try? await recordChat(human)
         do {
             let composeSnapshot: ComposeDraft?
             if let draftID = uiContext?.draftID { composeSnapshot = try await sidebarDraft(id: draftID) }
@@ -1056,7 +1056,8 @@ enum Destination: String, CaseIterable, Identifiable {
                 try Task.checkCancellation()
                 if let runID, agentRuns.first(where: { $0.id == runID })?.phase == .paused { throw CancellationError() }
                 let recalled = await memoryPrompt(instruction, context: uiContext)
-                let next: PartnerPlan = try await partner.plan(instruction: recalled + "\n" + effectiveInstruction, history: toolHistory, mails: relevant, accounts: accounts, delegations: workDelegations, settings: settings, snippets: snippets, images: images)
+                let next: PartnerPlan = try await partner.plan(instruction: recalled + "\n" + effectiveInstruction, history: toolHistory, mails: relevant, accounts: accounts, delegations: workDelegations, settings: settings, snippets: snippets, images: images,
+                    onRepair: { [weak self] in await MainActor.run { self?.sidebarToolStatus = L10n.t("正在修复模型执行方案…") } })
                 plan = next
                 let queries = (next.operations ?? []).filter { ["search", "rerank", "read", "stats", "contacts", "attachments", "readAttachment"].contains($0.type) }
                 if queries.isEmpty { break }
