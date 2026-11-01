@@ -66,21 +66,45 @@ final class SDKChatIntegrationTests: XCTestCase {
         XCTAssertEqual(model.responderEditor?.enabled, false)
         XCTAssertEqual(model.workspacePage, .responders)
     }
+    @MainActor func testSDKSmallRequestedPageDoesNotCauseTinyRepeatedReads() async throws {
+        let (model, selected, original) = try await fixture(mode: "page-size"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        var target = original; target.text = String(repeating: "Synthetic paragraph. ", count: 1000)
+        try await model.store.upsert(target); model.mails = [selected, target]
+        await model.askPartner("只读这封邮件的相关事实，不需要通读全文", uiContext: model.currentContext)
+        let last = try XCTUnwrap(SDKChatHTTPFixture.lastBody)
+        let messages = try XCTUnwrap(last["messages"] as? [[String: Any]])
+        let output = try XCTUnwrap(messages.last(where: { $0["role"] as? String == "tool" })?["content"] as? String)
+        let page = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+        XCTAssertEqual((page["text"] as? String)?.count, 4000)
+        XCTAssertEqual(page["nextOffset"] as? Int, 4000)
+        XCTAssertEqual(SDKChatHTTPFixture.count, 2)
+    }
 }
 
 private final class SDKChatHTTPFixture: URLProtocol {
     private static let lock = NSLock()
     private static var calls = 0
     private static var mode = "search"
+    private static var body: [String: Any]?
     static var count: Int { lock.withLock { calls } }
-    static func reset(_ value: String) { lock.withLock { calls = 0; mode = value } }
+    static var lastBody: [String: Any]? { lock.withLock { body } }
+    static func reset(_ value: String) { lock.withLock { calls = 0; mode = value; body = nil } }
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "sdk-chat-fixture.invalid" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        var bytes = request.httpBody ?? Data()
+        if bytes.isEmpty, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }; var block = [UInt8](repeating: 0, count: 4096)
+            while true { let n = stream.read(&block, maxLength: block.count); if n <= 0 { break }; bytes.append(contentsOf: block.prefix(n)) }
+        }
+        if let value = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] { Self.lock.withLock { Self.body = value } }
         let (call, mode) = Self.lock.withLock { Self.calls += 1; return (Self.calls, Self.mode) }
         let operation: (String, [String: Any])?
         let answer: String
-        if mode == "responder" {
+        if mode == "page-size" {
+            operation = call == 1 ? ("read_mail", ["messageID": "target", "limit": 256]) : nil
+            answer = "SDK efficient page"
+        } else if mode == "responder" {
             operation = call == 1 ? ("setup_responder", ["instruction": "只响应trusted@example.invalid", "title": "Synthetic rule", "accountID": "a", "senderAllowlist": ["trusted@example.invalid"]]) : nil
             answer = "SDK responder prepared"
         } else if mode == "form" {

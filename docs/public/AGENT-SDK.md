@@ -49,6 +49,8 @@ permissions. An observation of failure cannot be described as a completed action
 Search returns bounded candidates and snippets. Counts distinguish candidate
 retrieval from mailbox totals. `scan_mail` and reading tools support pages;
 unfinished sync/indexing is not presented as complete coverage.
+Mail body pages default to6,000characters and clamp to4,000–8,000characters,
+so the model cannot accidentally spend many turns reading tiny fragments.
 
 ## Storage and performance
 
