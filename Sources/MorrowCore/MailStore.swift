@@ -401,22 +401,67 @@ public actor MailStore {
               updates.allSatisfy({ $0.overrideModifiedAt?.timeIntervalSinceReferenceDate.isFinite ?? true }) else { throw MailError.message("同步标记时间无效。") }
         try execute("BEGIN IMMEDIATE")
         do {
-            var changed = 0
-            for update in updates {
-                try Task.checkCancellation()
-                let flags = "'$.isRead',json(?),'$.isStarred',json(?)"
-                var values: [Value] = [.text(update.read ? "true" : "false"), .text(update.starred ? "true" : "false")]
-                var extra = ""
-                if let modified = update.overrideModifiedAt { extra = ",'$.localFlagModifiedAt',?"; values.append(.real(modified.timeIntervalSinceReferenceDate)) }
-                try execute("UPDATE messages SET json=json_set(CAST(json AS TEXT)," + flags + extra + ") WHERE id=? AND coalesce(json_extract(CAST(json AS TEXT),'$.localFlagModifiedAt'),-1e99)<=? AND (json_extract(CAST(json AS TEXT),'$.isRead')<>? OR json_extract(CAST(json AS TEXT),'$.isStarred')<>?)", values + [.text(update.id), .real(inventoryStarted.timeIntervalSinceReferenceDate), .int(update.read ? 1 : 0), .int(update.starred ? 1 : 0)])
-                guard sqlite3_changes(db) > 0 else { continue }
-                changed += 1
-                try execute("DELETE FROM message_projections WHERE message=? AND NOT json_valid(json)", [.text(update.id)])
-                let projectionFlags = "'$.projectedMessage.isRead',json(?),'$.projectedMessage.isStarred',json(?)"
-                let projectionExtra = update.overrideModifiedAt == nil ? "" : ",'$.projectedMessage.localFlagModifiedAt',?"
-                try execute("UPDATE message_projections SET json=json_set(CAST(json AS TEXT)," + projectionFlags + projectionExtra + ") WHERE message=?", values + [.text(update.id)])
-            }
+            let changed = try writeRemoteFlagStates(updates, inventoryStarted: inventoryStarted)
             try execute("COMMIT"); return changed
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+    private func writeRemoteFlagStates(_ updates: [MailRemoteFlagUpdate], inventoryStarted: Date) throws -> Int {
+        var changed = 0
+        for update in updates {
+            try Task.checkCancellation()
+            let flags = "'$.isRead',json(?),'$.isStarred',json(?)"
+            var values: [Value] = [.text(update.read ? "true" : "false"), .text(update.starred ? "true" : "false")]
+            var extra = ""
+            if let modified = update.overrideModifiedAt { extra = ",'$.localFlagModifiedAt',?"; values.append(.real(modified.timeIntervalSinceReferenceDate)) }
+            try execute("UPDATE messages SET json=json_set(CAST(json AS TEXT)," + flags + extra + ") WHERE id=? AND coalesce(json_extract(CAST(json AS TEXT),'$.localFlagModifiedAt'),-1e99)<=? AND (json_extract(CAST(json AS TEXT),'$.isRead')<>? OR json_extract(CAST(json AS TEXT),'$.isStarred')<>?)", values + [.text(update.id), .real(inventoryStarted.timeIntervalSinceReferenceDate), .int(update.read ? 1 : 0), .int(update.starred ? 1 : 0)])
+            guard sqlite3_changes(db) > 0 else { continue }
+            changed += 1
+            try execute("DELETE FROM message_projections WHERE message=? AND NOT json_valid(json)", [.text(update.id)])
+            let projectionFlags = "'$.projectedMessage.isRead',json(?),'$.projectedMessage.isStarred',json(?)"
+            let projectionExtra = update.overrideModifiedAt == nil ? "" : ",'$.projectedMessage.localFlagModifiedAt',?"
+            try execute("UPDATE message_projections SET json=json_set(CAST(json AS TEXT)," + projectionFlags + projectionExtra + ") WHERE message=?", values + [.text(update.id)])
+        }
+        return changed
+    }
+    /// Apply metadata and the server cursor atomically, before history bodies
+    /// are downloaded. A stopped download resumes from known missing UIDs.
+    public func commitMailSyncInventory(_ inventory: MailSyncInventory, account: MailAccount, folder: String,
+                                        updates: [MailRemoteFlagUpdate], inventoryStarted: Date) throws -> [String] {
+        guard inventoryStarted.timeIntervalSinceReferenceDate.isFinite,
+              updates.allSatisfy({ $0.overrideModifiedAt?.timeIntervalSinceReferenceDate.isFinite ?? true }) else { throw MailError.message("同步标记时间无效。") }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            var removedFiles: [URL] = []
+            // Queued MIME processing reads these refreshed flags at commit.
+            for var job in try queuedMailDownloads() where job.accountID == account.id && job.folder == folder {
+                if job.validity != inventory.validity || !inventory.presentUIDs.contains(job.uid) {
+                    try remove(kind: "mail-download", id: job.id)
+                    if try messageSummaries(ids: [job.id]).isEmpty { removedFiles.append(rawURL(job.id)) }
+                    continue
+                }
+                if let flags = inventory.flags[job.uid] {
+                    job.read = flags.read; job.starred = flags.starred; job.inventoryStarted = inventoryStarted
+                    try save(job, kind: "mail-download", id: job.id)
+                }
+            }
+            _ = try writeRemoteFlagStates(updates, inventoryStarted: inventoryStarted)
+            var deleted: [String] = []
+            for old in try syncRecords(account: account.id, folder: folder) where old.uid > 0 && (old.uidValidity != inventory.validity || !inventory.presentUIDs.contains(old.uid)) {
+                try Task.checkCancellation()
+                if let mail = try message(old.id) {
+                    for attachment in mail.attachments {
+                        if let path = attachment.storedPath { removedFiles.append(URL(fileURLWithPath: path)) }
+                        try remove(kind: "attachment-text", id: attachment.id)
+                    }
+                }
+                removedFiles.append(rawURL(old.id))
+                try execute("DELETE FROM messages WHERE id=?", [.text(old.id)]); deleted.append(old.id)
+            }
+            let cursor = inventory.cursor(account: account, folder: folder)
+            try save(cursor, kind: "mail-sync-cursor", id: cursor.id)
+            try execute("COMMIT")
+            for url in removedFiles { try? FileManager.default.removeItem(at: url) }
+            return deleted
         } catch { try? execute("ROLLBACK"); throw error }
     }
     private func flagStates(ids: Set<String>, flag: StoredMailFlag, includeCanonicalCopies: Bool) throws -> [String: Bool] {
@@ -553,6 +598,7 @@ public actor MailStore {
         try execute("DELETE FROM messages WHERE id=?", [.text(id)])
     }
     public func deleteAccount(_ id: String) throws {
+        for cursor in try load(MailFolderSyncCursor.self, kind: "mail-sync-cursor") where cursor.accountID == id { try remove(kind: "mail-sync-cursor", id: cursor.id) }
         for job in try queuedMailDownloads() where job.accountID == id { try discardQueuedMailDownload(job) }
         for record in try syncRecords(account: id, folder: nil) { try deleteMessage(record.id) }
         try remove(kind: "account", id: id)
@@ -574,8 +620,11 @@ public actor MailStore {
     }
     public func commitDownloadedMail(_ value: MailMessage, job: MailDownloadJob) throws -> MailMessage? {
         guard value.id == job.id, value.accountID == job.accountID, value.folder == job.folder, value.uid == job.uid, value.uidValidity == job.validity else { throw MailError.message("加工结果不属于下载来源。") }
-        guard try object(MailDownloadJob.self, kind: "mail-download", id: job.id) != nil else { return nil }
+        guard let latest = try object(MailDownloadJob.self, kind: "mail-download", id: job.id) else { return nil }
         var mail = value; mail.raw = Data()
+        if latest.inventoryStarted > job.inventoryStarted && (mail.localFlagModifiedAt.map { $0 <= latest.inventoryStarted } ?? true) {
+            mail.isRead = latest.read; mail.isStarred = latest.starred
+        }
         try execute("BEGIN IMMEDIATE")
         do { let saved = try upsert(mail); try remove(kind: "mail-download", id: job.id); try execute("COMMIT"); return saved }
         catch { try? execute("ROLLBACK"); throw error }

@@ -79,6 +79,7 @@ struct RootView: View {
                 case .desk: desk
                 case .history: AgentHistoryView()
                 case .library: AgentLibraryView()
+                case .briefs: BriefWorkspaceView()
                 case .responders: RespondersView()
                 case .mail: mailWorkspace
                 case .people: PeopleWorkspaceView()
@@ -107,7 +108,7 @@ struct RootView: View {
             RailButton(title: L10n.t("工作区设置"), icon: "slider.horizontal.3", selected: false) { model.destination = .settings; model.workspacePage = .mail }
         }.padding(.top, 48).padding(.bottom, 18).frame(width: 76).background(Theme.sidebar)
     }
-    private func railIcon(_ page: WorkspacePage) -> String { switch page { case .desk: return "square.and.pencil"; case .history: return "clock.arrow.circlepath"; case .library: return "books.vertical"; case .responders: return "bolt.horizontal.circle"; case .mail: return "envelope"; case .people: return "person.2"; case .attachments: return "paperclip"; case .memory: return "brain" } }
+    private func railIcon(_ page: WorkspacePage) -> String { switch page { case .desk: return "square.and.pencil"; case .history: return "clock.arrow.circlepath"; case .library: return "books.vertical"; case .briefs: return "doc.text"; case .responders: return "bolt.horizontal.circle"; case .mail: return "envelope"; case .people: return "person.2"; case .attachments: return "paperclip"; case .memory: return "brain" } }
     private var desk: some View { WorkHandoffSurface() }
     private var commandBar: some View {
         VStack(alignment: .leading, spacing: 10) {

@@ -3,6 +3,43 @@ import MorrowCore
 @testable import MorrowApp
 
 final class SDKChatIntegrationTests: XCTestCase {
+    @MainActor func testRepeatedQueryMistakeStillPausesForUserDecision() async throws {
+        let (model, _, _) = try await fixture(mode: "scan-repeat"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("只读查找游戏变现邮件", uiContext: model.currentContext)
+        XCTAssertTrue(model.visibleChat.last?.text.contains("两次未能修正") == true)
+        XCTAssertNotNil(model.visibleChat.last?.continuationPrompt)
+    }
+    @MainActor func testMetadataQueryMistakeCanBeCorrectedWithoutPausingOrChangingMail() async throws {
+        let (model, _, target) = try await fixture(mode: "scan-correction"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("只读查找游戏变现邮件", uiContext: model.currentContext)
+        let reply = try XCTUnwrap(model.visibleChat.last)
+        XCTAssertEqual(reply.text, "SDK corrected query"); XCTAssertNil(reply.continuationPrompt)
+        XCTAssertTrue(reply.executionTrace?.tools.contains { $0.tool == "scan_mail" && $0.status == "failed" } == true)
+        XCTAssertTrue(reply.executionTrace?.tools.contains { $0.tool == "search_mail" && $0.status == "completed" } == true)
+        let stored = try await model.store.message(target.id); XCTAssertEqual(stored?.isRead, target.isRead)
+    }
+    @MainActor func testSDKBriefIsStructuredLinkedToChatAndPreservedAfterEditing() async throws {
+        let (model, _, target) = try await fixture(mode: "report"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        let origin = model.activeSessionID
+        await model.askPartner("只读查找所有相关邮件，并保存结构化简报", uiContext: model.currentContext)
+        let reply = try XCTUnwrap(model.visibleChat.last), id = try XCTUnwrap(reply.artifactIDs?.first)
+        let artifact = try XCTUnwrap(model.agentArtifacts.first { $0.id == id })
+        XCTAssertEqual(artifact.sessionID, origin); XCTAssertEqual(artifact.sourceChatID, model.visibleChat.first?.id)
+        XCTAssertEqual(artifact.briefDocument?.status, .inProgress); XCTAssertTrue(artifact.sourceMailIDs.contains(target.id))
+        let table = try XCTUnwrap(artifact.briefDocument?.tables.first)
+        XCTAssertNoThrow(try OpenUILang.parse(table.openUISource).root())
+        XCTAssertEqual(model.agentRuns.first { $0.id == artifact.runID }?.phase, .paused)
+        let other = await model.createChatSession(title: "Other"); model.chatInput = "Unsent other input"
+        model.openBrief(artifact); XCTAssertEqual(model.activeSessionID, origin); XCTAssertEqual(model.workspacePage, .briefs)
+        await model.openBriefSource(artifact); XCTAssertEqual(model.scrollChatID, artifact.sourceChatID)
+        model.switchChatSession(other); XCTAssertEqual(model.chatInput, "Unsent other input")
+        await model.saveReportEdit("User edited body", artifactID: id)
+        let edited = try XCTUnwrap(model.agentArtifacts.first { $0.id == id })
+        XCTAssertNil(edited.briefDocument); XCTAssertEqual(edited.sessionID, origin); XCTAssertEqual(edited.revisions?.last?.briefDocument?.status, .inProgress)
+        var legacy = artifact; legacy.sessionID = nil; legacy.sourceChatID = nil; legacy.runID = "sdk-chat:" + other
+        model.chat = model.chat.map { item in var copy = item; copy.artifactIDs = nil; return copy }; model.agentArtifacts = [legacy]
+        XCTAssertEqual(model.briefs(in: origin).first?.id, legacy.id)
+    }
     @MainActor private func fixture(mode: String) async throws -> (AppModel, MailMessage, MailMessage) {
         let runtime = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
         guard FileManager.default.fileExists(atPath: runtime.appendingPathComponent("node_modules/@openai/agents/package.json").path) else { throw XCTSkip("Install pinned SDK dependencies") }
@@ -122,7 +159,16 @@ private final class SDKChatHTTPFixture: URLProtocol {
         let (call, mode) = Self.lock.withLock { Self.calls += 1; return (Self.calls, Self.mode) }
         let operation: (String, [String: Any])?
         let answer: String
-        if mode == "plan" {
+        if mode == "scan-repeat" {
+            operation = ("scan_mail", ["query": "game monetization"])
+            answer = "Never complete invalid query"
+        } else if mode == "scan-correction" {
+            operation = call == 1 ? ("scan_mail", ["query": "after:2026-01-01 game monetization"]) : call == 2 ? ("search_mail", ["query": "after:2026-01-01 game monetization"]) : nil
+            answer = "SDK corrected query"
+        } else if mode == "report" {
+            operation = call == 1 ? ("find_tools", ["query": "report"]) : call == 2 ? ("search_mail", ["query": "game monetization"]) : call == 3 ? ("save_report", ["title": "Synthetic brief", "document": ["summary": "Relevant mail found", "status": "in_progress", "coverage": "One bounded search", "findings": ["SDK_TARGET_SOURCE"], "actions": ["Continue checking"], "uncertainties": ["Incomplete coverage"], "tables": [["title": "Sources", "columns": ["Subject", "State"], "rows": [["Synthetic mail", "Read"]]]]]]) : nil
+            answer = "SDK brief saved"
+        } else if mode == "plan" {
             operation = call == 1 ? ("write_plan", ["steps": [["id": "search", "title": "查找相关邮件", "status": "in_progress"]]]) : call == 2 ? ("search_mail", ["query": "game monetization"]) : call == 3 ? ("write_plan", ["steps": [["id": "search", "title": "查找相关邮件", "status": "completed"]]]) : nil
             answer = "SDK plan completed"
         } else if mode == "page-size" {

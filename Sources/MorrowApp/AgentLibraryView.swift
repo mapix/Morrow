@@ -48,7 +48,7 @@ struct AgentLibraryView: View {
     }
     private var artifacts: [AgentArtifact] {
         model.agentArtifacts.filter { artifact in
-            (artifactKind == nil || artifact.kind == artifactKind) && matches([artifact.title, artifact.content, runTitle(artifact.runID), artifactName(artifact.kind)])
+            (artifactKind == nil || (artifactKind == .report ? artifact.isBrief : artifact.kind == artifactKind)) && matches([artifact.title, artifact.content, runTitle(artifact.runID), artifactName(artifact.kind)])
         }.sorted { $0.createdAt > $1.createdAt }
     }
     private var attachments: [AttachmentEntry] {
@@ -110,7 +110,7 @@ struct AgentLibraryView: View {
                 if scope == .all || scope == .artifacts {
                     Menu {
                         Button(L10n.t("全部产出")) { artifactKind = nil }
-                        ForEach([AgentArtifactKind.draft, .report, .brief, .action], id: \.rawValue) { kind in
+                        ForEach([AgentArtifactKind.draft, .report, .action], id: \.rawValue) { kind in
                             Button(artifactName(kind)) { artifactKind = kind }
                         }
                     } label: {
@@ -136,6 +136,7 @@ struct AgentLibraryView: View {
     }
     private func artifactRow(_ artifact: AgentArtifact) -> some View {
         Button {
+            if artifact.isBrief { model.openBrief(artifact); return }
             model.selectedRunID = artifact.runID
             model.selectedID = nil
             model.workspacePage = .desk
@@ -224,7 +225,7 @@ struct AgentLibraryView: View {
     private func matches(_ values: [String]) -> Bool { AgentIndexMatch.matches(query, values: values) }
     private func runTitle(_ id: String) -> String { model.agentRuns.first { $0.id == id }?.title ?? L10n.t("未找到所属工作") }
     private func artifactName(_ kind: AgentArtifactKind) -> String {
-        switch kind { case .draft: return L10n.t("回复草稿"); case .report: return L10n.t("报告"); case .brief: return L10n.t("简报"); case .action: return L10n.t("行动方案") }
+        switch kind { case .draft: return L10n.t("回复草稿"); case .report, .brief: return L10n.t("简报"); case .action: return L10n.t("行动方案") }
     }
     private func openMail(_ mail: MailMessage) {
         model.selectedRunID = nil

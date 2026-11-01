@@ -313,6 +313,7 @@ public struct PartnerEvent: Codable, Identifiable, Sendable {
 }
 
 public struct PartnerChat: Codable, Identifiable, Sendable {
+    public var artifactIDs: [String]?
     public var continuationPrompt: String?
     public var executionTrace: AgentExecutionTrace?
     public var openUIID: String?

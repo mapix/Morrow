@@ -9,10 +9,14 @@ public actor IMAPConnection {
     private var sequence = 0
     private var selected: String?
     private var validity: UInt64 = 0
+    private var capabilities: Set<String> = []
+    private var qresyncEnabled = false
+    private var idleTag: String?
     private let maximumResponseBytes: Int
     public init() { maximumResponseBytes = 96 * 1024 * 1024 }
     init(maximumResponseBytes: Int) { self.maximumResponseBytes = max(1, maximumResponseBytes) }
     public var connected: Bool { connection != nil }
+    public var supportsIdle: Bool { capabilities.contains("IDLE") }
 
     public func connect(host: String, port: Int, email: String, password: String, tls: Bool = true, oauth: Bool = false) async throws {
         close(); try Task.checkCancellation()
@@ -47,8 +51,10 @@ public actor IMAPConnection {
                 else if l.hasPrefix(tag + " ") { guard l.uppercased().hasPrefix(tag.uppercased() + " OK") else { throw MailError.message("IMAP OAuth 认证失败" + (oauthStatus.map { "（服务器状态" + $0 + "）" } ?? "") + "：" + String(l.dropFirst(tag.count + 1).prefix(200))) }; break }
             }
         } else { _ = try await command("LOGIN \(try Self.quote(email)) \(try Self.quote(password))", sensitive: true) }
+        // Extensions may only be advertised after authentication.
+        capabilities = Self.capabilityWords(try await command("CAPABILITY").lines)
     }
-    public func close() { connection?.cancel(); connection = nil; buffer = Data(); bufferOffset = 0; selected = nil; validity = 0 }
+    public func close() { connection?.cancel(); connection = nil; buffer = Data(); bufferOffset = 0; selected = nil; validity = 0; capabilities = []; qresyncEnabled = false; idleTag = nil }
     public func select(_ folder: String) async throws -> UInt64 {
         if selected == folder { return validity }
         let result = try await command("SELECT \(try Self.quote(folder))")
@@ -67,6 +73,164 @@ public actor IMAPConnection {
             }
             return (v, flags)
         } catch { close(); throw error }
+    }
+    private static func capabilityWords(_ lines: [String]) -> Set<String> {
+        Set(lines.filter { $0.uppercased().hasPrefix("* CAPABILITY ") }.flatMap { $0.uppercased().split(whereSeparator: \.isWhitespace).dropFirst(2).map(String.init) })
+    }
+    /// RFC 7162: QRESYNC supplies vanished UIDs; CONDSTORE supplies changed
+    /// flags. With CONDSTORE alone, SEARCH ALL reconciles membership only when
+    /// SELECT reports a change. The baseline IMAP path remains compatible.
+    public func syncInventory(_ folder: String, cursor: MailFolderSyncCursor?) async throws -> MailSyncInventory {
+        do {
+            if capabilities.contains("QRESYNC"), capabilities.contains("ENABLE"), !qresyncEnabled {
+                let reply = try await command("ENABLE QRESYNC")
+                qresyncEnabled = reply.lines.contains { $0.uppercased().split(whereSeparator: \.isWhitespace).contains("QRESYNC") }
+            }
+            let modSequence = cursor?.highestModSequence.flatMap { $0 > 0 ? $0 : nil }
+            let useQResync = qresyncEnabled && cursor != nil && modSequence != nil
+            let condstore = capabilities.contains("CONDSTORE") || qresyncEnabled
+            selected = nil
+            let parameters: String
+            if useQResync, let cursor, let modSequence { parameters = " (QRESYNC (\(cursor.validity) \(modSequence)))" }
+            else { parameters = condstore ? " (CONDSTORE)" : "" }
+            let selection = try await command("SELECT \(try Self.quote(folder))" + parameters)
+            let selectionText = selection.lines.joined(separator: "\n") + "\n" + selection.completion
+            validity = Self.responseNumber("UIDVALIDITY", selectionText) ?? 0
+            guard validity > 0, validity <= UInt64(UInt32.max) else { throw MailError.message("服务器没有提供有效 UIDVALIDITY。") }
+            selected = folder
+            let highest = Self.responseNumber("HIGHESTMODSEQ", selectionText)
+            let uidNext = Self.responseNumber("UIDNEXT", selectionText)
+            let count = MIMEParser.capture(#"(?im)^\*\s+(\d+)\s+EXISTS\b"#, selectionText).flatMap(Int.init)
+            let incremental = condstore && highest != nil && modSequence != nil && cursor?.validity == validity && highest! >= modSequence!
+            var flags = Self.syncFlags(selection.lines)
+            let present: Set<UInt64>
+            if incremental, let cursor, let modSequence {
+                if useQResync {
+                    var known = Set(cursor.knownUIDs)
+                    for line in selection.lines where line.uppercased().hasPrefix("* VANISHED ") {
+                        known.subtract(try Self.vanishedUIDs(line))
+                    }
+                    known.formUnion(flags.keys)
+                    // A new UID can appear without a flag update for known mail.
+                    if let next = cursor.uidNext, next <= UInt64(UInt32.max), uidNext == nil || uidNext! > next {
+                        flags.merge(try await fetchSyncFlags("\(next):\(UInt32.max)", modSequence: nil), uniquingKeysWith: { _, new in new })
+                        known.formUnion(flags.keys)
+                    }
+                    // Missing/inconsistent QRESYNC membership is reconciled safely.
+                    if let count, count != known.count { present = try await searchUIDs() }
+                    else { present = known }
+                } else if highest == modSequence, uidNext != nil, uidNext == cursor.uidNext, count == cursor.knownUIDs.count {
+                    present = Set(cursor.knownUIDs)
+                } else {
+                    flags.merge(try await fetchSyncFlags("1:*", modSequence: modSequence), uniquingKeysWith: { _, new in new })
+                    present = try await searchUIDs()
+                }
+            } else {
+                flags = try await fetchSyncFlags("1:*", modSequence: nil)
+                if let count, count != flags.count { present = try await searchUIDs() }
+                else { present = Set(flags.keys) }
+            }
+            flags = flags.filter { present.contains($0.key) }
+            // Use SELECT's watermark, never a later FETCH watermark: concurrent
+            // changes after SELECT must be replayed on the next sync.
+            return .init(validity: validity, flags: flags, presentUIDs: present, highestModSequence: highest, uidNext: uidNext, incremental: incremental)
+        } catch { close(); throw error }
+    }
+    private static func responseNumber(_ name: String, _ text: String) -> UInt64? {
+        MIMEParser.capture("(?i)\\[" + name + "\\s+(\\d+)\\]", text).flatMap(UInt64.init)
+    }
+    private static func syncFlags(_ lines: [String]) -> [UInt64: MailSyncFlags] {
+        var result: [UInt64: MailSyncFlags] = [:]
+        for line in lines { if let row = IMAPFlagRow.parse(line) { result[row.uid] = .init(read: row.read, starred: row.starred) } }
+        return result
+    }
+    private func fetchSyncFlags(_ set: String, modSequence: UInt64?) async throws -> [UInt64: MailSyncFlags] {
+        let tag = nextTag()
+        let modifier = modSequence.map { " (CHANGEDSINCE \($0))" } ?? ""
+        try await write(Data("\(tag) UID FETCH \(set) (UID FLAGS)\(modifier)\r\n".utf8))
+        var flags: [UInt64: MailSyncFlags] = [:]
+        _ = try await readResponse(tag, retainLines: false, allowLiterals: false) { line in
+            if let row = IMAPFlagRow.parse(line) { flags[row.uid] = .init(read: row.read, starred: row.starred) }
+        }
+        return flags
+    }
+    public func syncFlags(folder: String, uids: [UInt64], expectedValidity: UInt64) async throws -> [UInt64: MailSyncFlags] {
+        guard try await select(folder) == expectedValidity else { throw MailError.message("文件夹已重建，请重新同步。") }
+        // Reuse the bounded UID command builder; FLAGS never downloads bodies.
+        var result: [UInt64: MailSyncFlags] = [:]
+        for batch in try Self.flagBatches(uids, flag: "\\Seen", enabled: true) {
+            let set = String(batch.command.dropFirst("UID STORE ".count).split(separator: " ")[0])
+            result.merge(try await fetchSyncFlags(set, modSequence: nil), uniquingKeysWith: { _, new in new })
+        }
+        let allowed = Set(uids)
+        return result.filter { allowed.contains($0.key) }
+    }
+    private func searchUIDs() async throws -> Set<UInt64> {
+        let reply = try await command("UID SEARCH ALL")
+        var result: Set<UInt64> = [], received = false
+        for line in reply.lines {
+            let words = line.split(whereSeparator: \.isWhitespace)
+            guard words.count >= 2, words[0] == "*", words[1].uppercased() == "SEARCH" else { continue }
+            received = true
+            for word in words.dropFirst(2) {
+                guard let uid = UInt64(word), uid > 0, uid <= UInt64(UInt32.max) else { throw MailError.message("服务器返回了无效 UID 清单。") }
+                result.insert(uid)
+            }
+        }
+        guard received else { throw MailError.message("服务器未返回 UID 清单，未更新同步断点。") }
+        return result
+    }
+    static func vanishedUIDs(_ line: String) throws -> Set<UInt64> {
+        let text = line.replacingOccurrences(of: "(EARLIER)", with: "", options: .caseInsensitive)
+        let words = text.split(whereSeparator: \.isWhitespace)
+        guard words.count == 3, words[0] == "*", words[1].uppercased() == "VANISHED" else { throw MailError.message("无效 VANISHED 响应。") }
+        var result: Set<UInt64> = []
+        for token in words[2].split(separator: ",", omittingEmptySubsequences: false) {
+            let ends = token.split(separator: ":", omittingEmptySubsequences: false)
+            guard (1...2).contains(ends.count), let first = UInt64(ends[0]), let last = UInt64(ends.last!), first > 0, last > 0,
+                  first <= UInt64(UInt32.max), last <= UInt64(UInt32.max), max(first, last) - min(first, last) < 1_000_000 else { throw MailError.message("VANISHED UID 范围无效或过大。") }
+            for uid in min(first, last)...max(first, last) { result.insert(uid) }
+            guard result.count <= 1_000_000 else { throw MailError.message("VANISHED 响应超过缓存限制。") }
+        }
+        return result
+    }
+    /// RFC 2177: renew before the server's 30-minute IDLE limit. DONE is sent
+    /// exactly once; cancellation closes this dedicated socket promptly.
+    public func waitForChange(folder: String, renewAfter seconds: Double = 25 * 60) async throws -> Bool {
+        guard supportsIdle else { return false }
+        do {
+            _ = try await select(folder)
+            let tag = nextTag(); try await write(Data("\(tag) IDLE\r\n".utf8))
+            var changed = false
+            while true {
+                let response = try await line()
+                if response.hasPrefix("+") { break }
+                if response.hasPrefix(tag + " ") || response.uppercased().hasPrefix("* BYE") { throw MailError.message("服务器未接受实时邮箱监听。") }
+                changed = changed || Self.isMailboxChange(response)
+            }
+            idleTag = tag
+            let renewal = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(max(0.05, seconds))); try await self?.endIdle(tag) } catch { }
+            }
+            defer { renewal.cancel() }
+            if changed { try await endIdle(tag) }
+            while true {
+                let response = try await line(timeout: max(90, seconds + 30))
+                if response.hasPrefix(tag + " ") {
+                    guard response.uppercased().hasPrefix(tag + " OK") else { throw MailError.message("实时邮箱监听结束失败。") }
+                    return changed
+                }
+                if response.uppercased().hasPrefix("* BYE") { throw MailError.message("服务器断开实时邮箱监听。") }
+                if Self.isMailboxChange(response) { changed = true; try await endIdle(tag) }
+            }
+        } catch { close(); throw error }
+    }
+    private func endIdle(_ tag: String) async throws {
+        guard idleTag == tag else { return }; idleTag = nil
+        try await write(Data("DONE\r\n".utf8))
+    }
+    private static func isMailboxChange(_ line: String) -> Bool {
+        MIMEParser.capture(#"(?i)^\*\s+((?:\d+\s+(?:EXISTS|EXPUNGE|FETCH|RECENT)\b)|VANISHED\b)"#, line) != nil
     }
     public func fetch(folder: String, uid: UInt64, expectedValidity: UInt64) async throws -> Data {
         let v = try await select(folder)
@@ -289,7 +453,7 @@ public actor IMAPConnection {
         }; throw MailError.message("邮件服务器响应超出限制。")
     }
     private func nextTag() -> String { sequence += 1; return String(format: "S%05d", sequence) }
-    private func line() async throws -> String {
+    private func line(timeout: TimeInterval = 90) async throws -> String {
         try Task.checkCancellation()
         var searchOffset = bufferOffset
         while true {
@@ -299,7 +463,7 @@ public actor IMAPConnection {
                 consume(range.upperBound - bufferOffset); return result
             }
             guard buffer.count - bufferOffset <= 4 * 1024 * 1024 else { throw MailError.message("邮件服务器响应行过长。") }
-            searchOffset = max(bufferOffset, buffer.count - 1); try await receive()
+            searchOffset = max(bufferOffset, buffer.count - 1); try await receive(timeout: timeout)
         }
     }
     private func read(_ count: Int) async throws -> Data {
@@ -317,9 +481,9 @@ public actor IMAPConnection {
         if bufferOffset == buffer.count { buffer = Data(); bufferOffset = 0 }
         else if bufferOffset >= 256 * 1024 { buffer = Data(buffer[bufferOffset...]); bufferOffset = 0 }
     }
-    private func receive() async throws {
+    private func receive(timeout: TimeInterval = 90) async throws {
         guard let c = connection else { throw MailError.message("邮件连接未建立。") }
-        let data = try await MailNetworkIO.receive(c)
+        let data = try await MailNetworkIO.receive(c, timeout: timeout)
         guard connection === c else { throw CancellationError() }; buffer.append(data)
     }
     private func write(_ data: Data) async throws {

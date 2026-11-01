@@ -27,7 +27,7 @@ struct MailSyncButton: View {
                     Text(L10n.status(model.syncStatus)).font(Theme.label).textSelection(.enabled)
                     if let progress = model.mailSyncProgress {
                         if let fraction = progress.fraction { ProgressView(value: fraction).progressViewStyle(.linear) }
-                        if progress.total > 0 { Text(L10n.format("已核对 {0}/{1} · 本轮下载 {2} 封", "\(progress.processed)", "\(progress.total)", "\(progress.downloaded)")).font(Theme.label) }
+                        if progress.total > 0 { Text(L10n.format("下载 {0}/{1} · 本轮已保存原文 {2}", "\(progress.processed)", "\(progress.total)", "\(progress.downloaded)")).font(Theme.label) }
                     }
                     let processing = model.mailProcessingProgress
                     Text(L10n.format("后台加工：已整理 {0} · 等待 {1}", "\(processing.completed)", "\(processing.pending)")).font(Theme.label)
@@ -49,7 +49,7 @@ struct MailSyncStatusLine: View {
             Text(L10n.status(model.syncStatus)).lineLimit(1).help(L10n.status(model.syncStatus))
             if let progress = model.mailSyncProgress, let fraction = progress.fraction {
                 ProgressView(value: fraction).progressViewStyle(.linear).frame(width: 80)
-                Text(L10n.format("核对 {0}/{1} · 已保存原文 {2}", "\(progress.processed)", "\(progress.total)", "\(progress.downloaded)")).monospacedDigit().lineLimit(1)
+                Text(L10n.format("下载 {0}/{1} · 本轮已保存原文 {2}", "\(progress.processed)", "\(progress.total)", "\(progress.downloaded)")).monospacedDigit().lineLimit(1)
             }
             Spacer(minLength: 0)
             Button(L10n.t("停止本次同步")) { model.stopMailSynchronization() }.buttonStyle(.link)

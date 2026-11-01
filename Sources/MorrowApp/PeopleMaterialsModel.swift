@@ -47,6 +47,7 @@ extension AppModel {
         var value = currentContextSnapshot; value.scopeMode = "hint"; return value
     }
     private var currentContextSnapshot: WorkspaceContext {
+        if workspacePage == .briefs, let artifact = selectedBrief { var context = WorkspaceContext(page: "brief", label: artifact.title, mailIDs: artifact.sourceMailIDs, runID: artifact.runID); context.artifactID = artifact.id; return context }
         if let preview = attachmentTextPreview, let record = attachmentRecords.first(where: { $0.attachment.id == preview.id }) { return .init(page: "attachments", label: preview.name, mailIDs: [record.mail.id], attachmentIDs: [record.id]) }
         if let draft = composer { var c = WorkspaceContext(page: "compose", label: draft.subject.isEmpty ? "正在编辑邮件草稿" : draft.subject); c.draftID = draft.id; c.accountID = draft.accountID; return c }
         if workspacePage == .mail && destination == .drafts { return WorkspaceContext(page: "drafts", label: "草稿箱") }

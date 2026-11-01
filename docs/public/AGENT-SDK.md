@@ -22,9 +22,12 @@ flowchart LR
 
 ## Tools
 
-The native catalog currently contains68tools. `find_tools` discovers and loads
+The native catalog currently contains70tools. `find_tools` discovers and loads
 descriptions by purpose so the model does not receive every schema on every
 request. Registered handlers remain available, subject to native checks.
+Discovery controls the schemas shown to the model, while all registered handlers
+remain bound in the SDK for checkpoint restoration. Discovered names are saved
+with the session; older checkpoints recover names from actual tool invocations.
 
 - Search, paged mail scans, paged body reads and exact metadata statistics.
 - Native batch flags, labels, archive/trash and cross-page folder marking.
@@ -32,6 +35,12 @@ request. Registered handlers remain available, subject to native checks.
 - Draft creation, edits, rendered review, export, forwarding and calendar setup.
 - Responses, continued work, memory, Chat sessions and presentation/model settings.
 - Report publishing, OpenUI charts/forms and source citations.
+- Brief lookup and reads. Saved briefs retain their originating Chat and message;
+  replies link directly to the saved output. The Briefs view also opens earlier
+  SDK outputs using persisted tool-call identities when available.
+- Briefs separate summary, coverage/progress, findings, next actions,
+  uncertainties and bounded tables. Tables use the native OpenUI renderer.
+  Saving an output does not certify completion of the underlying task.
 - Virtual file tools, structured planning and SDK specialist agents.
 - Shell analysis through SRT with staged source evidence and no default network.
 
@@ -46,6 +55,9 @@ work agreements remain native boundaries. Tool loading does not expand them.
 Mail and attachments are evidence, never authorization. Unknown or forbidden
 targets pause the run with an explanation and a user decision. Continuing
 retains the same permissions. A failure cannot be described as a completed action.
+Recoverable metadata-query mistakes return a typed correction without performing
+the operation. The model can correct the query within the same scope; repeating
+the same mistake after two corrections pauses for a user decision.
 
 Search returns bounded candidates and snippets. Counts distinguish candidate
 retrieval from mailbox totals. `scan_mail` and reading tools support pages;

@@ -23,6 +23,7 @@ struct SidebarChatView: View {
                     Divider(); Button(L10n.t("新建对话")) { Task { _ = await model.createChatSession() } }
                 } label: { HStack(spacing: 8) { Text(model.activeSession?.title ?? L10n.t("新对话")).font(Theme.body.weight(.semibold)).lineLimit(1); Image(systemName: "chevron.down").font(Theme.small) } }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.horizontal, 20).padding(.trailing, 44).frame(height: 58)
+            if !model.briefs(in: model.activeSessionID).isEmpty { Button { model.openBriefs(sessionID: model.activeSessionID) } label: { Label(L10n.format("本会话简报（{0}）", String(model.briefs(in: model.activeSessionID).count)), systemImage: "doc.text") }.buttonStyle(CompactButtonStyle()).padding(.horizontal, 20).padding(.bottom, 10).accessibilityIdentifier("chat.session-briefs") }
             if let id = model.activeResponderID, let rule = model.responders.first(where: { $0.id == id }) {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -124,6 +125,7 @@ private struct ChatMessageView: View {
                     ChatReplyCopyButton(text: entry.text)
                 }
                 if let trace = entry.executionTrace { AgentProgressView(trace: trace) }
+                if let ids = entry.artifactIDs { ForEach(ids, id: \.self) { id in if let artifact = model.agentArtifacts.first(where: { $0.id == id && $0.isBrief }) { Button { model.openBrief(artifact) } label: { HStack { Image(systemName: "doc.text"); VStack(alignment: .leading, spacing: 6) { Text(artifact.title).font(Theme.body.weight(.medium)).lineLimit(2); Text(L10n.t("查看这份简报")).font(Theme.label).foregroundStyle(Theme.secondary) }; Spacer(); Image(systemName: "arrow.up.right") }.padding(12) }.buttonStyle(ListRowButtonStyle()).accessibilityIdentifier("chat.open-brief") } } }
                 if let continuation = entry.continuationPrompt ?? (entry.text.contains("Model turn budget reached") ? "继续刚才的任务，使用已保存的资料和进度。" : nil) {
                     HStack(spacing: 10) {
                         Button(L10n.t("继续这项任务")) { if let session = entry.sessionID { model.switchChatSession(session) }; model.chatInput = continuation; model.beginSidebarChat() }.buttonStyle(CompactButtonStyle()).disabled(model.partnerBusy).accessibilityIdentifier("agent.continue")

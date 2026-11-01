@@ -3,6 +3,27 @@ import XCTest
 
 final class AgentSDKTests: XCTestCase {
     private func json(_ value: String) throws -> OpenUIJSON { try JSONDecoder().decode(OpenUIJSON.self, from: Data(value.utf8)) }
+    func testDiscoveredToolSurvivesResumeAndLegacyCheckpointWithoutCatalog() async throws {
+        #if os(macOS)
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try MailStore(root: root), checkpoints = try AgentCheckpointStore(root: root), runtime = try AgentSDKRuntime(runtimeDirectory: directory), spy = SDKDiscoveryFixture(); _ = store
+        var request = try json(#"{"type":"start","sessionID":"discovery","instruction":"List my materials","systemPrompt":"Discover tools then list materials","budget":{"modelTurns":1},"tools":[{"name":"list_materials","description":"List uploaded materials","parameters":{"type":"object","properties":{}}}]}"#).object
+        let handle: @Sendable (String, OpenUIJSON, @escaping @Sendable (String) async throws -> Void) async throws -> OpenUIJSON = { method, params, _ in
+            if method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: "discovery") }
+            return try await spy.handle(method, params)
+        }
+        let first = try await runtime.run(.object(request), maximumSeconds: 30, handle: handle, event: { _ in }); XCTAssertEqual(first.paused, true)
+        request["resume"] = .string("Continue")
+        let second = try await runtime.run(.object(request), maximumSeconds: 30, handle: handle, event: { _ in }); XCTAssertEqual(second.paused, true)
+        _ = try await checkpoints.handle(method: "state.remove", params: .object(["key": .string("enabled_tools")]), sessionID: "discovery")
+        let third = try await runtime.run(.object(request), maximumSeconds: 30, handle: handle, event: { _ in })
+        XCTAssertEqual(third.text, "Materials verified"); XCTAssertEqual(third.paused, false)
+        let calls = await spy.calls; XCTAssertEqual(calls, 1)
+        #else
+        throw XCTSkip("SDK process test requires macOS")
+        #endif
+    }
     func testToolBudgetStopsBeforeExecutingExcessToolsAndRetainsState() async throws {
         #if os(macOS)
         let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
@@ -115,6 +136,20 @@ final class AgentSDKTests: XCTestCase {
         #else
         throw XCTSkip("SDK subprocess runs on macOS")
         #endif
+    }
+}
+
+private actor SDKDiscoveryFixture {
+    var turns = 0
+    var calls = 0
+    func handle(_ method: String, _ params: OpenUIJSON) throws -> OpenUIJSON {
+        if method == "tool" { calls += 1; return .array([]) }
+        guard method == "model" else { throw MailError.message("Unknown fixture method") }
+        turns += 1
+        if turns == 3 { return .object(["content": .string("Materials verified"), "toolCalls": .array([])]) }
+        let name = turns == 1 ? "find_tools" : "list_materials"
+        let args: OpenUIJSON = turns == 1 ? .object(["query": .string("material")]) : .object([:])
+        return .object(["content": .string(""), "toolCalls": .array([.object(["id": .string("discovery-\(turns)"), "name": .string(name), "args": args])])])
     }
 }
 

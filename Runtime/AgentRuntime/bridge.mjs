@@ -18,8 +18,8 @@ const text = value => typeof value === 'string' ? value : Array.isArray(value) ?
 class NativeModel {
   turns = 0;
   async getResponse(request) {
-    ++this.turns;
-    const startedAt = Date.now(); emit({ type: 'phase', stage: 'model', step: this.turns, startedAt });
+    const step = ++this.turns;
+    const startedAt = Date.now(); emit({ type: 'phase', stage: 'model', step, startedAt });
     const messages = request.systemInstructions ? [{ role: 'system', content: request.systemInstructions }] : [];
     const items = typeof request.input === 'string' ? [{ role: 'user', content: request.input }] : request.input;
     const replayGroups = new Set();
@@ -31,10 +31,10 @@ class NativeModel {
       else if (item.type === 'function_call_result') messages.push({ role: 'tool', tool_call_id: item.callId, content: text(item.output) });
       else if (item.role) messages.push({ role: item.role, content: text(item.content) });
     }
-    const tools = [...request.tools.filter(x => x.type === 'function').map(x => ({ type: 'function', function: { name: x.name, description: x.description, parameters: x.parameters, strict: false } })),
+    const tools = [...request.tools.filter(x => x.type === 'function' && (!this.nativeNames?.has(x.name) || this.visibleNames?.has(x.name))).map(x => ({ type: 'function', function: { name: x.name, description: x.description, parameters: x.parameters, strict: false } })),
       ...request.handoffs.map(x => ({ type: 'function', function: { name: x.toolName, description: x.toolDescription, parameters: x.inputJsonSchema, strict: false } }))];
     const response = await rpc('model', { messages, tools, maxTokens: request.modelSettings.maxTokens ?? 1800, toolChoice: 'auto' }, chunk => emit({ type: 'text_delta', text: chunk }));
-    emit({ type: 'model_timing', step: this.turns, elapsedMs: Date.now() - startedAt, ...(response.timing ?? {}), model: response.model });
+    emit({ type: 'model_timing', step, elapsedMs: Date.now() - startedAt, ...(response.timing ?? {}), model: response.model });
     const output = (response.toolCalls ?? []).map(call => ({ type: 'function_call', id: call.id, callId: call.id, name: call.name, arguments: JSON.stringify(call.args), status: 'completed' }));
     if (response.content) output.push({ type: 'message', role: 'assistant', id: randomUUID(), status: 'completed', content: [{ type: 'output_text', text: response.content }] });
     if (response.replay && output.length) { const group = randomUUID(); output.forEach(x => { x.providerData = { morrowGroup: group }; }); output[0].providerData.morrowReplay = response.replay; }
@@ -57,6 +57,22 @@ export async function runAgent(request) {
   const turnBudget = Math.min(512, Math.max(1, request.budget?.modelTurns ?? 128));
   const toolBudget = Math.min(4096, Math.max(1, request.budget?.toolCalls ?? 1024));
   const enabled = new Set(['search_mail', 'scan_mail', 'read_mail', 'mail_statistics', 'cite_sources', 'render_ui', 'list_accounts', 'workspace_state', 'prepare_draft', 'read_draft', 'update_draft']);
+  const registeredNames = new Set(request.tools.map(x => x.name));
+  model.nativeNames = registeredNames; model.visibleNames = enabled;
+  const saved = await rpc('state.get', {key:'run'});
+  const savedTools = await rpc('state.get', {key:'enabled_tools'});
+  for (const name of Array.isArray(savedTools) ? savedTools : []) if (registeredNames.has(name)) enabled.add(name);
+  // Earlier checkpoints did not persist discovery. Recover actual invocation
+  // identities before the SDK resolves its serialized tool references.
+  const recoverTools = value => {
+    if (!value || typeof value !== 'object') return;
+    for (const name of [value.type === 'function_call' ? value.name : undefined, value.toolName, value.function?.name]) if (registeredNames.has(name)) enabled.add(name);
+    if (value.toolUseTracker) for (const names of Object.values(value.toolUseTracker)) for (const name of Array.isArray(names) ? names : []) if (registeredNames.has(name)) enabled.add(name);
+    if (value.pendingAgentToolRuns) for (const state of Object.values(value.pendingAgentToolRuns)) if (typeof state === 'string') recoverTools(JSON.parse(state));
+    for (const child of Object.values(value)) if (child && typeof child === 'object') recoverTools(child);
+  };
+  if (saved) recoverTools(JSON.parse(saved));
+  recoverTools(await session.getItems());
   let toolCalls = 0, plan = await rpc('state.get', { key: 'plan' }) ?? [];
   const readCache = new Map();
   const cachedTools = new Set(['search_mail','read_mail','read_attachment','read_material']);
@@ -69,7 +85,8 @@ export async function runAgent(request) {
   };
   const tools = request.tools.map(description => tool({
     name: description.name, description: description.description, parameters: description.parameters, strict: false,
-    isEnabled: () => enabled.has(description.name),
+    // Binding remains available to checkpoint restoration; NativeModel controls
+    // the discovered schemas shown to the model. Swift still checks authority.
     needsApproval: description.name === 'render_ui' ? async (context, args, callId) => !!(await native(description, args, callId))?.requiresUserInput : false,
     execute: async (args, context, details) => {
       const result = await native(description, args, details?.toolCall?.callId ?? randomUUID());
@@ -79,13 +96,14 @@ export async function runAgent(request) {
   }));
   tools.push(tool({ name: 'find_tools', description: '按中文或英文目的查找并加载更多邮件、草稿、联系人、附件、设置、会话、响应器工具；offset继续查看。',
     parameters: z.object({ query: z.string(), offset: z.number().int().min(0).optional() }),
-    execute: ({ query, offset = 0 }) => {
+    execute: async ({ query, offset = 0 }) => {
       const groups = [[/草稿|回复|draft|reply|compose/i, /draft|reply|compose|forward/], [/联系人|画像|contact/i, /contact/], [/附件|文件|分析|attachment|material|report|code/i, /attachment|material|report|code/], [/记忆|memory/i, /memor|remember/], [/设置|模型|主题|语言|布局|settings|model|theme|language|density/i, /settings|model|theme|language|density/], [/会话|session/i, /session/], [/响应|委托|responder|delegate/i, /responder|delegation/], [/邮件|邮箱|批量|标记|mail|folder/i, /mail|folder|account|search/]];
       const patterns = groups.filter(([test]) => test.test(query)).map(([, test]) => test);
       let found = request.tools.filter(x => patterns.some(test => test.test(x.name)) || x.name.includes(query) || x.description.includes(query));
       if (!found.length) found = request.tools;
       const terms = query.toLowerCase().split(/[\s,，]+/); const score = x => terms.reduce((n, t) => n + (x.name.includes(t) ? 10 : 0) + (x.description.includes(t) ? 5 : 0), 0);
       found.sort((a,b) => score(b)-score(a)); const page = found.slice(offset, offset + 24); page.forEach(x => enabled.add(x.name));
+      await rpc('state.set', {key:'enabled_tools', value:[...enabled].filter(name => registeredNames.has(name)).sort()});
       return { total: found.length, nextOffset: offset + page.length < found.length ? offset + page.length : null, tools: page.map(x => ({ name: x.name, description: x.description.slice(0, 180) })) };
     },
   }));
@@ -101,7 +119,7 @@ export async function runAgent(request) {
   tools.push(tool({ name: 'write_file', description: '创建或替换虚拟工作文件，最多128 KiB；交付给用户请用save_report。', parameters: z.object({ path: z.string(), content: z.string() }), execute: async ({ path, content }) => { if (Buffer.byteLength(content)>128*1024) throw new Error('File too large'); files[filePath(path)]=content; await saveFiles(); return { saved:true }; } }));
   tools.push(tool({ name: 'edit_file', description: '在虚拟文件中做精确文字替换。', parameters: z.object({ path:z.string(), oldText:z.string(), newText:z.string() }), execute: async ({path,oldText,newText}) => { path=filePath(path); if (!oldText || !files[path]?.includes(oldText)) throw new Error('Exact text not found'); files[path]=files[path].replace(oldText,newText); await saveFiles(); return {saved:true}; } }));
   tools.push(tool({ name:'grep_files', description:'按文字搜索本会话虚拟文件。', parameters:z.object({ query:z.string() }), execute:({query}) => Object.keys(files).filter(path=>files[path].includes(query)) }));
-  const instructions = request.systemPrompt + '\n复杂任务先用write_plan给出简短计划，并按实际进度更新。先取得足够事实再交付，不重复读取已取得资料。更多工具用find_tools发现。发生工具或模型问题时保存进度，说明具体原因和已完成部分，询问用户后再继续。';
+  const instructions = request.systemPrompt + '\n复杂任务先用write_plan给出简短计划，并按实际进度更新。先取得足够事实再交付，不重复读取已取得资料。更多工具用find_tools发现。工具明确返回recoverable查询参数提示时，在原有权限和任务范围内修正并继续；真正的执行、权限、网络或模型故障保存进度，说明原因和已完成部分，询问用户后再继续。';
   const specialist = new Agent({ name:'Morrow research', instructions:'处理被委托的邮件或附件分析任务，只根据工具事实，简短返回结论和来源。\n'+instructions, model, tools });
   tools.push(specialist.asTool({ toolName:'delegate_task', toolDescription:'把明确的邮件或附件分析子任务交给独立SDK Agent处理，继承相同原生权限。', runOptions:{maxTurns:turnBudget} }));
   // The same registered tools are used by specialist runs. Count invocations
@@ -115,7 +133,7 @@ export async function runAgent(request) {
       emit({type:'phase',stage:'tool_start',name:registered.name,id,step,startedAt});
       try {
         const result = await invoke(context,input,details);
-        let failed=false;try{failed=JSON.parse(result)?.ok===false}catch{}
+        let failed=false;try{failed=(typeof result === 'string' ? JSON.parse(result) : result)?.ok===false}catch{}
         emit({type:'phase',stage:failed?'tool_error':'tool_end',name:registered.name,id,step,elapsedMs:Date.now()-startedAt});
         return result;
       } catch (error) {
@@ -128,7 +146,7 @@ export async function runAgent(request) {
   const runner = new Runner({ tracingDisabled:true, modelSettings:{ maxTokens:1800 } });
   if (plan.length) emit({type:'plan',steps:plan});
   let input = request.instruction;
-  const saved = await rpc('state.get',{key:'run'}), context = {userChoice:request.resume};
+  const context = {userChoice:request.resume};
   let maxTurns = turnBudget;
   if (saved && request.resume !== undefined) {
     const snapshot = JSON.parse(saved);

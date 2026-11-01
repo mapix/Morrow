@@ -52,7 +52,8 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var responderEditor: MailResponder?
     @Published var openUIInteractions: [OpenUIInteraction] = []
     @Published var events: [PartnerEvent] = []
-    @Published var chat: [PartnerChat] = [] { didSet { chatsBySession = Dictionary(grouping: chat, by: { $0.sessionID ?? "legacy" }).mapValues { $0.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date } } } }
+    @Published var chat: [PartnerChat] = [] { didSet { chatsBySession = Dictionary(grouping: chat, by: { $0.sessionID ?? "legacy" }).mapValues { $0.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date } }; rebuildBriefConversationOrigins() } }
+    var briefConversationOrigins: [String: BriefConversationOrigin] = [:]
     private var chatsBySession: [String: [PartnerChat]] = [:]
     @Published var chatSessions: [ChatSession] = [] { didSet { sessionsByID = Dictionary(chatSessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }); let ordered = chatSessions.sorted(by: ChatSession.sidebarPrecedes); activeSessionsProjection = ordered.filter { !$0.archived }; archivedSessionsProjection = ordered.filter(\.archived) } }
     private var sessionsByID: [String: ChatSession] = [:]
@@ -76,6 +77,8 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var contactProfiles: [ContactProfile] = []
     @Published var selectedContactEmail: String?
     @Published var selectedAttachmentIDs = Set<String>()
+    @Published var selectedBriefID: String?
+    @Published var briefSessionFilter: String?
     @Published var attachmentQuery = ""
     @Published var attachmentKind = "全部"
     @Published var chatInput = ""
@@ -157,6 +160,10 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var started = false
     @Published var ready = false
     private var timerTask: Task<Void, Never>?
+    let mailRealtimeMonitor = MailRealtimeMonitor()
+    var pendingRealtimeAccounts: Set<String> = []
+    var mailRealtimeSuspendedUntil = Date.distantPast
+    var realtimeSyncTask: Task<Void, Never>?
     private var processingTask: Task<Void, Never>?
     private var indexFailure: String?
     private var analysisTask: Task<Void, Never>?
@@ -323,6 +330,7 @@ enum Destination: String, CaseIterable, Identifiable {
                     try? await Task.sleep(for: .seconds(15))
                     guard let self else { return }
                     await self.runResponders(); await self.sendPending(); await self.runDelegations()
+                    await self.refreshMailRealtimeMonitoring()
                     if Date().timeIntervalSince(lastSync) >= Double(max(60, self.settings.syncInterval)) {
                         lastSync = Date(); await self.sync(); self.process()
                     }
@@ -410,11 +418,13 @@ enum Destination: String, CaseIterable, Identifiable {
         Task { await sync() }
     }
     func removeAccount(_ account: MailAccount) async {
-        do { try await store.deleteAccount(account.id); SecretStore.delete(accountID: account.id); accounts.removeAll { $0.id == account.id }; folders.removeAll { $0.accountID == account.id }; await reload() } catch { self.error = error.localizedDescription }
+        do { try await store.deleteAccount(account.id); SecretStore.delete(accountID: account.id); accounts.removeAll { $0.id == account.id }; folders.removeAll { $0.accountID == account.id }; await refreshMailRealtimeMonitoring(); await reload() } catch { self.error = error.localizedDescription }
     }
     func sync(accountID: String? = nil) async {
         guard !realAccounts.isEmpty else { return }
+        mailRealtimeSuspendedUntil = .distantPast
         await runMailSynchronization { await self.performMailboxSync(accountID: accountID) }
+        scheduleRealtimeMailSync()
     }
     func runMailSynchronization(_ operation: @escaping @MainActor () async -> Void) async {
         guard mailboxSyncTask == nil else { return }
@@ -425,6 +435,8 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     func stopMailSynchronization() {
         guard let task = mailboxSyncTask else { return }
+        pendingRealtimeAccounts.removeAll(); mailRealtimeSuspendedUntil = Date().addingTimeInterval(Double(max(60, settings.syncInterval)))
+        realtimeSyncTask?.cancel()
         syncStatus = L10n.t("正在停止本次同步…")
         task.cancel()
     }
@@ -435,69 +447,66 @@ enum Destination: String, CaseIterable, Identifiable {
         var failures: [String] = []; var newCount = 0
         for account in realAccounts where account.enabled && (accountID == nil || account.id == accountID) {
             if Task.isCancelled { break }
-            let failureStart = failures.count; await setAccountSyncState(account, syncing: true)
+            let failureStart = failures.count; var yieldedToIncoming = false
+            await setAccountSyncState(account, syncing: true)
             do {
                 let secret = try await credentials.credential(account)
                 syncStatus = "正在连接 \(account.name)"
                 if account.usesPOP { let result = try await syncPOP(account, secret: secret); newCount += result.0; failures += result.1; await setAccountSyncState(account, syncing: false, error: result.1.isEmpty ? nil : result.1.joined(separator: "\n")); continue }
                 let remoteFolders = try await transport.folders(account, password: secret)
                 folders.removeAll { $0.accountID == account.id }; folders += remoteFolders
-                for folder in remoteFolders {
+                await refreshMailRealtimeMonitoring()
+                folderSynchronization: for folder in remoteFolders {
                     try Task.checkCancellation()
                     try await store.save(folder, kind: "folder", id: folder.id)
                     syncStatus = "正在同步 \(account.name) / \(folder.name)"
                     mailSyncProgress = .init(downloaded: newCount)
                     let inventoryStarted = Date()
-                    let (validity, flags) = try await transport.inventory(account, folder: folder.path, password: secret)
+                    let cursor = try await store.mailSyncCursor(account: account, folder: folder.path)
+                    let inventory = try await transport.syncInventory(account, folder: folder.path, cursor: cursor, password: secret)
+                    let validity = inventory.validity
+                    var flags = inventory.flags
                     bulkSeenOverrides = bulkSeenOverrides.filter { key, value in key.account != account.id || key.folder != folder.path || (key.validity == validity && value.1 > inventoryStarted) }
+                    let updates = flags.map { uid, flag -> MailRemoteFlagUpdate in
+                        let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
+                        return .init(id: "\(account.id):\(folder.path):\(validity):\(uid)", read: seen?.0 ?? flag.read, starred: flag.starred, overrideModifiedAt: seen?.1)
+                    }
+                    let deleted = try await store.commitMailSyncInventory(inventory, account: account, folder: folder.path, updates: updates, inventoryStarted: inventoryStarted)
+                    for id in deleted { indexPending.removeValue(forKey: id) }
+                    if !deleted.isEmpty { await reload() }
+                    replaceCachedMails(try await store.messageSummaries(ids: Set(updates.map(\.id))).map(\.displayMessage))
                     let existing = try await store.syncRecords(account: account.id, folder: folder.path)
-                    let localFlags = mailProjection.byID
-                    var flagUpdates: [MailRemoteFlagUpdate] = []
-                    let byUID = Dictionary(uniqueKeysWithValues: existing.filter { $0.uidValidity == validity && $0.uid > 0 }.map { ($0.uid, $0) })
-                    let ordered = flags.sorted(by: { $0.key > $1.key })
+                    let localUIDs = Set(existing.filter { $0.uidValidity == validity }.map(\.uid))
                     let queued = try await store.queuedMailDownloads()
-                    for job in queued where job.accountID == account.id && job.folder == folder.path && job.validity != validity { try await store.discardQueuedMailDownload(job) }
                     let queuedUIDs = Set(queued.filter { $0.accountID == account.id && $0.folder == folder.path && $0.validity == validity }.map(\.uid))
-                    let newUIDs = ordered.map(\.key).filter { byUID[$0] == nil && !queuedUIDs.contains($0) }
+                    let newUIDs = inventory.presentUIDs.subtracting(localUIDs).subtracting(queuedUIDs).sorted(by: >)
                     var batchCursor = 0, batchEnabled = true
                     var readyBodies: [UInt64: Data] = [:]
                     var lastProgress = Date.distantPast
-                    for (position, entry) in ordered.enumerated() {
+                    for (position, uid) in newUIDs.enumerated() {
                         try Task.checkCancellation()
-                        let (uid, flag) = entry
+                        if position > 0, readyBodies.isEmpty, !pendingRealtimeAccounts.isEmpty {
+                            yieldedToIncoming = true; break folderSynchronization
+                        }
                         if Date().timeIntervalSince(lastProgress) >= 0.25 {
-                            mailSyncProgress = .init(processed: position, total: ordered.count, downloaded: newCount)
+                            mailSyncProgress = .init(processed: position, total: newUIDs.count, downloaded: newCount)
                             lastProgress = Date()
                         }
-                        if let old = byUID[uid] {
-                            let missing = localFlags[old.id] == nil ? try await store.messageSummaries(ids: [old.id]).first?.displayMessage : nil
-                            guard let mail = localFlags[old.id] ?? missing else { continue }
-                            if mail.localFlagModifiedAt.map({ $0 > inventoryStarted }) == true { continue }
-                            let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
-                            if mail.isRead != (seen?.0 ?? flag.read) || mail.isStarred != flag.starred {
-                                flagUpdates.append(.init(id: mail.id, read: seen?.0 ?? flag.read, starred: flag.starred, overrideModifiedAt: seen?.1))
-                                if flagUpdates.count == 128 {
-                                    _ = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
-                                    replaceCachedMails(try await store.messageSummaries(ids: Set(flagUpdates.map(\.id))).map(\.displayMessage))
-                                    flagUpdates.removeAll(keepingCapacity: true)
-                                }
-                            }
-                        } else {
-                            if queuedUIDs.contains(uid) { continue }
-                            do {
-                                let fetchStarted = ProcessInfo.processInfo.systemUptime
-                                if readyBodies.isEmpty && batchEnabled && batchCursor < newUIDs.count && newUIDs[batchCursor] == uid {
-                                    let batch = Array(newUIDs[batchCursor..<min(batchCursor + 64, newUIDs.count)])
-                                    batchCursor += batch.count
-                                    do {
-                                        readyBodies = try await transport.fetchRawMany(account, folder: folder.path, uids: batch, validity: validity, password: secret)
-                                        mailProcessingProgress.networkSeconds = ProcessInfo.processInfo.systemUptime - fetchStarted
-                                        mailProcessingProgress.networkCount = readyBodies.count
-                                        mailProcessingProgress.networkBytes = readyBodies.values.reduce(0) { $0 + $1.count }
-                                        let timing = await transport.downloadTiming
-                                        mailProcessingProgress.sizeQuerySeconds = timing.sizeSeconds; mailProcessingProgress.bodyDownloadSeconds = timing.bodySeconds
-                                        MailReaderMetrics.record("sync_raw_batch_download", since: fetchStarted)
-                                    } catch { if Task.isCancelled { throw CancellationError() }; MailReaderMetrics.failure("sync_batch_fallback", error: error); batchEnabled = false; readyBodies = [:] }
+                        do {
+                            let fetchStarted = ProcessInfo.processInfo.systemUptime
+                            if readyBodies.isEmpty && batchEnabled && batchCursor < newUIDs.count && newUIDs[batchCursor] == uid {
+                                let batch = Array(newUIDs[batchCursor..<min(batchCursor + 64, newUIDs.count)])
+                                batchCursor += batch.count
+                                do {
+                                    readyBodies = try await transport.fetchRawMany(account, folder: folder.path, uids: batch, validity: validity, password: secret)
+                                    mailProcessingProgress.networkSeconds = ProcessInfo.processInfo.systemUptime - fetchStarted
+                                    mailProcessingProgress.networkCount = readyBodies.count
+                                    mailProcessingProgress.networkBytes = readyBodies.values.reduce(0) { $0 + $1.count }
+                                    let timing = await transport.downloadTiming
+                                    mailProcessingProgress.sizeQuerySeconds = timing.sizeSeconds; mailProcessingProgress.bodyDownloadSeconds = timing.bodySeconds
+                                    MailReaderMetrics.record("sync_raw_batch_download", since: fetchStarted)
+
+                        } catch { if Task.isCancelled { throw CancellationError() }; MailReaderMetrics.failure("sync_batch_fallback", error: error); batchEnabled = false; readyBodies = [:] }
                                 }
                                 let raw: Data
                                 if let prepared = readyBodies.removeValue(forKey: uid) { raw = prepared }
@@ -505,26 +514,26 @@ enum Destination: String, CaseIterable, Identifiable {
                                     raw = try await transport.fetchRaw(account, folder: folder.path, uid: uid, validity: validity, password: secret)
                                     MailReaderMetrics.record("sync_raw_download", since: fetchStarted)
                                 }
+                                if flags[uid] == nil {
+                                    let missing = Array(newUIDs[position..<min(position + 64, newUIDs.count)]).filter { flags[$0] == nil }
+                                    flags.merge(try await transport.syncFlags(account, folder: folder.path, uids: missing, validity: validity, password: secret), uniquingKeysWith: { _, new in new })
+                                }
+                                guard let flag = flags[uid] else { throw MailError.message("邮件已在服务器移除，下一次增量同步将更新清单。") }
                                 let job = MailDownloadJob(accountID: account.id, folder: folder.path, uid: uid, validity: validity,
                                     read: flag.read, starred: flag.starred, byteCount: raw.count, inventoryStarted: inventoryStarted)
                                 let staged = ProcessInfo.processInfo.systemUptime
                                 if try await enqueueDownloadedMail(raw, job: job) { newCount += 1 }
                                 MailReaderMetrics.record("sync_raw_stage", since: staged)
-                            } catch { if Task.isCancelled { throw CancellationError() }; failures.append(account.name + " / " + folder.name + " / UID \(uid)：" + error.localizedDescription) }
-                        }
+                        } catch { if Task.isCancelled { throw CancellationError() }; failures.append(account.name + " / " + folder.name + " / UID \(uid)：" + error.localizedDescription) }
                     }
-                    mailSyncProgress = .init(processed: ordered.count, total: ordered.count, downloaded: newCount)
-                    _ = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
-                    replaceCachedMails(try await store.messageSummaries(ids: Set(flagUpdates.map(\.id))).map(\.displayMessage))
-                    var deleted = false
-                    for old in existing where old.uid > 0 && (old.uidValidity != validity || flags[old.uid] == nil) { try Task.checkCancellation(); try await store.deleteMessage(old.id); deleted = true; indexPending.removeValue(forKey: old.id) }
-                    if deleted { await reload() }
+                    mailSyncProgress = .init(processed: newUIDs.count, total: newUIDs.count, downloaded: newCount)
                 }
             } catch {
                 if Task.isCancelled { await setAccountSyncState(account, syncing: false, completed: false); break }
                 failures.append(account.name + "：" + error.localizedDescription)
             }
-            let ownFailures = Array(failures.dropFirst(failureStart)); await setAccountSyncState(account, syncing: false, error: ownFailures.isEmpty ? nil : ownFailures.joined(separator: "\n"))
+            let ownFailures = Array(failures.dropFirst(failureStart)); await setAccountSyncState(account, syncing: false, error: ownFailures.isEmpty ? nil : ownFailures.joined(separator: "\n"), completed: !yieldedToIncoming)
+            if yieldedToIncoming { break }
         }
         if Task.isCancelled {
             syncStatus = L10n.t("已停止本次同步，已下载的邮件已保留。")
@@ -535,6 +544,7 @@ enum Destination: String, CaseIterable, Identifiable {
         syncStatus = failures.isEmpty ? "同步于 " + Date().uiFormatted(date: .omitted, time: .shortened) : failures.joined(separator: "\n")
         if newCount > 0 { await log("收到 \(newCount) 封邮件", detail: "原始邮件已保存，后台正在独立解析、索引和整理。", kind: "sync") }
         if !failures.isEmpty { if syncStatus != lastSyncFailure { error = syncStatus }; lastSyncFailure = syncStatus } else { lastSyncFailure = nil }
+        scheduleRealtimeMailSync()
     }
     func downloadSeenOverride(_ job: MailDownloadJob) -> (Bool, Date)? { bulkSeenValue(account: job.accountID, folder: job.folder, validity: job.validity, uid: job.uid, inventoryStarted: job.inventoryStarted) }
     private func syncPOP(_ account: MailAccount, secret: String) async throws -> (Int, [String]) {

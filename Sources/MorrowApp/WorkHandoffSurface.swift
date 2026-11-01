@@ -64,7 +64,7 @@ private struct HandoffCard: View {
     private var decision: AgentDecision? { model.pendingDecisions.first { $0.runID == run.id } }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .firstTextBaseline) { Text(run.title).font(Theme.heading); Spacer(); AgentPhaseLabel(phase: run.phase) }
+            HStack(alignment: .firstTextBaseline) { Text(run.title).font(Theme.heading); Spacer(); if run.phase == .completed && run.id.hasPrefix("sdk-chat:") && artifact?.isBrief == true { Text(L10n.t("已保存")).font(Theme.label).foregroundStyle(Theme.secondary) } else { AgentPhaseLabel(phase: run.phase) } }
             Text(agentMessage).font(Theme.reader).foregroundStyle(Theme.secondary).lineSpacing(5)
             if let artifact {
                 VStack(alignment: .leading, spacing: 12) { Text(artifact.title).font(Theme.body.weight(.medium)); Text(preview(artifact.content)).font(Theme.reader).foregroundStyle(Theme.secondary).lineSpacing(5).lineLimit(6).textSelection(.enabled) }.padding(.vertical, 16).overlay(alignment: .top) { Rectangle().fill(Theme.rule).frame(height: 1) }.overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }

@@ -68,10 +68,11 @@ extension AppModel {
         await saveDraft(draft); guard var artifact = agentArtifacts.first(where: { $0.id == artifactID }) else { return }; artifact.content = draft.body; artifact.title = draft.subject; await saveArtifact(artifact)
     }
     func saveReportEdit(_ text: String, artifactID: String) async {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, var artifact = agentArtifacts.first(where: { $0.id == artifactID }), artifact.kind == .report else { return }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, var artifact = agentArtifacts.first(where: { $0.id == artifactID }), artifact.isBrief else { return }
         guard text != artifact.content else { return }
-        artifact.revisions = (artifact.revisions ?? []) + [ArtifactRevision(content: artifact.content, sourceMailIDs: artifact.sourceMailIDs, createdAt: artifact.updatedAt ?? artifact.createdAt)]
-        artifact.content = text; artifact.updatedAt = Date(); await saveArtifact(artifact)
+        var revision = ArtifactRevision(content: artifact.content, sourceMailIDs: artifact.sourceMailIDs, createdAt: artifact.updatedAt ?? artifact.createdAt); revision.briefDocument = artifact.briefDocument
+        artifact.revisions = (artifact.revisions ?? []) + [revision]
+        artifact.content = text; artifact.briefDocument = nil; artifact.updatedAt = Date(); await saveArtifact(artifact)
         await addStep(artifact.runID, title: "你修改了这份简报", tool: "共同工作稿", detail: "修改保留在同一份简报，之前的内容留在版本中。", sourceIDs: artifact.sourceMailIDs)
     }
     func saveRun(_ run: AgentRun) async {

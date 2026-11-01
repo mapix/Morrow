@@ -69,7 +69,7 @@ public actor MailTransport {
             if path.hasPrefix("\"") { path = String(path.dropFirst().dropLast()).replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\\\", with: "\\") }
             var role = "custom"; let lower = MailboxCodec.decode(path).lowercased()
             if lower == "inbox" { role = "inbox" }
-            for (flag, r) in [("\\sent", "sent"), ("\\drafts", "drafts"), ("\\trash", "trash"), ("\\junk", "junk"), ("\\archive", "archive")] where flags.contains(flag) { role = r }
+            for (flag, r) in [("\\sent", "sent"), ("\\drafts", "drafts"), ("\\trash", "trash"), ("\\junk", "junk"), ("\\archive", "archive"), ("\\all", "archive")] where flags.contains(flag) { role = r }
             if role == "custom" {
                 if ["sent", "sent messages", "已发送", "已发送邮件"].contains(lower) { role = "sent" }
                 if ["drafts", "草稿", "草稿箱"].contains(lower) { role = "drafts" }
@@ -83,6 +83,12 @@ public actor MailTransport {
     }
     public func inventory(_ account: MailAccount, folder: String, password: String) async throws -> (UInt64, [UInt64: (read: Bool, starred: Bool)]) {
         try await withSession(account, password: password) { try await $0.inventory(folder) }
+    }
+    public func syncInventory(_ account: MailAccount, folder: String, cursor: MailFolderSyncCursor?, password: String) async throws -> MailSyncInventory {
+        try await withSession(account, password: password) { try await $0.syncInventory(folder, cursor: cursor) }
+    }
+    public func syncFlags(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String) async throws -> [UInt64: MailSyncFlags] {
+        try await withSession(account, password: password) { try await $0.syncFlags(folder: folder, uids: uids, expectedValidity: validity) }
     }
     public static func parseFlags(_ text: String) -> [UInt64: (read: Bool, starred: Bool)] {
         var out: [UInt64: (read: Bool, starred: Bool)] = [:]

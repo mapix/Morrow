@@ -19,8 +19,8 @@ enum MailNetworkIO {
             connection.start(queue: DispatchQueue.global(qos: .utility))
         }
     }
-    static func receive(_ connection: NWConnection) async throws -> Data {
-        try await perform(connection, timeout: 90, timeoutMessage: "读取邮件服务器超时。") { gate in
+    static func receive(_ connection: NWConnection, timeout: TimeInterval = 90) async throws -> Data {
+        try await perform(connection, timeout: timeout, timeoutMessage: "读取邮件服务器超时。") { gate in
             connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { data, _, done, error in
                 if let error { gate.finish(.failure(error)) }
                 else if let data, !data.isEmpty { gate.finish(.success(data)) }

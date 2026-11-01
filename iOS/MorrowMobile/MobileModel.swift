@@ -63,6 +63,10 @@ import UniformTypeIdentifiers
     lazy var cloud = CloudSyncService(store: store)
     private var cloudImportedRevision = 0
     private var cloudDefaultKey: String { "SmailMobileCloud:" + MailStore.hash(store.root.path) }
+    let mailRealtimeMonitor = MailRealtimeMonitor()
+    var mailForeground = true
+    var pendingRealtimeAccounts: Set<String> = []
+    var realtimeSyncTask: Task<Void, Never>?
     let store: MailStore
     let index = EmbeddingIndex()
     let mobileDecisionReranker = MailDecisionReranker()
@@ -299,7 +303,7 @@ import UniformTypeIdentifiers
         await sync()
     }
     func sync(accountScope: String? = nil) async {
-        guard !syncing else { return }; syncing = true; lastSyncSucceeded = false; defer { syncing = false; resumeProcessingAfterSync() }
+        guard !syncing else { return }; syncing = true; lastSyncSucceeded = false; defer { syncing = false; resumeProcessingAfterSync(); scheduleRealtimeMailSync() }
         let selectedAccount = accountScope ?? accountID
         var failures: [String] = []
         var changes = 0
@@ -309,6 +313,7 @@ import UniformTypeIdentifiers
                 let folders = try await transport.folders(account, password: secret)
                 self.folders.removeAll { $0.accountID == account.id }
                 self.folders += folders
+                await refreshMailRealtimeMonitoring()
                 for folder in folders { try await store.save(folder, kind: "folder", id: folder.id) }
                 if account.usesPOP {
                     let inventory = try await transport.popInventory(account, password: secret)
@@ -324,37 +329,34 @@ import UniformTypeIdentifiers
                     }
                     await transport.closePOP(account); continue
                 }
-                for folder in folders {
+                folderSynchronization: for folder in folders {
                     let inventoryStarted = Date()
-                    let (validity, flags) = try await transport.inventory(account, folder: folder.path, password: secret)
+                    let cursor = try await store.mailSyncCursor(account: account, folder: folder.path)
+                    let inventory = try await transport.syncInventory(account, folder: folder.path, cursor: cursor, password: secret)
+                    let validity = inventory.validity
+                    var flags = inventory.flags
+                    let updates = flags.map { uid, flag in MailRemoteFlagUpdate(id: "\(account.id):\(folder.path):\(validity):\(uid)", read: flag.read, starred: flag.starred) }
+                    let deleted = try await store.commitMailSyncInventory(inventory, account: account, folder: folder.path, updates: updates, inventoryStarted: inventoryStarted)
+                    changes += updates.count + deleted.count
                     let local = try await store.syncRecords(account: account.id, folder: folder.path)
-                    let summaries = try await store.messageSummaries(account: account.id, folder: folder.path)
-                    let localFlags = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.displayMessage) })
-                    var flagUpdates: [MailRemoteFlagUpdate] = []
-                    let existing = Dictionary(uniqueKeysWithValues: local.filter { $0.uidValidity == validity }.map { ($0.uid, $0) })
-                    for (uid, flag) in flags.sorted(by: { $0.key > $1.key }) {
+                    let existing = Set(local.filter { $0.uidValidity == validity }.map(\.uid))
+                    let pending = inventory.presentUIDs.subtracting(existing).sorted(by: >)
+                    for (position, uid) in pending.enumerated() {
                         try Task.checkCancellation()
-                        if let previous = existing[uid] {
-                            guard let current = localFlags[previous.id], current.localFlagModifiedAt.map({ $0 <= inventoryStarted }) ?? true else { continue }
-                            guard current.isRead != flag.read || current.isStarred != flag.starred else { continue }
-                            flagUpdates.append(.init(id: current.id, read: flag.read, starred: flag.starred))
-                            if flagUpdates.count == 128 {
-                                let changed = try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
-                                changes += changed; flagUpdates.removeAll(keepingCapacity: true)
-                                if changed > 0 { await reload() }
-                            }
-                        } else {
-                            var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
-                            mail.isRead = flag.read; mail.isStarred = flag.starred; mail.analysis = mail.analysis ?? PartnerEngine.baseline(mail)
-                            var job = ProcessingJob(id: mail.id, accountID: account.id)
-                            job.analyzed = ["trash", "junk"].contains(folder.role)
-                            _ = try await store.commitIncoming(mail, object: job, kind: Self.processingKind, id: job.id)
-                            queueProcessing(job); changes += 1
-                            if changes % 10 == 0 { await reload() }
+                        if position > 0, !pendingRealtimeAccounts.isEmpty { break folderSynchronization }
+                        if flags[uid] == nil {
+                            let missing = Array(pending[position..<min(position + 64, pending.count)]).filter { flags[$0] == nil }
+                            flags.merge(try await transport.syncFlags(account, folder: folder.path, uids: missing, validity: validity, password: secret), uniquingKeysWith: { _, new in new })
                         }
+                        guard let flag = flags[uid] else { continue }
+                        var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
+                        mail.isRead = flag.read; mail.isStarred = flag.starred; mail.analysis = mail.analysis ?? PartnerEngine.baseline(mail)
+                        var job = ProcessingJob(id: mail.id, accountID: account.id)
+                        job.analyzed = ["trash", "junk"].contains(folder.role)
+                        _ = try await store.commitIncoming(mail, object: job, kind: Self.processingKind, id: job.id)
+                        queueProcessing(job); changes += 1
+                        if changes % 10 == 0 { await reload() }
                     }
-                    changes += try await store.applyRemoteFlagStates(flagUpdates, inventoryStarted: inventoryStarted)
-                    for old in local where old.uid > 0 && (old.uidValidity != validity || flags[old.uid] == nil) { try await store.deleteMessage(old.id) }
                 }
             } catch { failures.append(account.email + ": " + error.localizedDescription); if account.usesPOP { await transport.closePOP(account) } }
         }

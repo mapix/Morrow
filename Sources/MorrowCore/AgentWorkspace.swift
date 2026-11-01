@@ -35,6 +35,7 @@ public struct AgentRun: Codable, Identifiable, Sendable {
 }
 public enum AgentArtifactKind: String, Codable, Sendable { case draft, report, brief, action }
 public struct ArtifactRevision: Codable, Identifiable, Sendable {
+    public var briefDocument: BriefDocument?
     public var id: String = UUID().uuidString
     public var content: String
     public var sourceMailIDs: [String]
@@ -42,6 +43,10 @@ public struct ArtifactRevision: Codable, Identifiable, Sendable {
     public init(content: String, sourceMailIDs: [String], createdAt: Date) { self.content = content; self.sourceMailIDs = sourceMailIDs; self.createdAt = createdAt }
 }
 public struct AgentArtifact: Codable, Identifiable, Sendable {
+    public var sessionID: String?
+    public var sourceChatID: String?
+    public var briefDocument: BriefDocument?
+    public var isBrief: Bool { kind == .report || kind == .brief }
     public var id: String = UUID().uuidString
     public var runID: String
     public var title: String

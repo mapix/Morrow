@@ -59,7 +59,7 @@ public actor AgentCheckpointStore {
         let fields = params.object
         if method.hasPrefix("state.") {
             let key = fields["key"]?.text ?? "history"
-            guard ["history", "run", "files", "plan"].contains(key), sessionID.utf8.count <= 256 else { throw MailError.message("Agent 会话状态标识无效。") }
+            guard ["history", "run", "files", "plan", "enabled_tools"].contains(key), sessionID.utf8.count <= 256 else { throw MailError.message("Agent 会话状态标识无效。") }
             switch method {
             case "state.get":
                 let query = try statement("SELECT json FROM agent_sdk_checkpoints WHERE thread=? AND ns='openai' AND id=?", [.text(sessionID), .text(key)]); defer { sqlite3_finalize(query) }

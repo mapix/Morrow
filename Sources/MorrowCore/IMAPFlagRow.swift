@@ -11,8 +11,8 @@ enum IMAPFlagRow {
         guard row.firstMatch(in: line, range: range) != nil,
               let match = uid.firstMatch(in: line, range: range), let uidRange = Range(match.range(at: 1), in: line),
               let value = UInt64(line[uidRange]), value > 0, value <= UInt64(UInt32.max) else { return nil }
-        var words: [Substring] = []
-        if let match = flags.firstMatch(in: line, range: range), let flagRange = Range(match.range(at: 1), in: line) { words = line[flagRange].lowercased().split(whereSeparator: \.isWhitespace) }
+        guard let match = flags.firstMatch(in: line, range: range), let flagRange = Range(match.range(at: 1), in: line) else { return nil }
+        let words = line[flagRange].lowercased().split(whereSeparator: \.isWhitespace)
         return (value, words.contains("\\seen"), words.contains("\\flagged"))
     }
 }

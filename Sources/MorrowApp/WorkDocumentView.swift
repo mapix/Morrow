@@ -101,7 +101,7 @@ struct WorkDocumentView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 Spacer(minLength: 0)
-                Text(L10n.t(currentRun.phase.label))
+                Text(L10n.t(currentRun.phase == .completed && currentRun.id.hasPrefix("sdk-chat:") && artifacts.contains(where: \.isBrief) ? "已保存" : currentRun.phase.label))
                     .font(Theme.label)
                     .foregroundStyle(currentRun.phase == .failed ? Theme.error : Theme.secondary)
                     .fixedSize()
@@ -148,7 +148,7 @@ struct WorkDocumentView: View {
                     Text(L10n.t("关联的可编辑草稿暂不可用，已保留的正文如下。"))
                         .font(Theme.label).foregroundStyle(Theme.secondary)
                 }
-                if artifact.kind == .report { WorkReportContent(artifact: artifact) }
+                if artifact.isBrief { BriefConversationLink(artifact: artifact); WorkReportContent(artifact: artifact) }
                 else { WorkMarkdownContent(text: artifact.content) }
                 if let revisions = artifact.revisions, !revisions.isEmpty {
                     DisclosureGroup(L10n.format("之前的版本（{0}）", "\(revisions.count)")) {
@@ -245,7 +245,7 @@ struct WorkDocumentView: View {
     }
 }
 
-private struct WorkReportContent: View {
+struct WorkReportContent: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     let artifact: AgentArtifact
     @EnvironmentObject var model: AppModel
@@ -261,7 +261,7 @@ private struct WorkReportContent: View {
                     WorkDocumentButton { editing = false } label: { Text(L10n.t("取消修改")) }.disabled(saving)
                 }
             } else {
-                WorkMarkdownContent(text: artifact.content)
+                BriefStructuredContent(artifact: artifact)
                 WorkDocumentButton { content = artifact.content; editing = true } label: { Text(L10n.t("修改这份简报")) }
             }
         }.onChange(of: artifact.content) { if !editing { content = artifact.content } }
