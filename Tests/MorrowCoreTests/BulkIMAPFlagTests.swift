@@ -3,6 +3,15 @@ import Darwin
 @testable import MorrowCore
 
 final class BulkIMAPFlagTests: XCTestCase {
+    func testBatchBodyFetchUsesOnePeekCommandAndMapsReorderedResponses() async throws {
+        let first = "Subject: first\r\n\r\nfirst body", second = "Subject: second\r\n\r\nsecond body"
+        let server = try BulkFlagServer(validity: 42, bodies: [101: first, 102: second]); defer { server.stop() }
+        let client = try await connect(server); defer { Task { await client.close() } }
+        let fetched = try await client.fetchMany(folder: "INBOX", uids: [101, 102], expectedValidity: 42)
+        XCTAssertEqual(fetched[101], Data(first.utf8)); XCTAssertEqual(fetched[102], Data(second.utf8))
+        XCTAssertEqual(server.commands.filter { $0.hasPrefix("UID FETCH ") }, ["UID FETCH 101,102 (UID BODY.PEEK[])"])
+        XCTAssertFalse(server.commands.contains { $0.hasPrefix("UID STORE ") })
+    }
     func testUIDCompressionDeduplicationAndCommandBoundaries() throws {
         let batches = try IMAPConnection.flagBatches([20, 1, 3, 2, 10, 11, 20], flag: "\\Seen", enabled: true)
         XCTAssertEqual(batches.count, 1); XCTAssertEqual(batches[0].uids, [1, 2, 3, 10, 11, 20])
@@ -94,13 +103,14 @@ private final class BulkFlagServer: @unchecked Sendable {
     private let validity: UInt64
     private let failedStore: Int?
     private let unseen: [UInt64]
+    private let bodies: [UInt64: String]
     private let lock = NSLock()
     private var recorded: [String] = []
     private var client: Int32 = -1
     private var stopped = false
     var commands: [String] { lock.lock(); defer { lock.unlock() }; return recorded }
-    init(validity: UInt64, failedStore: Int? = nil, unseen: [UInt64] = []) throws {
-        self.validity = validity; self.failedStore = failedStore; self.unseen = unseen
+    init(validity: UInt64, failedStore: Int? = nil, unseen: [UInt64] = [], bodies: [UInt64: String] = [:]) throws {
+        self.validity = validity; self.failedStore = failedStore; self.unseen = unseen; self.bodies = bodies
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw FixtureError.socket }
         var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1")
@@ -133,6 +143,11 @@ private final class BulkFlagServer: @unchecked Sendable {
             else if command.hasPrefix("LOGIN ") { }
             else if command.hasPrefix("SELECT ") { guard send("* 1201 EXISTS\r\n* OK [UIDVALIDITY \(validity)] validity\r\n", fd: fd) else { return } }
             else if command == "UID SEARCH UNSEEN" { guard send("* SEARCH " + unseen.map(String.init).joined(separator: " ") + "\r\n* 1202 EXISTS\r\n", fd: fd) else { return } }
+            else if command.hasPrefix("UID FETCH ") && command.hasSuffix("(UID BODY.PEEK[])") {
+                for (uid, body) in bodies.sorted(by: { $0.key > $1.key }) {
+                    guard send("* \(uid) FETCH (BODY[] {\(body.utf8.count)}\r\n" + body + " UID \(uid))\r\n", fd: fd) else { return }
+                }
+            }
             else if command.hasPrefix("UID STORE ") {
                 stores += 1
                 if stores == failedStore { _ = send(tag + " NO synthetic store failure\r\n", fd: fd); return }

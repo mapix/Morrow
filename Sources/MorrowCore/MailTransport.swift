@@ -93,6 +93,15 @@ public actor MailTransport {
         let data = try await withSession(account, password: password) { try await $0.fetch(folder: folder, uid: uid, expectedValidity: validity) }
         return MIMEParser.parse(data, accountID: account.id, folder: folder, uid: uid, validity: validity)
     }
+    public func fetchMany(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String) async throws -> [UInt64: MailMessage] {
+        let bodies = try await withSession(account, password: password) { try await $0.fetchMany(folder: folder, uids: uids, expectedValidity: validity) }
+        var messages: [UInt64: MailMessage] = [:]
+        for (uid, data) in bodies {
+            try Task.checkCancellation()
+            messages[uid] = MIMEParser.parse(data, accountID: account.id, folder: folder, uid: uid, validity: validity)
+        }
+        return messages
+    }
     public func setFlag(_ account: MailAccount, message: MailMessage, flag: String, enabled: Bool, password: String) async throws {
         guard ["\\Seen", "\\Flagged", "\\Deleted"].contains(flag), message.uid > 0 else { throw MailError.message("邮件标记无效。") }
         try await withSession(account, password: password) { try await $0.store(folder: message.folder, uid: message.uid, flag: flag, enabled: enabled, expectedValidity: message.uidValidity) }

@@ -74,6 +74,43 @@ public actor IMAPConnection {
         let result = try await command("UID FETCH \(uid) (UID BODY.PEEK[])")
         guard let data = result.literals.first, !data.isEmpty else { throw MailError.message("服务器未返回邮件正文。") }; return data
     }
+    public func fetchMany(folder: String, uids: [UInt64], expectedValidity: UInt64) async throws -> [UInt64: Data] {
+        guard !uids.isEmpty, uids.count <= 8, Set(uids).count == uids.count,
+              uids.allSatisfy({ $0 > 0 && $0 <= UInt64(UInt32.max) }) else { throw MailError.message("批量读取的 UID 无效。") }
+        let current = try await select(folder)
+        guard current == expectedValidity else { throw MailError.message("文件夹已在服务器重建，请重新同步。") }
+        let set = uids.map(String.init).joined(separator: ",")
+        let reply = try await command("UID FETCH \(set) (UID BODY.PEEK[])")
+        return try Self.fetchedBodies(lines: reply.lines, literals: reply.literals, allowed: Set(uids))
+    }
+    /// Associate literals with their enclosing FETCH response, including servers
+    /// that put UID after BODY. Never assign a body by response order alone.
+    static func fetchedBodies(lines: [String], literals: [Data], allowed: Set<UInt64>) throws -> [UInt64: Data] {
+        var result: [UInt64: Data] = [:], fetchLines: [String] = [], bodies: [Data] = []
+        var literal = 0
+        func finish() throws {
+            defer { fetchLines = []; bodies = [] }
+            guard !bodies.isEmpty else { return }
+            guard bodies.count == 1, let token = MIMEParser.capture(#"(?i)\bUID\s+(\d+)\b"#, fetchLines.joined(separator: " ")),
+                  let uid = UInt64(token), allowed.contains(uid), result[uid] == nil, !bodies[0].isEmpty else {
+                throw MailError.message("批量正文与 UID 无法安全对应，读取已停止。")
+            }
+            result[uid] = bodies[0]
+        }
+        for line in lines {
+            if MIMEParser.capture(#"(?i)^\S+\s+(OK|NO|BAD)\b"#, line) != nil { try finish(); continue }
+            if MIMEParser.capture(#"(?i)^\*\s+\d+\s+(FETCH)\s*\("#, line) != nil { try finish() }
+            else if line.hasPrefix("* ") { try finish(); continue }
+            fetchLines.append(line)
+            if MIMEParser.capture(#"\{(\d+)\+?\}$"#, line) != nil {
+                guard literal < literals.count else { throw MailError.message("批量正文响应不完整。") }
+                bodies.append(literals[literal]); literal += 1
+            }
+        }
+        try finish()
+        guard literal == literals.count, !result.isEmpty else { throw MailError.message("服务器未返回可读取的批量正文。") }
+        return result
+    }
     public func list(accountID: String) async throws -> [MailFolder] {
         let r = try await command("LIST \"\" \"*\""); var lines = r.lines
         for (i, literal) in r.literals.enumerated() {

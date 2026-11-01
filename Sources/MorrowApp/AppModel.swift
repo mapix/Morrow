@@ -434,6 +434,9 @@ enum Destination: String, CaseIterable, Identifiable {
                     var flagUpdates: [MailRemoteFlagUpdate] = []
                     let byUID = Dictionary(uniqueKeysWithValues: existing.filter { $0.uidValidity == validity && $0.uid > 0 }.map { ($0.uid, $0) })
                     let ordered = flags.sorted(by: { $0.key > $1.key })
+                    let newUIDs = ordered.map(\.key).filter { byUID[$0] == nil }
+                    var batchCursor = 0, batchEnabled = true
+                    var readyBodies: [UInt64: MailMessage] = [:]
                     var lastProgress = Date.distantPast
                     for (position, entry) in ordered.enumerated() {
                         try Task.checkCancellation()
@@ -458,8 +461,20 @@ enum Destination: String, CaseIterable, Identifiable {
                         } else {
                             do {
                                 let fetchStarted = ProcessInfo.processInfo.systemUptime
-                                var mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
-                                MailReaderMetrics.record("sync_fetch_and_parse", since: fetchStarted)
+                                if readyBodies.isEmpty && batchEnabled && batchCursor < newUIDs.count && newUIDs[batchCursor] == uid {
+                                    let batch = Array(newUIDs[batchCursor..<min(batchCursor + 8, newUIDs.count)])
+                                    batchCursor += batch.count
+                                    do {
+                                        readyBodies = try await transport.fetchMany(account, folder: folder.path, uids: batch, validity: validity, password: secret)
+                                        MailReaderMetrics.record("sync_batch_fetch_and_parse", since: fetchStarted)
+                                    } catch { if Task.isCancelled { throw CancellationError() }; batchEnabled = false; readyBodies = [:] }
+                                }
+                                var mail: MailMessage
+                                if let prepared = readyBodies.removeValue(forKey: uid) { mail = prepared }
+                                else {
+                                    mail = try await transport.fetch(account, folder: folder.path, uid: uid, validity: validity, password: secret)
+                                    MailReaderMetrics.record("sync_fetch_and_parse", since: fetchStarted)
+                                }
                                 let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
                                 mail.isRead = seen?.0 ?? flag.read; mail.isStarred = flag.starred; if let seen { mail.localFlagModifiedAt = seen.1 }; mail.analysis = PartnerEngine.baseline(mail)
                                 let writeStarted = ProcessInfo.processInfo.systemUptime
