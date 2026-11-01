@@ -42,6 +42,9 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var responders: [MailResponder] = []
     @Published var responderReceipts: [ResponderReceipt] = []
     @Published var responderBusy = false
+    @Published var activeResponderID: String?
+    @Published var responderStage = ""
+    var responderExecutionTask: Task<ComposeDraft, Error>?
     @Published var responderEditor: MailResponder?
     @Published var openUIInteractions: [OpenUIInteraction] = []
     @Published var events: [PartnerEvent] = []
@@ -260,6 +263,10 @@ enum Destination: String, CaseIterable, Identifiable {
             drafts = try await store.load(ComposeDraft.self, kind: "draft")
             delegations = try await store.load(Delegation.self, kind: "delegation")
             responders = try await store.load(MailResponder.self, kind: "responder")
+            for i in responders.indices where responders[i].enabled && (!responders[i].hasBoundSource || responders[i].boundAccountFingerprint == nil) {
+                responders[i].enabled = false; responders[i].status = "来源尚未锁定，已暂停；请绑定邮箱、文件夹和发件人后启用。"
+                try await store.save(responders[i], kind: "responder", id: responders[i].id)
+            }
             responderReceipts = try await store.load(ResponderReceipt.self, kind: "responder-receipt")
             openUIInteractions = try await store.load(OpenUIInteraction.self, kind: "openui-interaction")
             events = try await store.load(PartnerEvent.self, kind: "event")
@@ -280,6 +287,7 @@ enum Destination: String, CaseIterable, Identifiable {
             }
             // SMTP delivery may have succeeded before an interrupted process persisted its receipt.
             for i in drafts.indices where drafts[i].state == "sending" { drafts[i].state = "uncertain"; drafts[i].error = "上次发送被中断，请核对已发送邮箱后决定是否重发。"; try await store.save(drafts[i], kind: "draft", id: drafts[i].id) }
+            await recoverResponderExecutions()
             if settings.embeddingDirectory.isEmpty {
                 let bundleModel = Bundle.main.resourceURL?.appendingPathComponent("embeddinggemma-2")
                 settings.embeddingDirectory = bundleModel.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent("model.safetensors").path) ? $0.path : "" } ?? ""
@@ -368,10 +376,12 @@ enum Destination: String, CaseIterable, Identifiable {
     func saveSettings() async {
         settings.replyLanguage = PresentationPreferences.shared.replyLanguageName
         if !settings.enabled || !settings.autoAnalyze { analysisTask?.cancel(); profileTask?.cancel() }
+        if !settings.enabled { responderExecutionTask?.cancel() }
         do { try await store.save(settings, kind: "settings", id: "main"); process() } catch { self.error = error.localizedDescription }
     }
     func configurationDidSave() {
         if !settings.enabled || !settings.autoAnalyze { analysisTask?.cancel(); profileTask?.cancel() }
+        if !settings.enabled { responderExecutionTask?.cancel() }
         process()
     }
     func refreshModels() async { do { models = try await ai.configuredModels(settings: settings) } catch { self.error = error.localizedDescription } }
@@ -859,6 +869,9 @@ enum Destination: String, CaseIterable, Identifiable {
     func queueSend(_ draft: ComposeDraft) async throws {
         try draft.validate(); guard accounts.contains(where: { $0.id == draft.accountID && !$0.isDemo }) else { throw MailError.message("示例邮箱不能发送。请先连接真实邮箱。") }
         var d = draft; d.scheduledAt = max(d.scheduledAt ?? Date(), Date().addingTimeInterval(10)); d.error = nil
+        // This action is an explicit human-reviewed send, not the responder's
+        // standing authorization. Subsequent edits cannot inherit it.
+        d.automaticResponse = false; d.responderID = nil; d.responderSourceMailID = nil
         try await store.queueReviewedDraft(d)
         d = try await store.object(ComposeDraft.self, kind: "draft", id: d.id) ?? d
         if let i = drafts.firstIndex(where: { $0.id == d.id }) { drafts[i] = d } else { drafts.append(d) }
@@ -872,18 +885,34 @@ enum Destination: String, CaseIterable, Identifiable {
     func sendPending() async {
         guard !outboundBusy else { return }; outboundBusy = true; defer { outboundBusy = false }
         for candidate in drafts where candidate.state == "queued" && (candidate.scheduledAt ?? Date()) <= Date() {
-            guard let account = accounts.first(where: { $0.id == candidate.accountID && !$0.isDemo }) else { continue }
+            guard let account = accounts.first(where: { $0.id == candidate.accountID && $0.enabled && !$0.isDemo }) else { continue }
+            if candidate.automaticResponse == true && !settings.enabled { await cancelSend(candidate); if var receipt = responderReceipts.first(where: { $0.draftID == candidate.id }) { receipt.state = "cancelled"; receipt.detail = "伙伴已暂停，自动回复已撤回。"; await saveResponderReceipt(receipt); await finishResponder(receipt) }; continue }
             let claimed: ComposeDraft?
-            do { claimed = try await store.claimDraft(candidate.id) } catch { self.error = error.localizedDescription; continue }
+            do { claimed = try await store.claimDraft(candidate.id) } catch {
+                if candidate.automaticResponse == true || candidate.responderID != nil {
+                    await cancelSend(candidate)
+                    if var receipt = responderReceipts.first(where: { $0.draftID == candidate.id }) { receipt.state = "cancelled"; receipt.detail = error.localizedDescription; await saveResponderReceipt(receipt); await finishResponder(receipt) }
+                } else { self.error = error.localizedDescription }
+                continue
+            }
             guard var draft = claimed else { continue }
             if let i = drafts.firstIndex(where: { $0.id == draft.id }) { drafts[i] = draft }
             var delivered = false
             do {
                 let secret = try await credentials.credential(account)
+                if draft.automaticResponse == true || draft.responderID != nil {
+                    do { guard settings.enabled else { throw MailError.message("伙伴已暂停，自动投递已停止。") }; try await store.validateResponderDelivery(draft) }
+                    catch {
+                        draft.state = "draft"; draft.scheduledAt = nil; draft.error = error.localizedDescription; await saveDraft(draft)
+                        if var receipt = responderReceipts.first(where: { $0.draftID == draft.id }) { receipt.state = "cancelled"; receipt.detail = error.localizedDescription; await saveResponderReceipt(receipt); await finishResponder(receipt) }
+                        continue
+                    }
+                }
                 let raw = try await transport.send(account, draft: draft, password: secret)
                 delivered = true
                 // The SMTP receipt is authoritative; failure to append must never retry delivery.
                 draft.state = "sent"; try await persistDraft(draft)
+                await reconcileResponderDelivery(draft)
                 var sent = MIMEParser.parse(raw, accountID: account.id, folder: folders.first(where: { $0.accountID == account.id && $0.role == "sent" })?.path ?? "Sent")
                 sent.id = "sent:" + draft.id; sent.isRead = true; try await store.upsert(sent)
                 if let folder = folders.first(where: { $0.accountID == account.id && $0.role == "sent" }) {
@@ -895,6 +924,7 @@ enum Destination: String, CaseIterable, Identifiable {
                 draft.state = delivered ? "sent" : "uncertain"
                 draft.error = delivered ? "SMTP 已确认发送，但本机副本保存失败：" + error.localizedDescription : "发送未取得明确回执：\(error.localizedDescription)。请先核对已发送邮箱，避免重复发送。"
                 await saveDraft(draft); self.error = draft.error
+                await reconcileResponderDelivery(draft)
             }
         }
     }

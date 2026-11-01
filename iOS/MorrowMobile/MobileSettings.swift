@@ -71,6 +71,18 @@ struct MobileMemories: View {
 
 struct MobileResponders: View {
     @EnvironmentObject var model: MobileModel
-    @State var rule = MailResponder()
-    var body: some View { Form { Section(MobileL10n.text("响应器")) { ForEach(model.responders) { value in VStack(alignment: .leading) { Text(value.title).font(.headline); Text(value.sender + " " + value.subjectContains).font(.caption); Text(MobileL10n.text("自动草稿")).font(.caption).foregroundStyle(.secondary) } } }; Section(MobileL10n.text("自动草稿")) { TextField(MobileL10n.text("名字"), text: $rule.title); Picker(MobileL10n.text("发件邮箱"), selection: $rule.accountID) { Text(MobileL10n.text("全部邮箱")).tag(""); ForEach(model.accounts) { Text($0.email).tag($0.id) } }; TextField(MobileL10n.text("发件人条件"), text: $rule.sender).textInputAutocapitalization(.never); TextField(MobileL10n.text("主题包含"), text: $rule.subjectContains); TextField(MobileL10n.text("回复内容"), text: $rule.response, axis: .vertical).lineLimit(4...8); Toggle("AI", isOn: $rule.useAI); Button(MobileL10n.text("保存")) { Task { do { try await model.saveResponder(rule); rule = MailResponder() } catch { model.error = error.localizedDescription } } } }; Text(MobileL10n.text("匹配的新邮件在前台同步后生成草稿。手机不接管 Mac 的自动发送权限。")).font(.caption).foregroundStyle(.secondary) }.navigationTitle(MobileL10n.text("响应器")) }
+    var body: some View {
+        Form {
+            Section(MobileL10n.text("响应器")) {
+                ForEach(model.responders) { rule in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(rule.title).font(.headline)
+                        Text(rule.allowedSenders.joined(separator: ", ")).font(.caption)
+                        Text(rule.status).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("响应器的来源白名单、Agent循环和自动回复在Mac上配置和执行。iOS不支持Anthropic Sandbox Runtime，不会绕过沙箱运行或接管发送。").font(.footnote).foregroundStyle(.secondary)
+            }
+        }.navigationTitle(MobileL10n.text("响应器"))
+    }
 }

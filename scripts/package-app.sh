@@ -49,8 +49,8 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>app.smail.desktop</string>
 <key>CFBundleExecutable</key><string>Morrow</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.12.2</string>
-<key>CFBundleVersion</key><string>122</string>
+<key>CFBundleShortVersionString</key><string>0.12.3</string>
+<key>CFBundleVersion</key><string>123</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>NSHighResolutionCapable</key><true/>
@@ -66,6 +66,11 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
 PLIST
 oauth_configuration="${MORROW_OAUTH_CONFIG:-configuration/oauth-clients.example.json}"
 if [[ -f "$oauth_configuration" ]]; then cp "$oauth_configuration" "$app_path/Contents/Resources/oauth-clients.json"; fi
+if [[ ! -f Runtime/SandboxRuntime/node_modules/@anthropic-ai/sandbox-runtime/package.json ]]; then
+  npm ci --ignore-scripts --omit=dev --no-audit --no-fund --prefix Runtime/SandboxRuntime
+fi
+ditto Runtime/SandboxRuntime "$app_path/Contents/Resources/SandboxRuntime"
+python3 scripts/prepare-sandbox-bundle.py "$app_path/Contents/Resources/SandboxRuntime"
 mkdir -p "$app_path/Contents/Resources/Notices"
 cp .build/checkouts/mlx-swift/LICENSE "$app_path/Contents/Resources/Notices/MLX-LICENSE"
 cp .build/checkouts/mlx-swift-lm/LICENSE "$app_path/Contents/Resources/Notices/MLX-LM-LICENSE"

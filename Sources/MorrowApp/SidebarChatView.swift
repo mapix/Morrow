@@ -23,6 +23,13 @@ struct SidebarChatView: View {
                     Divider(); Button(L10n.t("新建对话")) { Task { _ = await model.createChatSession() } }
                 } label: { HStack(spacing: 8) { Text(model.activeSession?.title ?? L10n.t("新对话")).font(Theme.body.weight(.semibold)).lineLimit(1); Image(systemName: "chevron.down").font(Theme.small) } }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.horizontal, 20).padding(.trailing, 44).frame(height: 58)
+            if let id = model.activeResponderID, let rule = model.responders.first(where: { $0.id == id }) {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Button(L10n.t("响应器") + " · " + rule.title) { if let receipt = model.responderReceipts.first(where: { $0.responderID == id && $0.state == "preparing" }), let runID = receipt.runID, let run = model.agentRuns.first(where: { $0.id == runID }) { model.selectRun(run) } }.buttonStyle(.link)
+                    Spacer()
+                }.font(Theme.label).foregroundStyle(Theme.secondary).padding(.horizontal, 20).padding(.bottom, 10).help(model.responderStage).accessibilityIdentifier("responder.active")
+            }
             ScrollViewReader { proxy in
                 ScrollView { VStack(alignment: .leading, spacing: model.compactLayout ? 22 : 30) {
                     if model.visibleChat.count > historyLimit { Button(L10n.t("查看更早的消息")) { historyLimit += 40 }.buttonStyle(QuietButtonStyle()) }

@@ -1,6 +1,7 @@
 import Foundation
 import PDFKit
 import Vision
+import ImageIO
 #if canImport(AppKit)
 import AppKit
 #else
@@ -45,8 +46,17 @@ public actor AttachmentTextExtractor {
         do {
             if mime == "application/pdf" || ext == "pdf" { return try pdf(data) }
             if mime.hasPrefix("image/") || ["png", "jpg", "jpeg", "tiff", "heic", "webp"].contains(ext) {
+                guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                      let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+                      let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+                      width.doubleValue > 0, height.doubleValue > 0, width.doubleValue * height.doubleValue <= 64_000_000 else {
+                    throw MailError.message("图片像素超过64 MP或格式无效，已停止文字提取。")
+                }
+                let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 2048, kCGImageSourceShouldCacheImmediately: true]
+                guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw MailError.message("图片无法在文字提取预算内解码。") }
                 let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate; request.recognitionLanguages = ["zh-Hans", "en-US"]; request.usesLanguageCorrection = true
-                try VNImageRequestHandler(data: data).perform([request])
+                try VNImageRequestHandler(cgImage: image).perform([request])
                 let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
                 return bounded(text, source: "本机 OCR")
             }

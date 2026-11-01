@@ -104,6 +104,7 @@ public actor MailStore {
             guard let data else { try execute("COMMIT"); return nil }
             var draft = try decoder.decode(ComposeDraft.self, from: data)
             guard draft.state == "queued", (draft.scheduledAt ?? .distantFuture) <= now else { try execute("COMMIT"); return nil }
+            if draft.automaticResponse == true || draft.responderID != nil { try validateResponderDelivery(draft) }
             draft.state = "sending"; draft.updatedAt = now
             try save(draft, kind: "draft", id: id); try execute("COMMIT"); return draft
         } catch { try? execute("ROLLBACK"); throw error }
@@ -133,17 +134,45 @@ public actor MailStore {
             try remove(kind: "draft", id: id); try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
-    public func claimResponder(_ receipt: ResponderReceipt) throws -> Bool {
+    public func claimResponder(_ receipt: ResponderReceipt, retry: Bool = false) throws -> Bool {
         try execute("BEGIN IMMEDIATE")
         do {
-            if try object(ResponderReceipt.self, kind: "responder-receipt", id: receipt.id) != nil { try execute("COMMIT"); return false }
+            var receipt = receipt
+            if let prior = try object(ResponderReceipt.self, kind: "responder-receipt", id: receipt.id) {
+                guard retry, ["failed", "cancelled"].contains(prior.state), (prior.attempts ?? 1) < 3,
+                      prior.draftID.flatMap({ try? object(ComposeDraft.self, kind: "draft", id: $0) }).map({ !["queued", "sending", "sent", "uncertain"].contains($0.state) }) ?? true else { try execute("COMMIT"); return false }
+                receipt.attempts = (prior.attempts ?? 1) + 1
+            }
             try save(receipt, kind: "responder-receipt", id: receipt.id); try execute("COMMIT"); return true
         } catch { try? execute("ROLLBACK"); throw error }
     }
     public func commitResponder(_ rule: MailResponder, receipt: ResponderReceipt, draft: ComposeDraft, event: PartnerEvent) throws {
         try execute("BEGIN IMMEDIATE")
-        do { try save(rule, kind: "responder", id: rule.id); try save(receipt, kind: "responder-receipt", id: receipt.id); try save(draft, kind: "draft", id: draft.id); try save(event, kind: "event", id: event.id); try execute("COMMIT") }
+        do {
+            guard receipt.agentVerified == true, receipt.sandboxRuntime == "anthropic-srt/0.0.81",
+                  let current = try object(MailResponder.self, kind: "responder", id: rule.id), current.enabled, !current.archived, current.configurationFingerprint == receipt.ruleFingerprint else { throw MailError.message("响应器未完成沙箱 Agent 核对，或处理期间规则已变更，未提交回复。") }
+            try save(rule, kind: "responder", id: rule.id); try save(receipt, kind: "responder-receipt", id: receipt.id); try save(draft, kind: "draft", id: draft.id)
+            if draft.state == "queued" || draft.state == "sent" { try validateResponderDelivery(draft) }
+            try save(event, kind: "event", id: event.id); try execute("COMMIT")
+        }
         catch { try? execute("ROLLBACK"); throw error }
+    }
+    public func validateResponderDelivery(_ draft: ComposeDraft) throws {
+        guard draft.automaticResponse == true, let responderID = draft.responderID, let sourceID = draft.responderSourceMailID,
+              let rule = try object(MailResponder.self, kind: "responder", id: responderID),
+              let account = try object(MailAccount.self, kind: "account", id: draft.accountID), account.enabled,
+              rule.boundAccountFingerprint == ResponderPolicy.accountFingerprint(account),
+              let receipt = try object(ResponderReceipt.self, kind: "responder-receipt", id: draft.id),
+              receipt.responderID == responderID, receipt.mailID == sourceID, receipt.draftID == draft.id,
+              receipt.agentVerified == true, receipt.sandboxRuntime == "anthropic-srt/0.0.81",
+              receipt.ruleFingerprint == rule.configurationFingerprint,
+              receipt.draftFingerprint == ResponderPolicy.draftFingerprint(draft),
+              let mail = try message(sourceID), receipt.canonicalID == mail.canonicalID,
+              receipt.sourceBodyVersion == mail.bodyVersion,
+              ResponderPolicy.canSend(draft, rule: rule, mail: mail, allowLocalSource: account.isDemo),
+              ResponderPolicy.sourceFailure(rule, mail: mail, raw: try rawHeader(mail), allowLocalSource: account.isDemo) == nil else {
+            throw MailError.message("自动回复的来源、规则或正文已变化，投递已阻止。请重新核对响应器。")
+        }
     }
     public func updateOpenUIState(_ values: [String: OpenUIJSON], id: String, revision: Int) throws {
         try execute("BEGIN IMMEDIATE")
@@ -529,6 +558,11 @@ public actor MailStore {
         for f in try load(MailFolder.self, kind: "folder") where f.accountID == id { try remove(kind: "folder", id: f.id) }
     }
     public func rawData(_ message: MailMessage) throws -> Data { message.raw.isEmpty ? try Data(contentsOf: rawURL(message.id)) : message.raw }
+    public func rawHeader(_ message: MailMessage) throws -> Data {
+        if !message.raw.isEmpty { return Data(message.raw.prefix(65536)) }
+        let handle = try FileHandle(forReadingFrom: rawURL(message.id)); defer { try? handle.close() }
+        return try handle.read(upToCount: 65536) ?? Data()
+    }
     public func attachmentData(_ attachment: MailAttachment, maximumBytes: Int? = nil) throws -> Data {
         if let maximumBytes, max(attachment.byteCount, attachment.data.count) > maximumBytes { throw MailError.message("附件超过读取大小限制。") }
         if !attachment.data.isEmpty { return attachment.data }

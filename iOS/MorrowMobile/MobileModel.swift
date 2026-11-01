@@ -373,26 +373,10 @@ import UniformTypeIdentifiers
             } catch { failures.append(error.localizedDescription) }
         }
         let outbound = mail.from.email.caseInsensitiveCompare(account.email) == .orderedSame || folders.contains { $0.accountID == account.id && $0.path == mail.folder && $0.role == "sent" }
-        for rule in responders where !outbound && rule.enabled && !rule.archived && rule.matches(mail) {
-            var claimed: ResponderReceipt?
-            do {
-                let raw = try await store.rawData(mail); guard !ResponderPolicy.isAutomatic(mail, raw: raw), MailAddress.isValid(mail.from.email) else { continue }
-                let receipts = try await store.load(ResponderReceipt.self, kind: "responder-receipt")
-                guard receipts.filter({ $0.responderID == rule.id && Calendar.current.isDateInToday($0.createdAt) }).count < rule.dailyLimit else { continue }
-                var receipt = ResponderReceipt(responderID: rule.id, mail: mail)
-                if !(try await store.claimResponder(receipt)) {
-                    guard let previous = try await store.object(ResponderReceipt.self, kind: "responder-receipt", id: receipt.id), ["preparing", "failed"].contains(previous.state) else { continue }
-                    if let id = previous.draftID, try await store.object(ComposeDraft.self, kind: "draft", id: id) != nil { continue }
-                    receipt = previous; receipt.state = "preparing"
-                }
-                claimed = receipt
-                var draft = try await reply(mail); draft.body = rule.useAI ? try await partner.draft(instruction: rule.response, mails: [try await store.message(mail.id) ?? mail], settings: settings).text : rule.body(for: mail, account: account)
-                // The phone creates drafts. Existing desktop automatic-send rules
-                // remain drafts here, avoiding dual-device execution ownership.
-                draft.automaticResponse = true; receipt.draftID = draft.id; receipt.state = "draft"; receipt.detail = "移动端已生成草稿，自动发送由指定执行设备处理。"
-                guard responders.contains(where: { $0.id == rule.id && $0.enabled && !$0.archived && $0.updatedAt == rule.updatedAt }) else { receipt.state = "cancelled"; receipt.detail = "响应器已变更或暂停"; try await store.save(receipt, kind: "responder-receipt", id: receipt.id); continue }
-                try await store.commitResponder(rule, receipt: receipt, draft: draft, event: .init(title: rule.title, detail: receipt.detail, messageIDs: [mail.id], kind: "responder"))
-            } catch { failures.append(error.localizedDescription); if var receipt = claimed { receipt.state = "failed"; receipt.detail = String(error.localizedDescription.prefix(300)); try? await store.save(receipt, kind: "responder-receipt", id: receipt.id) } }
+        // SRT has no iOS backend. The phone never substitutes a one-shot
+        // draft for a desktop responder's sandboxed Agent execution.
+        if !outbound && responders.contains(where: { $0.enabled && !$0.archived && $0.matches(mail) }) {
+            failures.append("响应器需要在 Mac 的 Anthropic Sandbox Runtime 中执行；手机没有自动回复或接管投递。")
         }
         return failures.isEmpty ? nil : failures.joined(separator: "；")
     }

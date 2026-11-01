@@ -43,7 +43,11 @@ extension AppModel {
         case "SaveResponder":
             guard buttonLabel.contains("响应器") && (buttonLabel.contains("保存") || buttonLabel.contains("启用")), let name = event.formName, let fields = event.formState?[name] else { throw OpenUIError.message("请通过明确的响应器保存按钮提交完整表单。") }
             func text(_ name: String) -> String { fields[name]?.value.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
-            var rule = MailResponder(); rule.title = text("title"); rule.accountID = text("accountID"); rule.sender = text("sender"); rule.subjectContains = text("subject"); rule.bodyContains = text("body"); rule.response = text("response"); rule.delivery = text("delivery").isEmpty ? "draft" : text("delivery"); rule.useAI = text("contentMode") == "ai"; rule.enabled = true
+            var rule = MailResponder(); rule.title = text("title"); rule.accountID = text("accountID"); rule.sender = text("sender"); rule.subjectContains = text("subject"); rule.bodyContains = text("body"); rule.response = text("response"); rule.delivery = text("delivery").isEmpty ? "send" : text("delivery"); rule.useAI = text("contentMode") == "ai"; rule.enabled = true
+            rule.folderPath = text("folder").isEmpty ? "INBOX" : text("folder")
+            rule.requireAuthentication = text("authentication") != "address"
+            rule.trustedAuthService = text("authService").isEmpty && accounts.first(where: { $0.id == rule.accountID })?.imapHost == "imap.gmail.com" ? "mx.google.com" : text("authService")
+            rule.sessionID = page.sessionID
             try await saveResponder(rule)
             page.completedAt = Date(); page.receipt = "“\(rule.title)”已启用，只响应之后到来的匹配邮件。"; await saveOpenUIInteraction(page)
             if let id = page.runID {

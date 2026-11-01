@@ -27,7 +27,8 @@
     "iOS/MorrowMobile/",
     "iOS/MorrowMobileTests/",
     ".github/",
-    "website/"
+    "website/",
+    "Runtime/SandboxRuntime/"
   ],
   "text_suffixes": [
     ".c",
@@ -55,7 +56,8 @@
     ".xcconfig",
     ".yaml",
     ".yml",
-    ".zsh"
+    ".zsh",
+    ".mjs"
   ],
   "reviewed_assets": {
     "website/assets/hero.webp": "0ffbdda15e70ec5f20cbf23aedc9042ea8a6c9bf1a73127f897a06a0d76f6bb9",

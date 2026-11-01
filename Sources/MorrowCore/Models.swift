@@ -228,6 +228,8 @@ public struct ComposeDraft: Codable, Identifiable, Sendable {
     public var body: String = ""
     public var htmlBody: String?
     public var automaticResponse: Bool?
+    public var responderID: String?
+    public var responderSourceMailID: String?
     public var attachments: [MailAttachment] = []
     public var inReplyTo: String = ""
     public var references: String = ""

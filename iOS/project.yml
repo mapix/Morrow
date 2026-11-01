@@ -54,8 +54,8 @@ targets:
         GOOGLE_OAUTH_CALLBACK_SCHEME: morrow-google-oauth
         MORROW_CLOUD_CONTAINER: ""
         MORROW_CLOUD_PROFILE_UUID: ""
-        MARKETING_VERSION: "0.12.2"
-        CURRENT_PROJECT_VERSION: "122"
+        MARKETING_VERSION: "0.12.3"
+        CURRENT_PROJECT_VERSION: "123"
         INFOPLIST_KEY_CFBundleDisplayName: Morrow
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
