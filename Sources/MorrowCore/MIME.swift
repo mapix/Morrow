@@ -221,12 +221,12 @@ public enum MIMEParser {
 }
 
 public enum MIMEWriter {
-    public static func encode(_ draft: ComposeDraft, account: MailAccount) throws -> Data {
+    public static func encode(_ draft: ComposeDraft, account: MailAccount, date: Date = Date()) throws -> Data {
         try draft.validate()
         guard MailAddress.isValid(account.email), !account.name.contains("\n"), !account.name.contains("\r") else { throw MailError.message("发件人配置无效。") }
         let boundary = "morrow-" + UUID().uuidString
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
-        var lines = ["From: \(address(.init(name: account.name, email: account.email)))", "To: \(draft.addresses(draft.to).map(address).joined(separator: ", "))", "Subject: \(header(draft.subject))", "Date: \(f.string(from: Date()))", "Message-ID: <\(draft.id)@morrow.local>", "MIME-Version: 1.0"]
+        var lines = ["From: \(address(.init(name: account.name, email: account.email)))", "To: \(draft.addresses(draft.to).map(address).joined(separator: ", "))", "Subject: \(header(draft.subject))", "Date: \(f.string(from: date))", "Message-ID: <\(draft.id)@morrow.local>", "MIME-Version: 1.0"]
         if !draft.cc.isEmpty { lines.append("Cc: " + draft.addresses(draft.cc).map(address).joined(separator: ", ")) }
         if !draft.inReplyTo.isEmpty { lines.append("In-Reply-To: " + safe(draft.inReplyTo)) }
         if !draft.references.isEmpty { lines.append("References: " + safe(draft.references)) }

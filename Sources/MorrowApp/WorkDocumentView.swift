@@ -616,31 +616,10 @@ private struct WorkDecisionContent: View {
 }
 
 private struct WorkSourceLinks: View {
-    @ObservedObject private var presentationState = PresentationPreferences.shared
     let ids: [String]
     let open: (MailMessage) -> Void
-    @EnvironmentObject var model: AppModel
-    private var uniqueIDs: [String] {
-        var seen = Set<String>()
-        return ids.filter { seen.insert($0).inserted }
-    }
     var body: some View {
-        if !ids.isEmpty {
-            DisclosureGroup(L10n.format("依据邮件（{0}）", "\(uniqueIDs.count)")) { VStack(alignment: .leading, spacing: 4) {
-                ForEach(uniqueIDs, id: \.self) { id in
-                    if let mail = model.mails.first(where: { $0.id == id }) {
-                        WorkDocumentButton { open(mail) } label: {
-                            Label(mail.subject.isEmpty ? L10n.t("打开无主题原邮件") : mail.subject, systemImage: "envelope.open")
-                                .lineLimit(2).multilineTextAlignment(.leading)
-                        }
-                        .accessibilityLabel(L10n.t("查看原邮件：") + mail.subject)
-                    } else {
-                        Text(L10n.t("一封引用的原邮件暂不可用。"))
-                            .font(Theme.label).foregroundStyle(Theme.secondary).padding(.vertical, 12)
-                    }
-                }
-            } }.font(Theme.label)
-        }
+        MailReferenceList(ids: ids, open: open)
     }
 }
 

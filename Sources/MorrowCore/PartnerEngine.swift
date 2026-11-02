@@ -375,8 +375,8 @@ extension AIEngine {
         guard settings.provider == "openai" else { return try await availableModels(endpoint: settings.ollamaURL) }
         let base = settings.openAIURL ?? "https://api.openai.com/v1"
         var request = URLRequest(url: try ModelEndpoint.url(base, path: "models")); request.timeoutInterval = 20
-        if let key = apiKey ?? (try? SecretStore.read(accountID: ModelEndpoint.credentialID(base))), !key.isEmpty { request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization") }
-        let key = apiKey ?? (try? SecretStore.read(accountID: ModelEndpoint.credentialID(base))) ?? ""
+        let key = try apiKey ?? SecretStore.readOptional(accountID: ModelEndpoint.credentialID(base)) ?? ""
+        if !key.isEmpty { request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization") }
         let configuration = requestConfiguration()
         return try await catalogCache.models(endpoint: request.url!.absoluteString, credential: key) {
             let (data, response) = try await BoundedHTTPClient.load(request, maximumBytes: 2 * 1024 * 1024, configuration: configuration)
@@ -396,7 +396,7 @@ extension AIEngine {
             else { payload["response_format"] = ["type":"json_object"] }
         }
         var request = URLRequest(url: try ModelEndpoint.url(base,path:"chat/completions")); request.httpMethod = "POST"; request.timeoutInterval = 240; request.setValue("application/json",forHTTPHeaderField:"Content-Type")
-        if let key = apiKey ?? (try? SecretStore.read(accountID:ModelEndpoint.credentialID(base))), !key.isEmpty { request.setValue("Bearer " + key,forHTTPHeaderField:"Authorization") }
+        if let key = try apiKey ?? SecretStore.readOptional(accountID:ModelEndpoint.credentialID(base)), !key.isEmpty { request.setValue("Bearer " + key,forHTTPHeaderField:"Authorization") }
         request.httpBody = try JSONSerialization.data(withJSONObject:payload)
         try Task.checkCancellation()
         let (data,response) = try await BoundedHTTPClient.load(request, configuration: requestConfiguration())

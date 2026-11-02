@@ -91,7 +91,7 @@ struct RootView: View {
         }.padding(.trailing, model.chatExpanded || hasMailToolbar ? 0 : 48).frame(minWidth: CompanionPaneLayout.minimumWorkspace)
     }
     private var hasMailToolbar: Bool {
-        model.workspacePage == .mail && model.composer == nil && model.attachmentTextPreview == nil && ![Destination.settings, .contacts, .drafts, .delegations].contains(model.destination)
+        model.workspacePage == .mail && model.composer == nil && model.attachmentTextPreview == nil && ![Destination.settings, .contacts, .drafts, .outbox, .delegations].contains(model.destination)
     }
     private var navigation: some View {
         VStack(spacing: 12) {
@@ -130,6 +130,7 @@ struct RootView: View {
             if model.destination == .settings { SettingsView() }
             else if model.destination == .contacts { PeopleWorkspaceView() }
             else if model.destination == .drafts { DraftsView() }
+            else if model.destination == .outbox { DraftsView(outbox: true) }
             else if model.destination == .delegations { DelegationsView() }
             else { MailWorkspaceToolbar(reservesCornerControl: !model.chatExpanded); HSplitView { MailListView().frame(minWidth: 240, idealWidth: 290, maxWidth: 360); if let mail = model.selected { ReaderView(mail: mail).frame(minWidth: 330) } else { EmptyRegion(icon: "envelope.open", title: L10n.t("选择一封邮件"), detail: L10n.t("也可以直接在对话里查询当前邮箱。"), action: nil) } } }
         }
@@ -260,11 +261,12 @@ struct MailWorkspaceToolbar: View {
     @FocusState private var focused: Bool
     var reservesCornerControl = false
     private var mailboxTitle: String { model.accounts.first { $0.id == model.selectedAccount }?.name ?? L10n.t("全部邮箱") }
+    private func selectAccount(_ id: String?) { let destination = model.destination; model.dismissInlineTools(); model.navigate(destination); model.selectedAccount = id }
     var body: some View {
         HStack(spacing: 12) {
             Menu {
-                Button(L10n.t("全部邮箱")) { model.chooseMailbox(nil) }
-                ForEach(model.accounts) { account in Button(account.name.isEmpty ? account.email : account.name) { model.chooseMailbox(account.id) } }
+                Button(L10n.t("全部邮箱")) { selectAccount(nil) }
+                ForEach(model.accounts) { account in Button(account.name.isEmpty ? account.email : account.name) { selectAccount(account.id) } }
                 Divider()
                 ForEach(Destination.allCases.filter { ![.partner, .settings, .contacts, .delegations].contains($0) }) { destination in Button(destination.rawValue) { model.navigate(destination) } }
                 Divider()

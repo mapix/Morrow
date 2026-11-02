@@ -150,7 +150,7 @@ struct AttachmentPreviewView: View {
     }
 }
 
-private struct NativeAttachmentPDFView: NSViewRepresentable {
+struct NativeAttachmentPDFView: NSViewRepresentable {
     let document: PDFDocument
     let zoomCommand: Int
     let fitCommand: Int
@@ -174,7 +174,7 @@ private struct NativeAttachmentPDFView: NSViewRepresentable {
     final class Coordinator { var zoom = 0; var fit = 0 }
 }
 
-private struct AttachmentImageCanvas: View {
+struct AttachmentImageCanvas: View {
     let image: CGImage
     let zoom: CGFloat
     var body: some View {

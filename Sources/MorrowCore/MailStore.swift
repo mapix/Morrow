@@ -96,6 +96,56 @@ public actor MailStore {
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
+    /// Only the delivery owner may finish a claim. Content stays immutable;
+    /// terminal state and SMTP acknowledgement commit before saving any copy.
+    public func finishDraftDelivery(_ claimed: ComposeDraft, outcome: DraftDeliveryOutcome, error: String? = nil, now: Date = Date()) throws -> ComposeDraft {
+        try finishDelivery(claimed, outcome: outcome, error: error, now: now, source: "smtp")
+    }
+    private func finishDelivery(_ claimed: ComposeDraft, outcome: DraftDeliveryOutcome, error: String?, now: Date, source: String) throws -> ComposeDraft {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            guard var current = try object(ComposeDraft.self, kind: "draft", id: claimed.id), current.accountID == claimed.accountID else { throw MailError.message("投递记录不存在或邮箱不匹配。") }
+            if current.state == "sent" {
+                guard outcome == .sent else { throw MailError.message("已确认发送的邮件不能退回发送队列。") }
+            } else {
+                guard current.state == claimed.state, current.updatedAt == claimed.updatedAt,
+                      current.state == "sending" || (source == "synced-mail" && current.state == "uncertain") else { throw MailError.message("投递状态已经变化，未覆盖现有记录。") }
+            }
+            current.state = outcome == .cancelled ? "draft" : outcome.rawValue
+            current.error = error; current.updatedAt = max(now, current.updatedAt)
+            if outcome == .cancelled { current.scheduledAt = nil }
+            if outcome == .sent, try object(DraftDeliveryReceipt.self, kind: "mail-delivery", id: current.id) == nil {
+                try save(DraftDeliveryReceipt(id: current.id, accountID: current.accountID, messageID: "<" + current.id + "@morrow.local>", confirmedAt: now, source: source), kind: "mail-delivery", id: current.id)
+            }
+            try save(current, kind: "draft", id: current.id)
+            try execute("COMMIT"); return current
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+    /// Indexed RFC Message-ID lookup. Imported/local messages cannot establish
+    /// delivery. A server Sent copy or a verified self-addressed Inbox copy can.
+    public func recoverConfirmedDraftDeliveries(accounts: [MailAccount], folders: [MailFolder]) throws -> [ComposeDraft] {
+        var recovered: [ComposeDraft] = []
+        for draft in try load(ComposeDraft.self, kind: "draft") where ["sending", "uncertain"].contains(draft.state) {
+            guard let account = accounts.first(where: { $0.id == draft.accountID && !$0.isDemo }) else { continue }
+            let messageID = "<" + draft.id + "@morrow.local>"
+            let s = try statement("SELECT json FROM messages WHERE account=? AND canonical=? AND uid>0 AND validity>0 LIMIT 20", [.text(account.id), .text(account.id + ":message:" + messageID)])
+            let evidence: [MailMessage] = try {
+                defer { sqlite3_finalize(s) }
+                var values: [MailMessage] = []
+                while sqlite3_step(s) == SQLITE_ROW { values.append(try decoder.decode(MailMessage.self, from: bytes(s, 0))) }
+                return values
+            }()
+            func addresses(_ values: [MailAddress]) -> Set<String> { Set(values.map { $0.email.lowercased() }) }
+            let expectedTo = addresses(draft.addresses(draft.to)), expectedCC = addresses(draft.addresses(draft.cc))
+            let own = account.email.lowercased(), selfAddressed = addresses(draft.addresses(draft.to) + draft.addresses(draft.cc) + draft.addresses(draft.bcc)).contains(own)
+            guard let mail = evidence.first(where: { mail in
+                let role = folders.first { $0.accountID == account.id && $0.path == mail.folder }?.role
+                return (role == "sent" || (role == "inbox" && selfAddressed)) && mail.messageID == messageID && mail.from.email.lowercased() == own && mail.subject == draft.subject && addresses(mail.to) == expectedTo && addresses(mail.cc) == expectedCC
+            }) else { continue }
+            recovered.append(try finishDelivery(draft, outcome: .sent, error: nil, now: mail.date, source: "synced-mail"))
+        }
+        return recovered
+    }
     public func claimDraft(_ id: String, now: Date = Date()) throws -> ComposeDraft? {
         try execute("BEGIN IMMEDIATE")
         do {
@@ -1015,10 +1065,11 @@ extension MailStore {
         do { for value in values { try save(value, kind: "agent-memory", id: value.id) }; try execute("COMMIT") }
         catch { try? execute("ROLLBACK"); throw error }
     }
-    public func commitWorkingDraft(_ draft: ComposeDraft, artifact: AgentArtifact?) throws {
+    public func commitWorkingDraft(_ draft: ComposeDraft, artifact: AgentArtifact?, expectedUpdatedAt: Date? = nil) throws {
         try execute("BEGIN IMMEDIATE")
         do {
             let existing = try object(ComposeDraft.self, kind: "draft", id: draft.id)
+            if let expectedUpdatedAt, existing?.updatedAt != expectedUpdatedAt { throw MailError.message("草稿已变化，未覆盖已有修改。") }
             let protected = ["sent", "queued", "sending", "uncertain"]
             guard !protected.contains(draft.state), existing.map({ !protected.contains($0.state) }) ?? true else { throw MailError.message("This draft is in the delivery workflow and cannot be overwritten by an editor.") }
             try save(draft, kind: "draft", id: draft.id)

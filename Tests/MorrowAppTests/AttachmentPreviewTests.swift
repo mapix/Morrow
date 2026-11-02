@@ -7,6 +7,27 @@ import MorrowCore
 @testable import MorrowApp
 
 final class AttachmentPreviewTests: XCTestCase {
+    @MainActor func testMailAttachmentAreaUsesLocalOriginalAndFetchesRemoteOnlyOnExplicitPreview() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("reader-preview-" + UUID().uuidString)
+        let model = AppModel(root: root); model.settings.enabled = false
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = try image(.png)
+        let local = MailAttachment(name: "picture.PNG", mimeType: "application/octet-stream", data: bytes)
+        XCTAssertTrue(ReaderAttachmentsView.supportsPreview(local))
+        XCTAssertTrue(ReaderAttachmentsView.supportsPreview(.init(name: "scan.pdf", mimeType: "application/octet-stream", data: Data())))
+        let resolved = try await model.resolvePreviewAttachment(local)
+        XCTAssertEqual(resolved.data, bytes)
+        guard case .image = try await AttachmentPreviewLoader.load(resolved) else { return XCTFail("Original image must be previewed") }
+        var remote = MailAttachment(name: "remote.png", mimeType: "image/png", data: Data())
+        remote.remoteReference = .init(accountID: "fixture", folder: "INBOX", uid: 42, validity: 7, section: "2", encoding: "BASE64", encodedBytes: bytes.count * 2)
+        let fixture = PreviewFetchFixture(bytes: bytes)
+        model.fetchPreviewAttachmentOverride = { _ in await fixture.fetch() }
+        _ = try await AttachmentThumbnailCache.shared.image(remote)
+        let untouched = await fixture.count(); XCTAssertEqual(untouched, 0)
+        let fetched = try await model.resolvePreviewAttachment(remote)
+        XCTAssertEqual(fetched.data, bytes); XCTAssertFalse(fetched.isRemoteOnly)
+        let explicit = await fixture.count(); XCTAssertEqual(explicit, 1)
+    }
     func testGridUsesSmallImageAndPDFPageThumbnails() throws {
         let inputs: [(Data, String, String)] = [(try image(.png), "image.png", "image/png"), (try image(.jpeg), "image.jpeg", "image/jpeg"), (try pdf(), "document.pdf", "application/pdf")]
         for (data, name, mime) in inputs {
@@ -95,4 +116,11 @@ final class AttachmentPreviewTests: XCTestCase {
         catch AttachmentPreviewFailure.tooLarge { }
         catch { XCTFail("Expected a precise size failure") }
     }
+}
+private actor PreviewFetchFixture {
+    let bytes: Data
+    var requests = 0
+    init(bytes: Data) { self.bytes = bytes }
+    func fetch() -> Data { requests += 1; return bytes }
+    func count() -> Int { requests }
 }

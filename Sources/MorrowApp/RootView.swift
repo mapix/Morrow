@@ -33,7 +33,7 @@ struct LegacyRootView: View {
                 if !model.searchText.isEmpty { Button { model.searchText = ""; model.searchMode = false } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).help(L10n.t("清除搜索")) }
                 if model.searchBusy { ProgressView().controlSize(.small) }
             }.padding(.horizontal, 12).frame(width: 320, height: 34).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(searchFocused ? Theme.focus : Theme.muted, lineWidth: 1))
-            Button { Task { await model.sync() } } label: { if model.syncBusy { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") } }.buttonStyle(.borderless).frame(width: 32, height: 34).disabled(model.syncBusy).help(L10n.t("同步邮箱 (⌘R)"))
+            Button { Task { await model.sync(userInitiated: true) } } label: { if model.syncBusy { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") } }.buttonStyle(.borderless).frame(width: 32, height: 34).disabled(model.syncBusy).help(L10n.t("同步邮箱 (⌘R)"))
             Button { Task { await model.compose() } } label: { Label(L10n.t("写邮件"), systemImage: "square.and.pencil") }.buttonStyle(PrimaryButtonStyle()).help(L10n.t("写邮件 (⌘N)"))
         }.padding(.horizontal, 24).frame(height: 64)
     }
@@ -45,6 +45,7 @@ struct LegacyRootView: View {
             case .partner: partnerWorkspace
             case .delegations: DelegationsView()
             case .drafts: DraftsView()
+            case .outbox: DraftsView(outbox: true)
             case .settings: SettingsView()
             case .contacts: ContactsView()
             default: mailWorkspace
@@ -218,7 +219,7 @@ struct MailListView: View {
             if model.searchUpdatesAvailable { Text(L10n.t("索引有更新，按回车刷新结果")).font(Theme.small).foregroundStyle(Theme.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 8) }
             Divider().overlay(Theme.rule)
             if model.searchBusy && model.visibleMails.isEmpty { VStack(spacing: 12) { ProgressView(); Text(L10n.t("正在按") + model.searchStrategy.title + L10n.t("查找…")).font(Theme.label).foregroundStyle(Theme.muted) }.frame(maxWidth: .infinity, maxHeight: .infinity) }
-            else if model.visibleMails.isEmpty { EmptyRegion(icon: "tray", title: model.searchMode ? L10n.t("没有找到匹配邮件") : L10n.t("这里还没有邮件"), detail: model.searchMode ? L10n.t("试试主题、发件人，或换一种描述。") : L10n.t("连接邮箱、同步，或导入邮件。"), action: model.accounts.isEmpty ? L10n.t("连接邮箱") : L10n.t("同步"), perform: { if model.accounts.isEmpty { model.showAccount = true } else { Task { await model.sync() } } }) }
+            else if model.visibleMails.isEmpty { EmptyRegion(icon: "tray", title: model.searchMode ? L10n.t("没有找到匹配邮件") : L10n.t("这里还没有邮件"), detail: model.searchMode ? L10n.t("试试主题、发件人，或换一种描述。") : L10n.t("连接邮箱、同步，或导入邮件。"), action: model.accounts.isEmpty ? L10n.t("连接邮箱") : L10n.t("同步"), perform: { if model.accounts.isEmpty { model.showAccount = true } else { Task { await model.sync(userInitiated: true) } } }) }
             else {
                 ScrollViewReader { proxy in
                     ScrollView {

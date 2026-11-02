@@ -162,17 +162,18 @@ extension AppModel {
         do { try await store.save(contactProfiles[i], kind: "contact-profile", id: email) } catch { self.error = error.localizedDescription }
     }
     private func profileNeedsAnalysis(_ profile: ContactProfile) -> Bool {
-        !profile.mailIDs.isEmpty && profile.analysisFingerprint != "profile-ai-v2:" + profile.fingerprint && (profile.analysisRetryAt == nil || profile.analysisRetryAt! <= Date())
+        mails(withIDs: profile.mailIDs).contains(where: isInAutomaticMailScope) && profile.analysisFingerprint != "profile-ai-v2:" + settings.effectiveMailSyncScope.rawValue + ":" + profile.fingerprint && (profile.analysisRetryAt == nil || profile.analysisRetryAt! <= Date())
     }
     func scheduleProfileAnalysis(force email: String? = nil) {
         if let email, let i = contactProfiles.firstIndex(where: { $0.email == email }) {
             contactProfiles[i].analysisFingerprint = ""; contactProfiles[i].analyzedMailVersions = [:]; contactProfiles[i].analysisRetryAt = nil
         }
         guard profileTask == nil, settings.enabled, settings.autoAnalyze else { return }
+        let requestedProfile = email
         profileTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
             defer { self.profileTask = nil; if !Task.isCancelled && self.settings.enabled && self.contactProfiles.contains(where: self.profileNeedsAnalysis) { self.scheduleProfileAnalysis() } }
-            let queued = self.contactProfiles.filter(self.profileNeedsAnalysis).map(\.email)
+            let queued = self.contactProfiles.filter { $0.email == requestedProfile || self.profileNeedsAnalysis($0) }.map(\.email)
             for email in queued {
                 guard let snapshot = self.contactProfiles.first(where: { $0.email == email }) else { continue }
                 while self.partnerBusy { do { try await Task.sleep(for: .milliseconds(250)) } catch { return } }
@@ -180,7 +181,7 @@ extension AppModel {
                 let history = self.mails(withIDs: snapshot.mailIDs).sorted { $0.date < $1.date }
                 let currentVersions = Dictionary(history.map { ($0.id, $0.bodyVersion) }, uniquingKeysWith: { _, last in last })
                 var analyzed = (snapshot.analyzedMailVersions ?? [:]).filter { currentVersions[$0.key] == $0.value }
-                let pendingIDs = history.filter { analyzed[$0.id] != $0.bodyVersion }.map(\.id)
+                let pendingIDs = history.filter { (email == requestedProfile || isInAutomaticMailScope($0)) && analyzed[$0.id] != $0.bodyVersion }.map(\.id)
                 var claims = Array(snapshot.claims.filter { currentVersions[$0.mailID] != nil && analyzed[$0.mailID] == currentVersions[$0.mailID] }.suffix(96))
                 do {
                     for offset in stride(from: 0, to: pendingIDs.count, by: 8) {
@@ -202,7 +203,7 @@ extension AppModel {
                     }
                     guard let i = self.contactProfiles.firstIndex(where: { $0.email == email }), self.contactProfiles[i].fingerprint == snapshot.fingerprint else { continue }
                     self.contactProfiles[i].claims = claims; self.contactProfiles[i].analyzedMailVersions = analyzed
-                    self.contactProfiles[i].analysisFingerprint = "profile-ai-v2:" + snapshot.fingerprint; self.contactProfiles[i].analyzedAt = Date(); self.contactProfiles[i].analysisRetryAt = nil
+                    self.contactProfiles[i].analysisFingerprint = "profile-ai-v2:" + settings.effectiveMailSyncScope.rawValue + ":" + snapshot.fingerprint; self.contactProfiles[i].analyzedAt = Date(); self.contactProfiles[i].analysisRetryAt = nil
                     self.contactProfiles[i].analysisStatus = claims.isEmpty ? "已整理历史摘录，未发现可核验线索" : "已整理历史邮件摘录；线索保留逐字依据"
                     try await self.store.save(self.contactProfiles[i], kind: "contact-profile", id: snapshot.id)
                 } catch {

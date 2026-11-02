@@ -13,7 +13,7 @@ let package = Package(
     targets: [
         .target(name: "CMail", linkerSettings: [.linkedLibrary("curl", .when(platforms: [.macOS])), .linkedLibrary("sqlite3"), .linkedLibrary("z"), .linkedFramework("Security")]),
         .target(name: "MorrowCore", dependencies: ["CMail", .product(name: "MLXEmbedders", package: "mlx-swift-lm"), .product(name: "Tokenizers", package: "swift-transformers")], swiftSettings: [.swiftLanguageMode(.v5)]),
-        .executableTarget(name: "MorrowApp", dependencies: ["MorrowCore", .product(name: "Markdown", package: "swift-markdown")], swiftSettings: [.swiftLanguageMode(.v5)]),
+        .executableTarget(name: "MorrowApp", dependencies: ["MorrowCore", .product(name: "Markdown", package: "swift-markdown")], swiftSettings: [.swiftLanguageMode(.v5)], linkerSettings: [.linkedFramework("AVKit"), .linkedFramework("AVFoundation")]),
         .testTarget(name: "MorrowCoreTests", dependencies: ["MorrowCore"], swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "MorrowAppTests", dependencies: ["MorrowApp"], swiftSettings: [.swiftLanguageMode(.v5)])
     ]

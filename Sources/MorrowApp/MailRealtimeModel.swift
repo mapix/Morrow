@@ -4,7 +4,7 @@ import MorrowCore
 extension AppModel {
     func refreshMailRealtimeMonitoring() async {
         let credentials = credentials
-        await mailRealtimeMonitor.update(accounts: accounts, folders: folders, credential: { account in
+        await mailRealtimeMonitor.update(accounts: accounts, folders: folders.filter(settings.effectiveMailSyncScope.includes), credential: { account in
             try await credentials.credential(account)
         }, onChange: { [weak self] accountID in
             await self?.mailboxChanged(accountID)

@@ -7,10 +7,10 @@ import UserNotifications
 import Contacts
 
 enum Destination: String, CaseIterable, Identifiable {
-    case partner = "伙伴", inbox = "收件箱", focus = "待处理", delegations = "委托", drafts = "草稿", starred = "星标", snoozed = "稍后处理", sent = "已发送", contacts = "联系人", trash = "废纸篓", settings = "设置"
+    case partner = "伙伴", inbox = "收件箱", focus = "待处理", delegations = "委托", drafts = "草稿", outbox = "发件箱", starred = "星标", snoozed = "稍后处理", sent = "已发送", contacts = "联系人", trash = "废纸篓", settings = "设置"
     var id: String { rawValue }
     var icon: String {
-        switch self { case .partner: return "sparkle"; case .inbox: return "tray"; case .focus: return "checklist"; case .delegations: return "arrow.triangle.branch"; case .drafts: return "doc"; case .starred: return "star"; case .snoozed: return "clock"; case .sent: return "paperplane"; case .contacts: return "person.2"; case .trash: return "trash"; case .settings: return "gearshape" }
+        switch self { case .partner: return "sparkle"; case .inbox: return "tray"; case .focus: return "checklist"; case .delegations: return "arrow.triangle.branch"; case .drafts: return "doc"; case .outbox: return "tray.and.arrow.up"; case .starred: return "star"; case .snoozed: return "clock"; case .sent: return "paperplane"; case .contacts: return "person.2"; case .trash: return "trash"; case .settings: return "gearshape" }
     }
 }
 
@@ -155,6 +155,8 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var mailSyncProgress: MailSyncProgress?
     private var mailboxSyncTask: Task<Void, Never>?
     @Published var syncStatus = "尚未连接邮箱"
+    @Published var mailSyncIssue: String?
+    @Published var mailSyncNeedsAuthorization = false
     @Published var indexStatus = "等待邮件"
     @Published var indexCount = 0
     @Published var partnerBusy = false
@@ -189,7 +191,7 @@ enum Destination: String, CaseIterable, Identifiable {
     private var searchGeneration = 0
     private var undoAction: (() async -> Void)?
     private var undoing = false
-    private var outboundBusy = false
+    var outboundBusy = false
     @Published var delegationBusy = false
     @Published var executingRunIDs = Set<String>()
     @Published var sidebarEvidenceMailIDs = Set<String>()
@@ -201,11 +203,16 @@ enum Destination: String, CaseIterable, Identifiable {
     private var lastSyncFailure: String?
     let store: MailStore
     let transport = MailTransport()
+    var sendMailOverride: (@Sendable (MailAccount, ComposeDraft) async throws -> Data)?
+    var appendSentMailOverride: (@Sendable (MailAccount, String, Data) async throws -> Void)?
+    var fetchPreviewAttachmentOverride: (@Sendable (MailRemoteAttachment) async throws -> Data)?
     let index = EmbeddingIndex()
     let mailDecisionReranker = MailDecisionReranker()
     let partner: PartnerEngine
     let ai = AIEngine()
     let credentials = AccountCredentials()
+    lazy var sessionWorkspaces = AgentSessionWorkspaces(owner: store.root)
+    var gatewayMediaClientOverride: GatewayMediaClient?
     lazy var cloudWorkspace = CloudWorkspaceModel(store: store)
     private let notifications: any MailNotificationManaging
 
@@ -283,7 +290,9 @@ enum Destination: String, CaseIterable, Identifiable {
         }
         let filtered = mails.filter(scope.matches)
         var unique: [String: MailMessage] = [:]
-        for mail in filtered { if unique[mail.canonicalID] == nil || mail.folder == "INBOX" { unique[mail.canonicalID] = mail } }
+        for mail in filtered {
+            if unique[mail.canonicalID] == nil || mail.folder == "INBOX" || (destination == .sent && mail.uid > 0 && unique[mail.canonicalID]?.uid == 0) { unique[mail.canonicalID] = mail }
+        }
         let result = unique.values.sorted {
             if scope.destination == .partner || scope.destination == .focus { let a = $0.analysis?.priority ?? 0; let b = $1.analysis?.priority ?? 0; if a != b { return a > b } }; return $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date
         }
@@ -326,6 +335,10 @@ enum Destination: String, CaseIterable, Identifiable {
             memories = try await store.load(AgentMemory.self, kind: "agent-memory")
             for var status in try await store.load(AccountSyncState.self, kind: "account-sync-state") { status.syncing = false; accountSyncStates[status.accountID] = status }
             await restoreChatSessions()
+            for session in chatSessions where session.archived {
+                do { try await sessionWorkspaces.archive(session.id) }
+                catch { await log("归档工作区未清理", detail: error.localizedDescription, kind: "error") }
+            }
             contacts = try await store.load(ContactEntry.self, kind: "contact")
             contactProfiles = try await store.load(ContactProfile.self, kind: "contact-profile")
             profileInventory = try await store.object(String.self, kind: "profile-inventory", id: "current") ?? ""
@@ -335,7 +348,8 @@ enum Destination: String, CaseIterable, Identifiable {
             for var run in agentRuns where run.phase == .completed && delegations.contains(where: { $0.id == run.delegationID && $0.active }) {
                 run.phase = .monitoring; run.summary = "已有成果已保留，委托仍在持续关注后续邮件。"; await saveRun(run)
             }
-            // SMTP delivery may have succeeded before an interrupted process persisted its receipt.
+            await reconcileStoredDeliveries()
+            // Unconfirmed interrupted deliveries remain protected from retries.
             for i in drafts.indices where drafts[i].state == "sending" { drafts[i].state = "uncertain"; drafts[i].error = "上次发送被中断，请核对已发送邮箱后决定是否重发。"; try await store.save(drafts[i], kind: "draft", id: drafts[i].id) }
             await recoverResponderExecutions()
             if settings.embeddingDirectory.isEmpty {
@@ -370,6 +384,7 @@ enum Destination: String, CaseIterable, Identifiable {
         } catch { self.error = error.localizedDescription }
     }
     func reload(incoming: [MailMessage]? = nil) async {
+        await reconcileStoredDeliveries()
         reloadEpoch += 1; let request = reloadEpoch, mutationAtStart = localMutationEpoch
         let folderAtStart = folderMutationEpoch
         activeFolderReloads[request] = folderAtStart
@@ -456,19 +471,21 @@ enum Destination: String, CaseIterable, Identifiable {
         try Task.checkCancellation()
         _ = try await transport.test(account, password: password)
         try Task.checkCancellation()
+        await credentials.invalidate(account.id)
         try SecretStore.save(storedSecret ?? password, accountID: account.id)
         try await store.save(account, kind: "account", id: account.id)
         if let i = accounts.firstIndex(where: { $0.id == account.id }) { accounts[i] = account } else { accounts.append(account) }
         isDemo = false; showAccount = false; await log("邮箱已连接", detail: account.email, kind: "account")
-        Task { await sync() }
+        Task { await sync(userInitiated: true) }
     }
     func removeAccount(_ account: MailAccount) async {
+        await credentials.invalidate(account.id)
         do { try await store.deleteAccount(account.id); SecretStore.delete(accountID: account.id); accounts.removeAll { $0.id == account.id }; folders.removeAll { $0.accountID == account.id }; await refreshMailRealtimeMonitoring(); await reload() } catch { self.error = error.localizedDescription }
     }
-    func sync(accountID: String? = nil) async {
+    func sync(accountID: String? = nil, userInitiated: Bool = false) async {
         guard !realAccounts.isEmpty else { return }
         mailRealtimeSuspendedUntil = .distantPast
-        await runMailSynchronization { await self.performMailboxSync(accountID: accountID) }
+        await runMailSynchronization { await self.performMailboxSync(accountID: accountID, userInitiated: userInitiated) }
         scheduleRealtimeMailSync()
     }
     func runMailSynchronization(_ operation: @escaping @MainActor () async -> Void) async {
@@ -485,11 +502,11 @@ enum Destination: String, CaseIterable, Identifiable {
         syncStatus = L10n.t("正在停止本次同步…")
         task.cancel()
     }
-    private func performMailboxSync(accountID: String?) async {
+    private func performMailboxSync(accountID: String?, userInitiated: Bool) async {
         guard !syncBusy, !realAccounts.isEmpty else { return }; syncBusy = true; defer { syncBusy = false; if searchNeedsRefresh { scheduleSearchRefresh() } }
         mailSyncProgress = MailSyncProgress()
         defer { mailSyncProgress = nil }
-        var failures: [String] = []; var newCount = 0
+        var failures: [String] = []; var newCount = 0; var keychainFailures = 0
         for account in realAccounts where account.enabled && (accountID == nil || account.id == accountID) {
             if Task.isCancelled { break }
             let failureStart = failures.count; var yieldedToIncoming = false
@@ -504,12 +521,14 @@ enum Destination: String, CaseIterable, Identifiable {
                 folderSynchronization: for folder in remoteFolders {
                     try Task.checkCancellation()
                     try await store.save(folder, kind: "folder", id: folder.id)
+                    guard settings.effectiveMailSyncScope.includes(folder) else { continue }
                     syncStatus = "正在同步 \(account.name) / \(folder.name)"
                     mailSyncProgress = .init(downloaded: newCount)
                     let inventoryStarted = Date()
                     let cursor = try await store.mailSyncCursor(account: account, folder: folder.path)
                     let inventory = try await transport.syncInventory(account, folder: folder.path, cursor: cursor, password: secret)
                     let validity = inventory.validity
+                    let checkMode = inventory.incremental ? "增量检查" : (cursor == nil ? "建立邮件清单" : "完整清单核对")
                     var flags = inventory.flags
                     bulkSeenOverrides = bulkSeenOverrides.filter { key, value in key.account != account.id || key.folder != folder.path || (key.validity == validity && value.1 > inventoryStarted) }
                     let updates = flags.map { uid, flag -> MailRemoteFlagUpdate in
@@ -523,18 +542,19 @@ enum Destination: String, CaseIterable, Identifiable {
                     let plan = try await store.mailSyncDownloadPlan(account: account, folder: folder.path, inventory: inventory)
                     let newUIDs = plan.remainingUIDs
                     var reusedUIDs = Set<UInt64>(), linkedCount = 0
-                    mailSyncProgress = .init(plan: plan, downloaded: newCount)
+                    mailSyncProgress = .init(plan: plan, downloaded: newCount, checkMode: checkMode)
                     var batchCursor = 0, batchEnabled = true
                     var readyBodies: [UInt64: Data] = [:]
                     var lastProgress = Date.distantPast
                     for (position, uid) in newUIDs.enumerated() {
                         try Task.checkCancellation()
+                        guard settings.effectiveMailSyncScope.includes(folder) else { break folderSynchronization }
                         if reusedUIDs.contains(uid) { continue }
                         if position > 0, readyBodies.isEmpty, !pendingRealtimeAccounts.isEmpty {
                             yieldedToIncoming = true; break folderSynchronization
                         }
                         if Date().timeIntervalSince(lastProgress) >= 0.25 {
-                            mailSyncProgress = .init(plan: plan, processed: position, downloaded: newCount, reusedBodies: linkedCount)
+                            mailSyncProgress = .init(plan: plan, processed: position, downloaded: newCount, reusedBodies: linkedCount, checkMode: checkMode)
                             lastProgress = Date()
                         }
                         do {
@@ -545,15 +565,16 @@ enum Destination: String, CaseIterable, Identifiable {
                                 do {
                                     let missingFlags = batch.filter { flags[$0] == nil }
                                     if !missingFlags.isEmpty { flags.merge(try await transport.syncFlags(account, folder: folder.path, uids: missingFlags, validity: validity, password: secret), uniquingKeysWith: { _, new in new }) }
+                                    let liveBatch = batch.filter { flags[$0]?.deleted != true }
                                     let reusable: [UInt64: MailMessage]
-                                    do { reusable = try await transport.reuseGmailBodies(account, folder: folder.path, uids: batch, validity: validity, password: secret, store: store, flags: flags, inventoryStarted: inventoryStarted) }
+                                    do { reusable = try await transport.reuseGmailBodies(account, folder: folder.path, uids: liveBatch, validity: validity, password: secret, store: store, flags: flags, inventoryStarted: inventoryStarted) }
                                     catch is CancellationError { throw CancellationError() }
                                     catch { MailReaderMetrics.failure("sync_gmail_reuse_fallback", error: error); reusable = [:] }
                                     if !reusable.isEmpty {
                                         reusedUIDs.formUnion(reusable.keys); linkedCount += reusable.count
                                         await reload(incoming: Array(reusable.values)); process()
                                     }
-                                    let downloads = batch.filter { !reusedUIDs.contains($0) }
+                                    let downloads = liveBatch.filter { !reusedUIDs.contains($0) }
                                     readyBodies = downloads.isEmpty ? [:] : try await transport.fetchRawMany(account, folder: folder.path, uids: downloads, validity: validity, password: secret, attachmentLimit: max(1, min(50, settings.attachmentAutoDownloadLimitMB ?? 10)) * 1024 * 1024)
                                     mailProcessingProgress.networkSeconds = ProcessInfo.processInfo.systemUptime - fetchStarted
                                     mailProcessingProgress.networkCount = readyBodies.count
@@ -563,7 +584,7 @@ enum Destination: String, CaseIterable, Identifiable {
                                     mailProcessingProgress.bodyDownloadSeconds = downloads.isEmpty ? 0 : timing.bodySeconds
                                     MailReaderMetrics.record("sync_raw_batch_download", since: fetchStarted)
 
-                        } catch { if Task.isCancelled { throw CancellationError() }; MailReaderMetrics.failure("sync_batch_fallback", error: error); batchEnabled = false; readyBodies = [:] }
+                        } catch { if Task.isCancelled { throw CancellationError() }; if MailConnectionError.isTransient(error) { throw error }; MailReaderMetrics.failure("sync_batch_fallback", error: error); batchEnabled = false; readyBodies = [:] }
                                 }
                                 if reusedUIDs.contains(uid) { continue }
                                 if flags[uid] == nil {
@@ -571,6 +592,7 @@ enum Destination: String, CaseIterable, Identifiable {
                                     flags.merge(try await transport.syncFlags(account, folder: folder.path, uids: missing, validity: validity, password: secret), uniquingKeysWith: { _, new in new })
                                 }
                                 guard let flag = flags[uid] else { throw MailError.message("邮件已在服务器移除，下一次增量同步将更新清单。") }
+                                if flag.deleted { continue }
                                 let result: MailSyncFetch
                                 if let prepared = readyBodies.removeValue(forKey: uid) { result = .raw(prepared) }
                                 else { result = try await transport.fetchForSync(account, folder: folder.path, uid: uid, validity: validity, password: secret, attachmentLimit: max(1, min(50, settings.attachmentAutoDownloadLimitMB ?? 10)) * 1024 * 1024) }
@@ -588,12 +610,13 @@ enum Destination: String, CaseIterable, Identifiable {
                                 let staged = ProcessInfo.processInfo.systemUptime
                                 if try await enqueueDownloadedMail(raw, job: job) { newCount += 1 }
                                 MailReaderMetrics.record("sync_raw_stage", since: staged)
-                        } catch { if Task.isCancelled { throw CancellationError() }; failures.append(account.name + " / " + folder.name + " / UID \(uid)：" + error.localizedDescription) }
+                        } catch { if Task.isCancelled { throw CancellationError() }; if MailConnectionError.isTransient(error) { throw error }; failures.append(account.name + " / " + folder.name + " / UID \(uid)：" + error.localizedDescription) }
                     }
-                    mailSyncProgress = .init(plan: plan, processed: newUIDs.count, downloaded: newCount, reusedBodies: linkedCount)
+                    mailSyncProgress = .init(plan: plan, processed: newUIDs.count, downloaded: newCount, reusedBodies: linkedCount, checkMode: checkMode)
                 }
             } catch {
                 if Task.isCancelled { await setAccountSyncState(account, syncing: false, completed: false); break }
+                if let denied = error as? CredentialStoreError, denied.requiresInteraction { keychainFailures += 1 }
                 failures.append(account.name + "：" + error.localizedDescription)
             }
             let ownFailures = Array(failures.dropFirst(failureStart)); await setAccountSyncState(account, syncing: false, error: ownFailures.isEmpty ? nil : ownFailures.joined(separator: "\n"), completed: !yieldedToIncoming)
@@ -607,8 +630,14 @@ enum Destination: String, CaseIterable, Identifiable {
         scheduleMailDownloadProcessing(); process()
         syncStatus = failures.isEmpty ? "同步于 " + Date().uiFormatted(date: .omitted, time: .shortened) : failures.joined(separator: "\n")
         if newCount > 0 { await log("收到 \(newCount) 封邮件", detail: "原始邮件已保存，后台正在独立解析、索引和整理。", kind: "sync") }
-        if !failures.isEmpty { if syncStatus != lastSyncFailure { error = syncStatus }; lastSyncFailure = syncStatus } else { lastSyncFailure = nil }
+        publishMailSyncFailures(failures, keychainFailures: keychainFailures, userInitiated: userInitiated)
         scheduleRealtimeMailSync()
+    }
+    func publishMailSyncFailures(_ failures: [String], keychainFailures: Int = 0, userInitiated: Bool) {
+        mailSyncIssue = failures.isEmpty ? nil : failures.joined(separator: "\n")
+        mailSyncNeedsAuthorization = !failures.isEmpty && keychainFailures == failures.count
+        lastSyncFailure = mailSyncIssue
+        if userInitiated && failures.count > keychainFailures { error = mailSyncIssue }
     }
     func downloadSeenOverride(_ job: MailDownloadJob) -> (Bool, Date)? { bulkSeenValue(account: job.accountID, folder: job.folder, validity: job.validity, uid: job.uid, inventoryStarted: job.inventoryStarted) }
     private func syncPOP(_ account: MailAccount, secret: String) async throws -> (Int, [String]) {
@@ -681,10 +710,11 @@ enum Destination: String, CaseIterable, Identifiable {
         guard analysisTask == nil, settings.enabled, settings.autoAnalyze else { return }
         analysisTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }; defer { self.analysisTask = nil }
-            let pendingIDs = mails.filter { $0.analysis == nil || $0.analysis?.source == "规则分析" || $0.analysis?.evidenceVersion != MailEvidence.version }.map(\.id)
+            let pendingIDs = mails.filter { isInAutomaticMailScope($0) && ($0.analysis == nil || $0.analysis?.source == "规则分析" || $0.analysis?.evidenceVersion != MailEvidence.version) }.map(\.id)
             for id in pendingIDs {
                 guard !Task.isCancelled, settings.enabled, settings.autoAnalyze else { return }
                 guard let original = try? await store.message(id) else { continue }
+                guard isInAutomaticMailScope(original) else { continue }
                 partnerStatus = "正在读：" + original.subject
                 do {
                     let reused = mails.first { $0.canonicalID == original.canonicalID && $0.analysis?.evidenceVersion == MailEvidence.version && $0.analysis?.source != "规则分析" }?.analysis
@@ -1058,52 +1088,6 @@ enum Destination: String, CaseIterable, Identifiable {
     func cancelSend(_ draft: ComposeDraft) async {
         do { let restored = try await store.cancelQueuedDraft(draft.id); if let i = drafts.firstIndex(where: { $0.id == draft.id }) { drafts[i] = restored } }
         catch { self.error = error.localizedDescription }
-    }
-    func sendPending() async {
-        guard !outboundBusy else { return }; outboundBusy = true; defer { outboundBusy = false }
-        for candidate in drafts where candidate.state == "queued" && (candidate.scheduledAt ?? Date()) <= Date() {
-            guard let account = accounts.first(where: { $0.id == candidate.accountID && $0.enabled && !$0.isDemo }) else { continue }
-            if candidate.automaticResponse == true && !settings.enabled { await cancelSend(candidate); if var receipt = responderReceipts.first(where: { $0.draftID == candidate.id }) { receipt.state = "cancelled"; receipt.detail = "伙伴已暂停，自动回复已撤回。"; await saveResponderReceipt(receipt); await finishResponder(receipt) }; continue }
-            let claimed: ComposeDraft?
-            do { claimed = try await store.claimDraft(candidate.id) } catch {
-                if candidate.automaticResponse == true || candidate.responderID != nil {
-                    await cancelSend(candidate)
-                    if var receipt = responderReceipts.first(where: { $0.draftID == candidate.id }) { receipt.state = "cancelled"; receipt.detail = error.localizedDescription; await saveResponderReceipt(receipt); await finishResponder(receipt) }
-                } else { self.error = error.localizedDescription }
-                continue
-            }
-            guard var draft = claimed else { continue }
-            if let i = drafts.firstIndex(where: { $0.id == draft.id }) { drafts[i] = draft }
-            var delivered = false
-            do {
-                let secret = try await credentials.credential(account)
-                if draft.automaticResponse == true || draft.responderID != nil {
-                    do { guard settings.enabled else { throw MailError.message("伙伴已暂停，自动投递已停止。") }; try await store.validateResponderDelivery(draft) }
-                    catch {
-                        draft.state = "draft"; draft.scheduledAt = nil; draft.error = error.localizedDescription; await saveDraft(draft)
-                        if var receipt = responderReceipts.first(where: { $0.draftID == draft.id }) { receipt.state = "cancelled"; receipt.detail = error.localizedDescription; await saveResponderReceipt(receipt); await finishResponder(receipt) }
-                        continue
-                    }
-                }
-                let raw = try await transport.send(account, draft: draft, password: secret)
-                delivered = true
-                // The SMTP receipt is authoritative; failure to append must never retry delivery.
-                draft.state = "sent"; try await persistDraft(draft)
-                await reconcileResponderDelivery(draft)
-                var sent = MIMEParser.parse(raw, accountID: account.id, folder: folders.first(where: { $0.accountID == account.id && $0.role == "sent" })?.path ?? "Sent")
-                sent.id = "sent:" + draft.id; sent.isRead = true; try await store.upsert(sent)
-                if let folder = folders.first(where: { $0.accountID == account.id && $0.role == "sent" }) {
-                    do { try await transport.append(account, folder: folder.path, raw: raw, password: secret) }
-                    catch { await log("已发送，本机已保存副本", detail: "服务器副本保存失败：" + error.localizedDescription, kind: "delivery") }
-                }
-                await log("邮件已发送", detail: draft.subject + " → " + draft.to, kind: "delivery"); await reload()
-            } catch {
-                draft.state = delivered ? "sent" : "uncertain"
-                draft.error = delivered ? "SMTP 已确认发送，但本机副本保存失败：" + error.localizedDescription : "发送未取得明确回执：\(error.localizedDescription)。请先核对已发送邮箱，避免重复发送。"
-                await saveDraft(draft); self.error = draft.error
-                await reconcileResponderDelivery(draft)
-            }
-        }
     }
 
     func importFiles() {

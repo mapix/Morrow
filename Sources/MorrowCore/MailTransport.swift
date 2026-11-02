@@ -17,12 +17,14 @@ public struct MailBulkFlagReceipt: Sendable {
 }
 
 public actor MailTransport {
-    private struct IMAPSession { var fingerprint: String; let connection: IMAPConnection; let gate: NetworkOperationGate }
+    private struct IMAPSession { var fingerprint: String; let connection: IMAPConnection; let gate: NetworkOperationGate; var lastUsed = Date() }
     private struct POPSession { var fingerprint: String; let connection: POP3Client; let gate: NetworkOperationGate }
     private var sessions: [String: IMAPSession] = [:]
     private var popSessions: [String: POPSession] = [:]
     public private(set) var downloadTiming = IMAPConnection.DownloadTiming()
-    public init() {}
+    private let testOnlyPlaintextLoopback: Bool
+    public init() { testOnlyPlaintextLoopback = false }
+    init(testOnlyPlaintextLoopback: Bool) { self.testOnlyPlaintextLoopback = testOnlyPlaintextLoopback }
     // Test fixtures may use loopback plaintext. Production account URLs are always TLS.
     public func request(url: String, username: String, password: String, command: String = "", upload: Data? = nil, from: String? = nil, recipients: [String] = [], startTLS: Bool = false, testOnly: Bool = false, oauth: Bool = false) async throws -> TransportReply {
         try Task.checkCancellation()
@@ -56,7 +58,7 @@ public actor MailTransport {
             _ = try await popInventory(account, password: password)
             return [("INBOX", "inbox"), ("Sent", "sent"), ("Archive", "archive"), ("Trash", "trash"), ("Junk", "junk")].map { MailFolder(accountID: account.id, path: $0.0, role: $0.1) }
         }
-        let result = try await withSession(account, password: password) { try await $0.list(accountID: account.id) }
+        let result = try await withReadSession(account, password: password) { try await $0.list(accountID: account.id) }
         guard !result.isEmpty else { throw MailError.message("服务器没有返回可读的邮件文件夹。请检查 IMAP 是否开启。") }; return result
     }
     public static func parseFolders(_ text: String, accountID: String) -> [MailFolder] {
@@ -64,38 +66,31 @@ public actor MailTransport {
         var out: [MailFolder] = []
         for match in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
             let ns = text as NSString; let flags = ns.substring(with: match.range(at: 1)).lowercased()
-            if flags.contains("\\noselect") { continue }
+            let flagWords = Set(flags.split(whereSeparator: \.isWhitespace).map(String.init))
+            if flagWords.contains("\\noselect") { continue }
             var path = ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
             if path.hasPrefix("\"") { path = String(path.dropFirst().dropLast()).replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\\\", with: "\\") }
-            var role = "custom"; let lower = MailboxCodec.decode(path).lowercased()
-            if lower == "inbox" { role = "inbox" }
-            for (flag, r) in [("\\sent", "sent"), ("\\drafts", "drafts"), ("\\trash", "trash"), ("\\junk", "junk"), ("\\archive", "archive"), ("\\all", "archive")] where flags.contains(flag) { role = r }
-            if role == "custom" {
-                if ["sent", "sent messages", "已发送", "已发送邮件"].contains(lower) { role = "sent" }
-                if ["drafts", "草稿", "草稿箱"].contains(lower) { role = "drafts" }
-                if ["trash", "deleted messages", "deleted items", "已删除", "废纸篓"].contains(lower) { role = "trash" }
-                if ["junk", "spam", "垃圾邮件", "垃圾箱"].contains(lower) { role = "junk" }
-                if ["archive", "all mail", "归档"].contains(lower) { role = "archive" }
-            }
+            var role = MailFolder.inferredRole(path: path)
+            for (flag, r) in [("\\sent", "sent"), ("\\drafts", "drafts"), ("\\trash", "trash"), ("\\junk", "junk"), ("\\archive", "archive"), ("\\all", "archive")] where flagWords.contains(flag) { role = r }
             if !out.contains(where: { $0.path == path }) { out.append(.init(accountID: accountID, path: path, role: role)) }
         }
         return out.sorted { ($0.role == "inbox" ? 0 : 1, $0.path) < ($1.role == "inbox" ? 0 : 1, $1.path) }
     }
     public func inventory(_ account: MailAccount, folder: String, password: String) async throws -> (UInt64, [UInt64: (read: Bool, starred: Bool)]) {
-        try await withSession(account, password: password) { try await $0.inventory(folder) }
+        try await withReadSession(account, password: password) { try await $0.inventory(folder) }
     }
     public func syncInventory(_ account: MailAccount, folder: String, cursor: MailFolderSyncCursor?, password: String) async throws -> MailSyncInventory {
-        try await withSession(account, password: password) { try await $0.syncInventory(folder, cursor: cursor) }
+        try await withReadSession(account, password: password) { try await $0.syncInventory(folder, cursor: cursor) }
     }
     public func syncFlags(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String) async throws -> [UInt64: MailSyncFlags] {
-        try await withSession(account, password: password) { try await $0.syncFlags(folder: folder, uids: uids, expectedValidity: validity) }
+        try await withReadSession(account, password: password) { try await $0.syncFlags(folder: folder, uids: uids, expectedValidity: validity) }
     }
     /// Validate a small Gmail identity batch before any full-body request.
     /// Other servers retain the normal body-download path.
     public func reuseGmailBodies(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String,
                                  store: MailStore, flags: [UInt64: MailSyncFlags], inventoryStarted: Date) async throws -> [UInt64: MailMessage] {
         guard !uids.isEmpty else { return [:] }
-        let destinations = try await withSession(account, password: password) { try await $0.gmailIdentities(accountID: account.id, folder: folder, uids: uids, expectedValidity: validity) }
+        let destinations = try await withReadSession(account, password: password) { try await $0.gmailIdentities(accountID: account.id, folder: folder, uids: uids, expectedValidity: validity) }
         guard !destinations.isEmpty else { return [:] }
         var candidates: [UInt64: [MailMessage]] = [:], sourceIdentities: [String: GmailMessageIdentity] = [:], candidateBytes: UInt64 = 0
         var missing: [String: [MailMessage]] = [:]
@@ -114,7 +109,7 @@ public actor MailTransport {
             guard let first = distinct.first else { continue }
             for start in stride(from: 0, to: distinct.count, by: 64) {
                 let batch = Array(distinct[start..<min(start + 64, distinct.count)])
-                let identities = try await withSession(account, password: password) { try await $0.gmailIdentities(accountID: account.id, folder: first.folder, uids: batch.map(\.uid), expectedValidity: first.uidValidity) }
+                let identities = try await withReadSession(account, password: password) { try await $0.gmailIdentities(accountID: account.id, folder: first.folder, uids: batch.map(\.uid), expectedValidity: first.uidValidity) }
                 for source in batch { if let identity = identities[source.uid] { sourceIdentities[source.id] = identity; try? await store.cacheGmailIdentity(identity, account: account) } }
             }
         }
@@ -137,11 +132,11 @@ public actor MailTransport {
     }
     public func fetch(_ account: MailAccount, folder: String, uid: UInt64, validity: UInt64, password: String) async throws -> MailMessage {
         // BODY.PEEK keeps fetching/indexing from marking the message as read.
-        let data = try await withSession(account, password: password) { try await $0.fetch(folder: folder, uid: uid, expectedValidity: validity) }
+        let data = try await withReadSession(account, password: password) { try await $0.fetch(folder: folder, uid: uid, expectedValidity: validity) }
         return MIMEParser.parse(data, accountID: account.id, folder: folder, uid: uid, validity: validity)
     }
     public func fetchMany(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String) async throws -> [UInt64: MailMessage] {
-        let bodies = try await withSession(account, password: password) { try await $0.fetchMany(folder: folder, uids: uids, expectedValidity: validity) }
+        let bodies = try await withReadSession(account, password: password) { try await $0.fetchMany(folder: folder, uids: uids, expectedValidity: validity) }
         var messages: [UInt64: MailMessage] = [:]
         for (uid, data) in bodies {
             try Task.checkCancellation()
@@ -150,14 +145,14 @@ public actor MailTransport {
         return messages
     }
     public func fetchRawMany(_ account: MailAccount, folder: String, uids: [UInt64], validity: UInt64, password: String, attachmentLimit: Int = 10 * 1024 * 1024) async throws -> [UInt64: Data] {
-        let (bodies, timing) = try await withSession(account, password: password) { connection in
+        let (bodies, timing) = try await withReadSession(account, password: password) { connection in
             let bodies = try await connection.fetchMany(folder: folder, uids: uids, expectedValidity: validity, maximumBatchBytes: 16 * 1024 * 1024, maximumMessageBytes: UInt64(attachmentLimit))
             return (bodies, await connection.downloadTiming)
         }
         downloadTiming = timing; return bodies
     }
     public func fetchForSync(_ account: MailAccount, folder: String, uid: UInt64, validity: UInt64, password: String, attachmentLimit: Int = 10 * 1024 * 1024) async throws -> MailSyncFetch {
-        try await withSession(account, password: password) { try await $0.fetchForSync(accountID: account.id, folder: folder, uid: uid, expectedValidity: validity, attachmentLimit: attachmentLimit) }
+        try await withReadSession(account, password: password) { try await $0.fetchForSync(accountID: account.id, folder: folder, uid: uid, expectedValidity: validity, attachmentLimit: attachmentLimit) }
     }
     public func fetchRemoteAttachment(_ account: MailAccount, reference: MailRemoteAttachment, password: String) async throws -> Data {
         guard account.id == reference.accountID else { throw MailError.message("附件不属于当前邮箱。") }
@@ -233,6 +228,16 @@ public actor MailTransport {
     private func sessionFingerprint(_ account: MailAccount, password: String) -> String {
         MailStore.hash(account.imapHost + ":" + String(account.imapPort) + ":" + account.email + ":" + account.authMethod + ":" + MailStore.hash(password))
     }
+    /// Read-only IMAP commands can reconnect once. Mutations deliberately use
+    /// withSession directly, because their server result may be uncertain.
+    private func withReadSession<T>(_ account: MailAccount, password: String, operation: (IMAPConnection) async throws -> T) async throws -> T {
+        do { return try await withSession(account, password: password, operation: operation) }
+        catch {
+            guard !Task.isCancelled, MailConnectionError.isTransient(error) else { throw error }
+            try await Task.sleep(for: .milliseconds(500))
+            return try await withSession(account, password: password, operation: operation)
+        }
+    }
     private func withSession<T>(_ account: MailAccount, password: String, operation: (IMAPConnection) async throws -> T) async throws -> T {
         try Task.checkCancellation()
         let fingerprint = sessionFingerprint(account, password: password)
@@ -245,10 +250,15 @@ public actor MailTransport {
             // not remain in a dictionary keyed by every historic token hash.
             guard let registered = sessions[account.id], registered.gate === entry.gate else { throw CancellationError() }
             entry = registered
-            if entry.fingerprint != fingerprint { await entry.connection.close(); entry.fingerprint = fingerprint; sessions[account.id] = entry }
-            if !(await entry.connection.connected) { try await entry.connection.connect(host: account.imapHost, port: account.imapPort, email: account.email, password: password, oauth: account.authMethod == "oauth") }
+            if entry.fingerprint != fingerprint || Date().timeIntervalSince(entry.lastUsed) > 300 { await entry.connection.close(); entry.fingerprint = fingerprint; sessions[account.id] = entry }
+            if !(await entry.connection.connected) {
+                let loopback = ["127.0.0.1", "localhost"].contains(account.imapHost)
+                try await entry.connection.connect(host: account.imapHost, port: account.imapPort, email: account.email, password: password, tls: !(testOnlyPlaintextLoopback && loopback), oauth: account.authMethod == "oauth")
+            }
             try Task.checkCancellation()
-            let result = try await operation(entry.connection); await entry.gate.release(permit); return result
+            let result = try await operation(entry.connection)
+            if var registered = sessions[account.id], registered.gate === entry.gate { registered.lastUsed = Date(); sessions[account.id] = registered }
+            await entry.gate.release(permit); return result
         } catch { await entry.connection.close(); await entry.gate.release(permit); throw error }
     }
     public func closeAccount(_ accountID: String) async {

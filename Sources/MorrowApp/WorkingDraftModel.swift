@@ -22,14 +22,14 @@ extension AppModel {
         return agentArtifacts.first { $0.linkedDraftID == draftID }
     }
     /// Publish a successful draft/artifact write together; failed writes never get a success receipt.
-    @discardableResult func persistWorkingDraft(_ value: ComposeDraft, artifactID: String? = nil) async throws -> ComposeDraft {
+    @discardableResult func persistWorkingDraft(_ value: ComposeDraft, artifactID: String? = nil, expectedUpdatedAt: Date? = nil) async throws -> ComposeDraft {
         var draft = value; draft.updatedAt = Date()
         var artifact = artifactID.flatMap { id in agentArtifacts.first { $0.id == id && $0.linkedDraftID == draft.id } } ?? workingArtifact(for: draft.id)
         if var output = artifact {
             output.content = draft.body; output.title = draft.subject; output.updatedAt = draft.updatedAt
             artifact = output
         }
-        try await store.commitWorkingDraft(draft, artifact: artifact)
+        try await store.commitWorkingDraft(draft, artifact: artifact, expectedUpdatedAt: expectedUpdatedAt)
         if let i = drafts.firstIndex(where: { $0.id == draft.id }) { drafts[i] = draft } else { drafts.append(draft) }
         if let artifact, let i = agentArtifacts.firstIndex(where: { $0.id == artifact.id }) { agentArtifacts[i] = artifact }
         return draft

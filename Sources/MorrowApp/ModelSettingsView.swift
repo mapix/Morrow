@@ -23,6 +23,17 @@ struct ModelSettingsView: View {
             } else if draft.provider == "openai" {
                 TextField(L10n.t("服务基础地址，例如https://服务地址/v1"), text: Binding(get: { draft.openAIURL ?? "https://api.openai.com/v1" }, set: { draft.openAIURL = $0 })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("兼容模型服务地址"))
                 SecureField(L10n.t("API密钥，留空保留钥匙串中的密钥"), text: Binding(get: { key }, set: { key = $0; saveFeedback.edited(); onEdited() })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("模型API密钥"))
+                Button(L10n.t("授权读取已存凭据")) {
+                    let id = ModelEndpoint.credentialID(draft.openAIURL ?? "https://api.openai.com/v1")
+                    busy = true; result = nil
+                    Task {
+                        defer { busy = false }
+                        do {
+                            _ = try await Task.detached { try SecretStore.read(accountID: id, allowInteraction: true, forceReload: true) }.value
+                            result = L10n.t("钥匙串凭据已允许读取。")
+                        } catch { result = error.localizedDescription }
+                    }
+                }.buttonStyle(QuietButtonStyle()).disabled(busy).accessibilityIdentifier("settings.model.credentials.authorize")
                 TextField(L10n.t("模型ID"), text: Binding(get: { draft.openAIModel ?? "" }, set: { draft.openAIModel = $0 })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("兼容服务模型ID"))
                 DisclosureGroup(L10n.t("兼容设置")) { Toggle(L10n.t("严格JSON Schema输出（需模型支持）"), isOn: Binding(get: { draft.strictJSON ?? false }, set: { draft.strictJSON = $0 })); Toggle(L10n.t("使用developer指令角色"), isOn: Binding(get: { draft.useDeveloperRole ?? false }, set: { draft.useDeveloperRole = $0 })) }.font(Theme.label)
             } else if draft.provider != "apple" {

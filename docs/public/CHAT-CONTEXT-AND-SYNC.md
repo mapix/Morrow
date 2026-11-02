@@ -30,7 +30,7 @@ enter automatic attachment extraction. Explicit saves may fetch a referenced
 part within the native64MiB wire limit; larger parts remain linked for download
 through the provider. Original read flags are preserved.
 
-Both clients retain a per-account, per-folder server cursor: UIDVALIDITY,
+The desktop client retains a per-account, per-folder server cursor: UIDVALIDITY,
 HIGHESTMODSEQ, UIDNEXT and the known UID set. The first sync establishes a
 complete inventory; existing local messages and durable download jobs are reused.
 Later syncs negotiate the authenticated server's standard IMAP capabilities:
@@ -50,7 +50,7 @@ are calculated from the persisted inventory and local messages/jobs, so stopping
 and restarting does not reset downloaded history. Only these missing messages
 count toward download progress. Concurrent local flag edits remain protected.
 
-IDLE uses separate TLS connections for INBOX and an archive (including Gmail's All Mail) when
+IDLE uses separate TLS connections for selected INBOX and archive folders (including Gmail's All Mail) when
 present. Notifications are coalesced and trigger sync for the affected account;
 periodic sync remains as recovery and coverage for other folders or servers
 without IDLE. Listening renews every 25 minutes, reconnects with bounded backoff,
@@ -65,3 +65,75 @@ folder with no FETCH/SEARCH, CONDSTORE deltas, QRESYNC deletions, UIDVALIDITY
 resets, legacy fallback, IDLE/DONE renewal and cancellation, persistent history
 receipts, local-edit races and transaction rollback. These checks do not certify
 latency or extension support for a particular live provider.
+
+## Mail synchronization scope
+
+Settings → Sync and operation selects the folders to download. The default is
+Inbox, Sent and Drafts. Other choices are Inbox only, inclusion of archives and
+custom folders without Trash/Junk, or all folders. Gmail folder names with a
+prefix are recognized even when SPECIAL-USE flags are absent.
+
+Excluded folders are still listed, but their inventories and missing bodies are
+not fetched, and their IDLE connections are closed. Existing cached messages,
+raw files, indexes and sync cursors remain available. Changing scope cancels an
+active download; saved processing jobs remain durable. Restoring a folder later
+resumes from its cursor and locally missing UIDs, rather than erasing its cache.
+
+UIDs marked \\Deleted remain in the server membership cursor until expunged,
+but are excluded from body downloads. This exclusion survives an unchanged sync
+and is removed if the server clears the flag. Permanent server removal continues
+to reconcile local copies in folders that are being synchronized.
+
+New automatic mail and contact analysis uses only folders in the selected sync
+scope. Prior valid analysis and contact claims are retained. Explicit contact
+refresh and manual reading can still use cached mail from excluded folders.
+
+## Processing and model costs
+
+| Stage | Execution | Model API usage |
+| --- | --- | --- |
+| IMAP inventory, flags and body download | Mail provider connection | None |
+| MIME parsing, attachment extraction, rule signals and SQLite storage | Local code | None |
+| Full-text and EmbeddingGemma 2 vector indexes | Local code and local Metal model | None |
+| Automatic summaries, categorization and contact insights | Separately configured Ollama model | No gateway fallback; a remote Ollama endpoint sends evidence to that endpoint |
+| Chat, delegated work and enabled responders | Partner model configuration | Depends on the selected service; remote providers can consume API tokens |
+
+Automatic understanding processes unfinished or stale eligible local mail, which
+can include an existing history backlog. Each mail supplies its first 1,000 body
+characters and attachment names; contact extraction groups up to eight mail
+excerpts. Valid completed results are reused, including across Gmail copies.
+Local Ollama inference consumes local compute and memory, even though it does
+not use a gateway API allowance. Disabling automatic mail reading stops summary
+and contact inference; local mail storage and indexing remain independent.
+
+## Viewing referenced mail
+
+Work documents, briefs and inspectors keep every referenced mail ID in source
+order and display at most 50 reference rows per page. Closed disclosure groups
+do not resolve or construct mail rows. Rows use the existing mailbox ID index;
+expanding a reference list does not scan the complete mailbox, read raw bodies,
+or invoke a model. Missing references retain a placeholder on their page. Opening
+an individual reference continues to use the normal asynchronous mail reader.
+
+## Connection recovery
+
+Read-only IMAP operations reconnect and retry once after a transient timeout or
+closed connection. Failed sockets are discarded; cached sessions unused for
+five minutes are reopened before the next operation. MOVE, STORE, APPEND and
+SMTP delivery are not automatically replayed after an uncertain response.
+
+A failed history read stops that pass while retaining the server cursor, saved
+mail and durable jobs. The normal background synchronization interval provides
+the next recovery attempt. Background failures remain in account/sync status and
+do not open a global modal; the sync control exposes details and manual retry.
+An explicit user retry can report a persistent failure. Credential-access failures
+continue to wait for explicit authorization rather than displaying password
+dialogs or pretending that another network retry can grant access.
+# 发件箱、已发送与附件预览
+
+侧栏“发件箱”显示待发送、发送中与发送结果待核对的记录；“已发送”显示本机缓存与服务器同步的已投递邮件。“草稿箱”保留可编辑的未发送草稿。
+SMTP 成功后，原生发送流程先提交不可重复投递的状态与回执，再保存本机副本及服务器副本。本机或 IMAP 副本失败不会重新提交 SMTP；已确认发送的记录也不能被草稿编辑器覆盖。
+应用可按固定 RFC Message-ID 与真实服务器 Sent 副本核对历史中断记录，恢复本机状态与副本。没有确认依据的记录保留“需要核对发送结果”，不自动重发。Gmail 已自动保存 SMTP 发件，因此不再重复 IMAP APPEND。
+
+邮件正文下方的附件区域支持图片与 PDF 原件预览、缩放与展开查看，使用本机 ImageIO/PDFKit，不调用 AI 模型。已有本机附件直接读取；仅关联的远程附件在点击预览后按需获取，不改变自动同步的附件下载范围。
+原件预览单文件最多 64 MB；超过限制或加密/损坏的文件保留保存入口与明确提示。

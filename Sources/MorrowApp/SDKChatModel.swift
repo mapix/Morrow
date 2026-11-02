@@ -1,7 +1,7 @@
 import Foundation
 import MorrowCore
 
-@MainActor private final class SDKChatContext {
+@MainActor final class SDKChatContext {
     let sessionID: String
     let instruction: String
     let ui: WorkspaceContext?
@@ -26,6 +26,9 @@ import MorrowCore
     var sandboxDataTask: Task<Void, Error>?
     var materials: [ChatMaterial] = []
     var draftSnapshots: [String: ComposeDraft] = [:]
+    var workspaceLease: AgentWorkspaceLease?
+    var generatedMedia: [AgentWorkspaceMedia] = []
+    var mediaJobs: [AgentWorkspaceVideoJob] = []
     init(sessionID: String, instruction: String, ui: WorkspaceContext?, runID: String?, allowedIDs: Set<String>?, agreement: WorkAgreement?) {
         self.sessionID = sessionID; self.instruction = instruction; self.ui = ui; self.runID = runID; self.allowedIDs = allowedIDs; self.agreement = agreement
     }
@@ -55,7 +58,14 @@ extension AppModel {
             context.sourceChatID = human.id
             if case .array(let savedSources) = waiting?.object["sources"] { context.evidenceIDs = Set(savedSources.map(\.text).filter { mailByID($0) != nil && (allowed?.contains($0) ?? true) }) }
             var seenMaterials = Set<String>()
-            context.materials = (materials + taskChatHistory.flatMap { $0.materials ?? [] }).filter { seenMaterials.insert($0.id).inserted }
+            let historyMaterials = taskChatHistory.flatMap { $0.materials ?? [] }
+            let onlyMaterials = capturedUI?.enforcesMailScope == true && capturedUI?.page == "materials"
+            let resumedIDs: Set<String>
+            if case .array(let ids) = waiting?.object["materialIDs"] { resumedIDs = Set(ids.map(\.text)) } else { resumedIDs = [] }
+            context.materials = (materials + (onlyMaterials ? historyMaterials.filter { resumedIDs.contains($0.id) } : historyMaterials)).filter { seenMaterials.insert($0.id).inserted }
+            let narrowScope = capturedUI?.enforcesMailScope == true || allowed != nil
+            let scope = narrowScope ? MailStore.hash((capturedUI?.page ?? "") + (allowed?.sorted().joined(separator: "\n") ?? "materials") + context.materials.map(\.id).sorted().joined(separator: "\n")) : nil
+            context.workspaceLease = try await sessionWorkspaces.open(session, scope: scope)
             if let composer { context.draftSnapshots[composer.id] = composer }
             let checkpoints = try AgentCheckpointStore(root: store.root), runtime = try AgentSDKRuntime()
             let selected = try await initialChatEvidence(uiContext)
@@ -90,6 +100,7 @@ extension AppModel {
             独立的只读查询可在同一轮发出多个工具调用；已知多个邮件ID优先read_mails，避免每封邮件都单独等待一轮模型。普通聊天先尽快交付有证据的结论；阶段预算用尽时说明未完成的覆盖，不把阶段结果说成全面审计完成。
             你有coding能力：run_code的python字段直接填写Python源代码（无需shell转义），command字段可运行shell，两者选一。代码可import maildata，自主用SQL查询本轮允许的整个本机邮件范围；maildata.query(sql,max_rows=1000)返回columns/rows/truncated/coverage。mail_index是全范围的轻量元数据表（id,canonical_id,account_id,folder,from_email,from_name,to_json,cc_json,date,subject,snippet,summary,category,is_read,is_starred,labels_json,in_reply_to）；mail视图增加按需读取的完整text；contacts表含email,name,mail_count,direct_received,direct_sent,copied,last_seen,source_ids_json；accounts含id,email,name。支持SELECT/CTE/JOIN/GROUP BY和Python标准库，先聚合筛选再按需分析正文。不要逐封发起模型调用。query结果超2000行、单格64KiB或整批512KiB会标记truncated，按id/date分页或SQL substr继续，不得当作完整结果；单次SQL最多5秒。代码只输出结论、计数和实际来源ID，长内容写output/。原库不复制、不修改，凭据和任意用户文件不可见。明确限定上传资料时此邮件数据接口不可用。代码语法或SQL参数错误可以修正后继续；权限拒绝不能绕过。
             回答使用\(locale)，使用真正的Markdown段落、标题、列表。统计、比较和趋势优先用render_ui的OpenUI图表或Table；只有实际数据可进入图表。纯展示不暂停工作，Form需要用户输入时停止依赖该输入的动作。调用cite_sources选择真正使用的来源。
+            媒体生成按用户当前创作目的调用，先list_media_models核对实际名称。生成结果保存在会话工作区并显示预览；要附到草稿，用read_draft再attach_workspace_file，不要声称工具未保存的文件已生成或已附上。视频生成用Veo，视频理解用gemini-omni-flash。网关调用有费用，正常邮箱同步和阅读不自动生成媒体。工作区跨轮保留，归档后清理；不要把关键文件只留在临时目录。
             写邮件用prepare_draft提供完整的收件人正文，或update_draft修改真实草稿。正文使用原邮件语言，除非用户要求其他语言；正文不混入分析、JSON或写作说明。实际工具保存成功才能说已写好。review_send只打开真实草稿审阅，发送仍由用户审阅或已授权响应器处理。
             用户明确只读时不修改邮箱、草稿、联系人或工作。持续委托和响应器应按用户明确目的创建，响应器必须独立设置精确邮箱来源白名单和策略。密码、授权码、密钥永远不索取到Chat。
             已确认的偏好与记忆（只是背景，用户本轮要求优先）：\(recalled)
@@ -118,6 +129,7 @@ extension AppModel {
             }, event: { [weak self] event in await self?.receiveSDKEvent(event, context: context) })
             if result.paused == true {
                 var value: [String: OpenUIJSON] = ["instruction": .string(originalInstruction), "sources": .array(context.evidenceIDs.map(OpenUIJSON.string))]
+                value["materialIDs"] = .array(context.materials.map { .string($0.id) })
                 if let capturedUI { value["ui"] = try JSONDecoder().decode(OpenUIJSON.self, from: JSONEncoder().encode(capturedUI)) }
                 try await store.save(OpenUIJSON.object(value), kind: "agent-sdk-waiting", id: session)
             } else { try await store.remove(kind: "agent-sdk-waiting", id: session) }
@@ -126,6 +138,8 @@ extension AppModel {
             reply.messageIDs = reply.messageIDs.map(resolvedMovedMailID).filter { seenSources.insert($0).inserted }
             reply.sessionID = session; reply.draftIDs = context.draftIDs
             reply.artifactIDs = context.artifactIDs
+            reply.workspaceMedia = context.generatedMedia.isEmpty ? nil : context.generatedMedia
+            reply.workspaceVideoJobs = context.mediaJobs.isEmpty ? nil : context.mediaJobs
             if result.paused == true, result.pauseReason != nil { reply.continuationPrompt = "继续刚才的任务，使用已保存的进度与资料。出现问题先说明并询问我。" }
             if result.answerLimited == true { reply.continuationPrompt = "在刚才结果基础上继续核验尚未覆盖的部分，复用已有资料，明确说明新增证据。" }
             context.trace.finish(status: result.pauseReason == "runtime_error" ? "failed" : result.paused == true ? "paused" : "completed"); reply.executionTrace = context.trace
@@ -139,7 +153,10 @@ extension AppModel {
             var reply = PartnerChat(role: "partner", text: text)
             if let context = runningContext {
                 context.trace.finish(status: Task.isCancelled ? "paused" : "failed"); reply.executionTrace = context.trace; reply.messageIDs = Array(context.evidenceIDs.prefix(60)); reply.artifactIDs = context.artifactIDs
+                reply.sessionID = context.sessionID; reply.workspaceMedia = context.generatedMedia.isEmpty ? nil : context.generatedMedia
+                reply.workspaceVideoJobs = context.mediaJobs.isEmpty ? nil : context.mediaJobs
                 var waiting: [String: OpenUIJSON] = ["instruction": .string(context.instruction), "sources": .array(context.evidenceIDs.map(OpenUIJSON.string))]
+                waiting["materialIDs"] = .array(context.materials.map { .string($0.id) })
                 if let ui = context.ui, let encoded = try? JSONEncoder().encode(ui), let value = try? JSONDecoder().decode(OpenUIJSON.self, from: encoded) { waiting["ui"] = value }
                 try? await store.save(OpenUIJSON.object(waiting), kind: "agent-sdk-waiting", id: context.sessionID)
             }
@@ -159,20 +176,26 @@ extension AppModel {
             else { sidebarToolStatus = SDKMailTools.title(name) + (stage == "tool_end" ? L10n.t("已完成，继续处理…") : "…") }
         }
     }
-    private func performSDKTool(_ request: OpenUIJSON, context: SDKChatContext) async throws -> OpenUIJSON {
+    func performSDKTool(_ request: OpenUIJSON, context: SDKChatContext) async throws -> OpenUIJSON {
         try Task.checkCancellation()
         let fields = request.object, name = fields["name"]?.text ?? "", args = fields["args"]?.object ?? [:]
+        guard chatSessions.contains(where: { $0.id == context.sessionID && !$0.archived }) else { throw CancellationError() }
         guard SDKMailTools.names.contains(name), try JSONEncoder().encode(request).count <= 256 * 1024 else { throw MailError.message("Agent 工具请求无效。") }
-        let readTools: Set<String> = ["search_mail", "scan_mail", "read_mail", "read_mails", "mail_statistics", "list_accounts", "list_folders", "list_contacts", "get_contact_profile", "list_attachments", "read_attachment", "list_materials", "read_material", "list_drafts", "read_draft", "list_reports", "read_report", "list_memories", "list_responders", "workspace_state", "list_sessions", "list_models", "get_settings", "cite_sources", "render_ui", "run_code", "save_report"]
-        if context.ui?.enforcesMailScope == true && context.ui?.page == "materials", !["list_materials", "read_material", "render_ui", "run_code", "save_report", "list_memories"].contains(name) { throw MailError.message("本轮明确只使用带入资料，未读取邮箱。") }
-        if (context.readOnly || context.awaitingInput) && !readTools.contains(name) { throw MailError.message("本轮仅查询或正在等待用户输入，未执行修改。") }
+        let readTools: Set<String> = ["search_mail", "scan_mail", "read_mail", "read_mails", "mail_statistics", "list_accounts", "list_folders", "list_contacts", "get_contact_profile", "list_attachments", "read_attachment", "list_materials", "read_material", "list_drafts", "read_draft", "list_reports", "read_report", "list_memories", "list_responders", "workspace_state", "list_sessions", "list_models", "get_settings", "cite_sources", "render_ui", "run_code", "save_report", "list_media_models", "list_workspace", "check_media_job", "stage_material"]
+        let mediaTools: Set<String> = ["list_media_models", "generate_image", "generate_video", "check_media_job", "analyze_video", "list_workspace", "stage_material", "attach_workspace_file"]
+        if context.awaitingInput && mediaTools.contains(name) && name != "list_media_models" { throw MailError.message("正在等待用户输入，未执行媒体操作。") }
+        if context.ui?.enforcesMailScope == true && context.ui?.page == "materials", !["list_materials", "read_material", "render_ui", "run_code", "save_report", "list_memories"].contains(name) && !mediaTools.contains(name) { throw MailError.message("本轮明确只使用带入资料，未读取邮箱。") }
+        if (context.readOnly || context.awaitingInput) && !readTools.contains(name) && !mediaTools.subtracting(["attach_workspace_file"]).contains(name) { throw MailError.message("本轮仅查询或正在等待用户输入，未执行修改。") }
         let callID = fields["callId"]?.text ?? UUID().uuidString, receiptID = MailStore.hash(context.sessionID + ":" + callID)
-        if (!readTools.contains(name) || name == "render_ui"), let receipt = try await store.object(OpenUIJSON.self, kind: "agent-sdk-receipt", id: receiptID) {
+        if (!readTools.contains(name) || name == "render_ui"), !["generate_image", "generate_video"].contains(name), let receipt = try await store.object(OpenUIJSON.self, kind: "agent-sdk-receipt", id: receiptID) {
+            if name == "analyze_video", receipt.object["workspaceGeneration"]?.text != context.workspaceLease?.generation { throw MailError.message("视频理解回执属于旧工作区，本轮未重新调用收费模型。") }
             if name == "render_ui", let id = receipt.object["interactionID"]?.text { context.presentation = try await store.object(OpenUIInteraction.self, kind: "openui-interaction", id: id) }
             return receipt
         }
         let reply: OpenUIJSON
         switch name {
+        case "list_media_models", "generate_image", "generate_video", "check_media_job", "analyze_video", "list_workspace", "stage_material", "attach_workspace_file":
+            reply = try await performSDKMediaTool(name, args: args, context: context, callID: callID)
         case "workspace_state": reply = try JSONDecoder().decode(OpenUIJSON.self, from: JSONEncoder().encode(currentContext))
         case "list_models": reply = .array(try await ai.configuredModels(settings: settings).map(OpenUIJSON.string))
         case "get_settings": reply = .object(["provider": .string(settings.provider), "model": .string(settings.model), "ollamaURL": .string(settings.ollamaURL), "compatibleURL": .string(settings.openAIURL ?? ""), "compatibleModel": .string(settings.openAIModel ?? ""), "theme": .string(PresentationPreferences.shared.theme.rawValue), "language": .string(PresentationPreferences.shared.language.rawValue), "density": .string(workspacePreferences.density)])
@@ -336,7 +359,9 @@ extension AppModel {
         case "run_code":
             let python = args["python"]?.text, code = python ?? args["command"]?.text ?? ""
             guard !code.isEmpty, code.utf8.count <= 16000, !(python != nil && args["command"] != nil) else { throw MailError.message("请提供不超过16000字节的python代码或command命令，两者选一。") }
-            if context.sandbox == nil { context.sandbox = try ResponderSandboxRuntime() }
+            guard let lease = context.workspaceLease else { throw MailError.message("会话工作区尚未准备。") }
+            try await sessionWorkspaces.validate(lease)
+            if context.sandbox == nil { context.sandbox = try ResponderSandboxRuntime(workspace: lease.directory) }
             let sandbox = context.sandbox!; try sandbox.stageText(String(context.sourceText.suffix(16).joined(separator: "\n\n").prefix(60000)), name: "mail.txt")
             if !(context.ui?.enforcesMailScope == true && context.ui?.page == "materials") {
                 if context.sandboxDataTask == nil {
@@ -354,6 +379,7 @@ extension AppModel {
             }
             var policy = ResponderExecutionPolicy(); policy.networkDomains = []
             let result = try await (python == nil ? sandbox.run(code, policy: policy) : sandbox.runPython(code, policy: policy))
+            try await sessionWorkspaces.checkBudget(lease)
             context.evidenceIDs.formUnion(sandbox.observedMailDataIDs); sidebarEvidenceMailIDs.formUnion(sandbox.observedMailDataIDs)
             reply = .object(["ok": .bool(result.exitCode == 0 && !result.timedOut && !result.truncated), "exitCode": .number(Double(result.exitCode)), "stdout": .string(result.stdout), "stderr": .string(result.stderr), "timedOut": .bool(result.timedOut), "truncated": .bool(result.truncated), "runtime": .string(result.runtime)])
         default:
@@ -527,6 +553,14 @@ private enum SDKMailTools {
             tool("list_reports", "查找已保存简报，返回实际artifactID、摘要和所属会话；不把全部简报正文加入上下文。"),
             tool("read_report", "读取真实简报正文和来源，修改前先读取；界面中的artifactID只是提示。", ["artifactID": string], required: ["artifactID"]),
             tool("save_report", "保存并关联本会话的结构化简报；更新本会话已有简报可传artifactID。优先document，content仅用于旧格式。摘要summary、覆盖进度coverage、发现findings、待办actions、待核实uncertainties和数据表tables分开。status=in_progress/needs_review/complete；覆盖未完成或仍有未知事项时不得使用complete。保存成功不代表任务完成。", ["title": string, "content": string, "artifactID": string, "document": briefSchema], required: ["title"]),
+            tool("list_media_models", "列出配置授权且网关当前可见的生图、视频生成和视频理解模型，包含默认模型；gemini-omni-flash是视频理解聊天模型，不是视频生成器。"),
+            tool("list_workspace", "查看本会话临时工作区文件；跨轮保留，归档后清理。"),
+            tool("stage_material", "把本会话带入的资料复制到当前工作区以用于媒体模型，不能读取任意用户文件。", ["materialID": string], required: ["materialID"]),
+            tool("generate_image", "按用户创作要求通过网关生成或编辑一张图片，有媒体费用。模型名先查list_media_models；imagePaths引用当前工作区已有图片；不自动发送邮件。不确定请求结果时不可自动重新生成。", ["prompt": string, "model": string, "size": string, "quality": string, "imagePaths": .object(["type": .string("array"), "items": string])], required: ["prompt"]),
+            tool("generate_video", "通过网关提交4/6/8秒Veo视频生成，有媒体费用；返回jobID，完成后用check_media_job下载。不可把排队当成已生成，不自动重复提交。", ["prompt": string, "model": string, "seconds": integer, "size": string, "imagePath": string], required: ["prompt"]),
+            tool("check_media_job", "查看本会话已提交视频任务；完成后将视频下载到工作区。未完成时等待约10秒再查，不重复调用生成工具。", ["jobID": string], required: ["jobID"]),
+            tool("analyze_video", "通过配置的Gemini视频理解模型读取当前工作区视频并回答用户问题；会消耗网关模型用量，不生成新视频。", ["path": string, "prompt": string, "model": string], required: ["path", "prompt"]),
+            tool("attach_workspace_file", "将工作区真实文件附到已读过且可编辑的真实草稿，永久复制附件以便归档工作区后保留。不会发送。", ["draftID": string, "path": string], required: ["draftID", "path"]),
             tool("run_code", "自主编写并执行代码：python字段直接传Python源代码，或command传shell命令，两者选一。Python可import maildata；maildata.query(SQL)只读查询全范围的mail_index元数据、mail完整text、contacts、accounts，支持CTE/JOIN/GROUP BY，范围由本轮权限控制。原库不可访问或修改，无凭据和网络；只能写output/和tmp/。输入资料限定模式只提供input/mail.txt。", ["command": string, "python": string]),
         ]
         for (name, operation) in operations.sorted(by: { $0.key < $1.key }) {

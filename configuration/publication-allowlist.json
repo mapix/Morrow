@@ -15,7 +15,18 @@
     "configuration/publication-allowlist.json",
     "configuration/SmailDesktopCloud.entitlements",
     "configuration/MorrowDesktopCloud.entitlements",
-    "website/deploy/nginx.conf"
+    "website/deploy/nginx.conf",
+    "configuration/media-models.json",
+    "design.md",
+    "tokens.css",
+    "base.css",
+    "docs/APACHE-2.0.txt",
+    "docs/DESIGN.md",
+    "docs/DELIVERY.md",
+    "docs/HALLMARK-REVIEW.md",
+    "docs/RESUME.md",
+    "design/branding/GENERATION-RECEIPT.md",
+    "design/branding/gpt-image-2.5-flare-prompts.md"
   ],
   "allowed_trees": [
     "Sources/",

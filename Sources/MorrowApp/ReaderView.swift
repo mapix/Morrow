@@ -78,6 +78,10 @@ struct ReaderView: View {
                     }.padding(24).background(Theme.sheet)
                 }
             }
+            if !(bodySource?.attachments ?? mail.attachments).isEmpty {
+                Divider().overlay(Theme.rule)
+                ReaderAttachmentsView(attachments: bodySource?.attachments ?? mail.attachments).id(mail.id)
+            }
             HStack(spacing: 8) {
                 Image(systemName: remoteImages ? "photo" : "shield.lefthalf.filled").accessibilityHidden(true)
                 Text(remoteImages ? L10n.t("外部图片已启用，脚本仍被阻止。") : L10n.t("外部图片和脚本已阻止。链接需点击后打开。")).lineLimit(1)

@@ -1,6 +1,24 @@
 import Foundation
 import Network
 
+public enum MailConnectionError: LocalizedError, Sendable {
+    case timeout(String), disconnected(String)
+    public var errorDescription: String? { switch self { case .timeout(let message), .disconnected(let message): return message } }
+    public static func isTransient(_ error: Error) -> Bool {
+        if error is MailConnectionError { return true }
+        if let error = error as? NWError {
+            switch error {
+            case .posix(let code): return [ETIMEDOUT, ECONNRESET, ENETDOWN, ENETUNREACH, EHOSTUNREACH, ECONNREFUSED, ENOTCONN, EPIPE].contains(code.rawValue)
+            case .dns: return true
+            default: return false
+            }
+        }
+        let code = error as NSError
+        return code.domain == NSURLErrorDomain && [NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet,
+            NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed].contains(code.code)
+    }
+}
+
 /// One callback/continuation boundary shared by IMAP, POP and native SMTP.
 /// Completed operations release their timeout capture immediately. Cancelling
 /// a caller cancels the underlying socket, including a pending connect/write.
@@ -12,7 +30,7 @@ enum MailNetworkIO {
                 switch state {
                 case .ready: gate.finish(.success(()))
                 case .failed(let error): gate.finish(.failure(error))
-                case .cancelled: gate.finish(.failure(MailError.message("邮件连接已关闭。")))
+                case .cancelled: gate.finish(.failure(MailConnectionError.disconnected("邮件连接已关闭。")))
                 default: break
                 }
             }
@@ -24,7 +42,7 @@ enum MailNetworkIO {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { data, _, done, error in
                 if let error { gate.finish(.failure(error)) }
                 else if let data, !data.isEmpty { gate.finish(.success(data)) }
-                else { gate.finish(.failure(MailError.message(done ? "邮件服务器已关闭连接。" : "邮件服务器返回了空响应。"))) }
+                else { gate.finish(.failure(MailConnectionError.disconnected(done ? "邮件服务器已关闭连接。" : "邮件服务器返回了空响应。"))) }
             }
         }
     }
@@ -60,7 +78,7 @@ private final class MailIOGate<T>: @unchecked Sendable {
     }
     func schedule(timeout: TimeInterval, connection: NWConnection, message: String) {
         let item = DispatchWorkItem { [weak self, weak connection] in
-            if self?.finish(.failure(MailError.message(message))) == true { connection?.cancel() }
+            if self?.finish(.failure(MailConnectionError.timeout(message))) == true { connection?.cancel() }
         }
         lock.lock()
         if completed != nil { lock.unlock(); item.cancel(); return }

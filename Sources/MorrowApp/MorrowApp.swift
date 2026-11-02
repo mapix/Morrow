@@ -22,7 +22,7 @@ struct MorrowApp: App {
             }
             CommandMenu(L10n.t("邮件")) {
                 Button(L10n.t("搜索邮件")) { NotificationCenter.default.post(name: Notification.Name("MorrowFocusSearch"), object: nil) }.keyboardShortcut("f")
-                Button(L10n.t("同步所有邮箱")) { Task { await model.sync() } }.keyboardShortcut("r")
+                Button(L10n.t("同步所有邮箱")) { Task { await model.sync(userInitiated: true) } }.keyboardShortcut("r")
                 Button(L10n.t("回复")) { if let mail = model.selected { Task { await model.compose(replyTo: mail) } } }.keyboardShortcut("r", modifiers: [.command, .shift])
                 Button(L10n.t("归档")) { if let mail = model.selected { Task { await model.move(mail, role: "archive") } } }.keyboardShortcut("e")
                 Button(L10n.t("移到废纸篓")) { if let mail = model.selected { Task { await model.move(mail, role: "trash") } } }.keyboardShortcut(.delete, modifiers: .command)
@@ -44,7 +44,7 @@ private struct MenuBarContent: View {
         Button(L10n.t("打开 Morrow")) { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
         Text(L10n.format("{0} 件待处理事项", "\(model.actionCount)"))
         Button(L10n.t("写邮件")) { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true); Task { await model.compose() } }
-        Button(L10n.t("同步邮件")) { Task { await model.sync() } }
+        Button(L10n.t("同步邮件")) { Task { await model.sync(userInitiated: true) } }
         Divider(); Button(L10n.t("退出 Morrow")) { NSApp.terminate(nil) }
     }
 }

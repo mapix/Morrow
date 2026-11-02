@@ -136,6 +136,8 @@ private struct ChatMessageView: View {
                 if let ids = entry.draftIDs { ForEach(ids, id: \.self) { id in if let draft = model.drafts.first(where: { $0.id == id }) { Button { model.openDraft(draft) } label: { HStack { Image(systemName: "doc.text"); VStack(alignment: .leading) { Text(draft.subject.isEmpty ? L10n.t("无主题草稿") : draft.subject); Text(L10n.t("已保存到草稿箱 · 点击编辑与预览")).font(Theme.label).foregroundStyle(Theme.secondary) }; Spacer(); Image(systemName: "arrow.up.right") }.padding(12).background(Theme.sidebar, in: RoundedRectangle(cornerRadius: Theme.radius)) }.buttonStyle(.plain).accessibilityIdentifier("chat.open-draft") } } }
             }
             if let materials = entry.materials { ForEach(materials) { material in ChatMaterialPreview(material: material) } }
+            if let media = entry.workspaceMedia { ForEach(media) { file in AgentMediaPreview(file: file) } }
+            if let jobs = entry.workspaceVideoJobs { ForEach(jobs) { job in AgentVideoJobPreview(job: job, chatID: entry.id) } }
             if !sources.isEmpty { DisclosureGroup(L10n.format("依据邮件（{0}）", "\(sources.count)")) { ForEach(sources) { mail in Button { model.revealMail(mail) } label: { Label(mail.subject, systemImage: "envelope").font(Theme.label).lineLimit(2).padding(.vertical, 4) }.buttonStyle(ReferenceRowButtonStyle()) } }.font(Theme.label).foregroundStyle(Theme.secondary) }
             if let ids = entry.memoryIDs, !ids.isEmpty { Button(L10n.format("记忆依据（{0}）", "\(ids.count)")) { model.revealMemories(ids) }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.accent2) }
         }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .contain).accessibilityLabel(entry.role == "user" ? L10n.t("你的要求") : L10n.t("伙伴回复"))

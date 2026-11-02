@@ -3,6 +3,30 @@ import CMail
 @testable import MorrowCore
 
 final class IncrementalIMAPTests: XCTestCase {
+    func testDeletedUIDsAreNotDownloadedAndRemainExcludedOnUnchangedSync() async throws {
+        let peer = try scripted("CONDSTORE", [
+            ("SELECT \"INBOX\" (CONDSTORE)", selected()),
+            ("UID FETCH 1:* (UID FLAGS)", [row(1), row(2, "\\Deleted"), row(3)]),
+            ("SELECT \"INBOX\" (CONDSTORE)", selected()),
+            ("SELECT \"INBOX\" (CONDSTORE)", selected(mod: 11)),
+            ("UID FETCH 1:* (UID FLAGS) (CHANGEDSINCE 10)", [row(2, "", mod: 11)]),
+            ("UID SEARCH ALL", ["* SEARCH 1 2 3"])
+        ]); defer { peer.stop() }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try MailStore(root: root), client = try await connect(peer)
+        let initial = try await client.syncInventory("INBOX", cursor: nil)
+        XCTAssertEqual(initial.presentUIDs, [1, 2, 3]); XCTAssertEqual(initial.deletedUIDs, [2])
+        let initialCursor = initial.cursor(account: account, folder: "INBOX")
+        try await store.save(initialCursor, kind: "mail-sync-cursor", id: initialCursor.id)
+        let savedCursor = try await store.mailSyncCursor(account: account, folder: "INBOX")
+        let unchanged = try await client.syncInventory("INBOX", cursor: savedCursor)
+        XCTAssertTrue(unchanged.flags.isEmpty); XCTAssertEqual(unchanged.deletedUIDs, [2])
+        let plan = try await store.mailSyncDownloadPlan(account: account, folder: "INBOX", inventory: unchanged)
+        XCTAssertEqual(plan.remainingUIDs, [3, 1])
+        let restored = try await client.syncInventory("INBOX", cursor: unchanged.cursor(account: account, folder: "INBOX"))
+        XCTAssertTrue(restored.deletedUIDs.isEmpty)
+        await client.close()
+    }
     func testGmailIdentityReuseReadsOnlyMinimalHeadersAcrossFolders() async throws {
         let header = "Message-ID: <identity@example.invalid>\r\n\r\n"
         let peer = try scripted("X-GM-EXT-1", [

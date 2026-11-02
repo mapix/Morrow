@@ -82,6 +82,7 @@ struct SettingsView: View {
     @State private var modelDraft = AgentSettings()
     @State private var modelKey = ""
     @State private var loadedModelDraft = false
+    @State private var authorizingAccount: String?
     @StateObject private var saveFeedback = SettingsSaveFeedback()
     var body: some View {
         ScrollView {
@@ -91,6 +92,16 @@ struct SettingsView: View {
                     ForEach(model.accounts) { a in
                         HStack { VStack(alignment: .leading, spacing: 6) { Text(a.name).font(Theme.body.weight(.medium)); Text(a.email).font(Theme.label).foregroundStyle(Theme.muted); Text(a.isDemo ? L10n.t("演示邮箱") : model.accountSyncStates[a.id]?.error ?? model.accountSyncStates[a.id]?.lastSyncAt.map { L10n.t("同步于 ") + $0.uiFormatted() } ?? L10n.t("尚未同步")).font(Theme.small).foregroundStyle(model.accountSyncStates[a.id]?.error == nil ? Theme.secondary : Theme.error) }; Spacer(); if !a.isDemo { Button(L10n.t("设置")) { editing = a }.buttonStyle(.link) }; Button(L10n.t("移除")) { deleting = a }.buttonStyle(.link) }.padding(.vertical, 12)
                         Divider().overlay(Theme.rule)
+                        if !a.isDemo {
+                            Button(authorizingAccount == a.id ? L10n.t("等待钥匙串授权…") : L10n.t("授权读取已存凭据")) {
+                                authorizingAccount = a.id
+                                Task {
+                                    defer { authorizingAccount = nil }
+                                    do { try await model.credentials.authorize(a); await model.sync(accountID: a.id, userInitiated: true) }
+                                    catch { await model.setAccountSyncState(a, syncing: false, error: error.localizedDescription, completed: false) }
+                                }
+                            }.buttonStyle(QuietButtonStyle()).disabled(authorizingAccount != nil).accessibilityIdentifier("settings.credentials.authorize")
+                        }
                     }
                     Button { model.showAccount = true } label: { Label(L10n.t("添加邮箱"), systemImage: "plus") }.buttonStyle(QuietButtonStyle()).padding(.top, 12)
                 }
@@ -119,6 +130,7 @@ struct SettingsView: View {
                     Button(L10n.t("继续索引")) { model.process() }.buttonStyle(QuietButtonStyle())
                 }
                 section(L10n.t("同步与运行")) {
+                    MailSyncScopeSettingsView()
                     Stepper(L10n.format("每 {0} 秒同步邮箱", "\(model.settings.syncInterval)"), value: runtimeBinding(\.syncInterval), in: 60...900, step: 60)
                     Toggle(L10n.t("登录 Mac 时打开 Morrow"), isOn: Binding(get: { launchAtLogin }, set: { value in
                         do { if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }; launchAtLogin = value } catch { model.error = error.localizedDescription }

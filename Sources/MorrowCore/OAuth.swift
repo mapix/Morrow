@@ -82,21 +82,46 @@ public enum OAuthProvider {
 
 public actor AccountCredentials {
     private var refreshes: [String: Task<String, Error>] = [:]
+    private var pendingTokens: [String: (MailAccount, OAuthTokens)] = [:]
+    private var revisions: [String: Int] = [:]
     public init() {}
+    public func invalidate(_ accountID: String) {
+        revisions[accountID, default: 0] += 1
+        refreshes.removeValue(forKey: accountID)?.cancel(); pendingTokens[accountID] = nil
+        SecretStore.invalidateMemory(accountID: accountID)
+    }
+    public func authorize(_ account: MailAccount) throws {
+        if let pending = pendingTokens[account.id], pending.0 == account {
+            try SecretStore.save(String(decoding: JSONEncoder().encode(pending.1), as: UTF8.self), accountID: account.id, allowInteraction: true)
+            pendingTokens[account.id] = nil
+        } else {
+            _ = try SecretStore.read(accountID: account.id, allowInteraction: true, forceReload: true)
+        }
+    }
     public func credential(_ account: MailAccount) async throws -> String {
         if account.authMethod != "oauth" { return try SecretStore.read(accountID: account.id) }
         if let task = refreshes[account.id] { return try await task.value }
+        if let pending = pendingTokens[account.id], pending.0 == account {
+            try SecretStore.save(String(decoding: JSONEncoder().encode(pending.1), as: UTF8.self), accountID: account.id, allowInteraction: false)
+            pendingTokens[account.id] = nil
+        }
+        let revision = revisions[account.id, default: 0]
         let task = Task<String, Error> {
             let secret = try SecretStore.read(accountID: account.id)
             let tokens = try JSONDecoder().decode(OAuthTokens.self, from: Data(secret.utf8))
             if tokens.expiresAt > Date().addingTimeInterval(90) { return tokens.accessToken }
             guard let refresh = tokens.refreshToken else { throw MailError.message("邮箱授权已到期，请在设置中重新登录。") }
             let updated = try await OAuthProvider.exchange(provider: account.oauthProvider, fields: ["grant_type": "refresh_token", "refresh_token": refresh, "client_id": account.oauthClientID], previousRefresh: refresh)
-            try SecretStore.save(String(decoding: JSONEncoder().encode(updated), as: UTF8.self), accountID: account.id)
+            try Task.checkCancellation()
+            guard revisions[account.id, default: 0] == revision else { throw CancellationError() }
+            pendingTokens[account.id] = (account, updated)
+            try SecretStore.save(String(decoding: JSONEncoder().encode(updated), as: UTF8.self), accountID: account.id, allowInteraction: false)
+            pendingTokens[account.id] = nil
             return updated.accessToken
         }
         refreshes[account.id] = task
-        do { let value = try await task.value; refreshes[account.id] = nil; return value } catch { refreshes[account.id] = nil; throw error }
+        do { let value = try await task.value; if revisions[account.id, default: 0] == revision { refreshes[account.id] = nil }; return value }
+        catch { if revisions[account.id, default: 0] == revision { refreshes[account.id] = nil }; throw error }
     }
 }
 

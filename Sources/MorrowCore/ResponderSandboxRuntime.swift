@@ -18,11 +18,12 @@ public final class ResponderSandboxRuntime: @unchecked Sendable {
     private let node: URL
     private let bridge: URL
     private let python: URL?
+    private let deletesWorkspaceOnDeinit: Bool
     #if os(macOS)
     private var mailDataServer: AgentMailDataServer?
     private var mailData: AgentMailData?
     #endif
-    public init() throws {
+    public init(workspace suppliedWorkspace: URL? = nil) throws {
         #if os(macOS)
         let fm = FileManager.default
         let bundles = [Bundle.main.resourceURL?.appendingPathComponent("SandboxRuntime"), URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("Runtime/SandboxRuntime")].compactMap { $0 }
@@ -36,9 +37,15 @@ public final class ResponderSandboxRuntime: @unchecked Sendable {
         python = ["/Applications/Xcode.app/Contents/Developer/usr/bin/python3", "/Library/Developer/CommandLineTools/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].map { URL(fileURLWithPath: $0) }.first { fm.isExecutableFile(atPath: $0.path) }?.resolvingSymlinksInPath()
         // SRT uses Unix sockets. macOS's per-user temporary path plus a UUID
         // exceeds sockaddr_un's limit; a short private workspace avoids it.
-        workspace = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("MorrowResponder-" + String(UUID().uuidString.prefix(16)), isDirectory: true)
-        try fm.createDirectory(at: workspace, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        for directory in ["input", "output", "tmp"] { try fm.createDirectory(at: workspace.appendingPathComponent(directory), withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
+        workspace = suppliedWorkspace ?? URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("MorrowResponder-" + String(UUID().uuidString.prefix(16)), isDirectory: true)
+        deletesWorkspaceOnDeinit = suppliedWorkspace == nil
+        if suppliedWorkspace == nil { try fm.createDirectory(at: workspace, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
+        else {
+            guard workspace.lastPathComponent.hasPrefix("MorrowResponder-"), workspace.resolvingSymlinksInPath() == workspace else { throw MailError.message("会话沙箱工作区路径无效。") }
+            // Input data is scoped to this turn, while output/media survive.
+            try? fm.removeItem(at: workspace.appendingPathComponent("input"))
+        }
+        for directory in ["input", "output", "tmp"] { try fm.createDirectory(at: workspace.appendingPathComponent(directory), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
         #else
         throw MailError.message("此设备不支持 Anthropic Sandbox Runtime；响应器工具需要在 Mac 执行。")
         #endif
@@ -47,7 +54,7 @@ public final class ResponderSandboxRuntime: @unchecked Sendable {
         #if os(macOS)
         mailDataServer?.stop()
         #endif
-        try? FileManager.default.removeItem(at: workspace)
+        if deletesWorkspaceOnDeinit { try? FileManager.default.removeItem(at: workspace) }
     }
     /// Host-only staging. No original database path crosses into the sandbox.
     public func enableMailData(root: URL, mails: [MailMessage], contacts: [ContactTriage], accounts: [MailAccount]) throws {

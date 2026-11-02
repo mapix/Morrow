@@ -15,7 +15,7 @@ struct BriefWorkspaceView: View {
                     HStack { Text(artifact.createdAt.uiFormatted()).font(Theme.label).foregroundStyle(Theme.muted); Spacer(); ChatReplyCopyButton(text: artifact.content) }
                     WorkReportContent(artifact: artifact)
                     if let revisions = artifact.revisions, !revisions.isEmpty { DisclosureGroup(L10n.format("之前的版本（{0}）", String(revisions.count))) { ForEach(Array(revisions.reversed().prefix(20))) { revision in VStack(alignment: .leading, spacing: 10) { Text(revision.createdAt.uiFormatted()).font(Theme.small).foregroundStyle(Theme.muted); WorkMarkdownContent(text: revision.content) }.padding(.vertical, 12) } }.font(Theme.label) }
-                    if !artifact.sourceMailIDs.isEmpty { DisclosureGroup(L10n.format("依据邮件（{0}）", String(artifact.sourceMailIDs.count))) { ForEach(artifact.sourceMailIDs, id: \.self) { id in if let mail = model.mailByID(id) { Button(mail.subject) { model.revealMail(mail) }.buttonStyle(ReferenceRowButtonStyle()) } } }.font(Theme.label) }
+                    MailReferenceList(ids: artifact.sourceMailIDs, open: model.revealMail)
                 } else {
                     HStack { Text(L10n.t("简报")).font(Theme.title); Spacer(); if model.briefSessionFilter != nil { Button(L10n.t("查看所有会话")) { model.briefSessionFilter = nil }.buttonStyle(CompactButtonStyle()) } }
                     if let id = model.briefSessionFilter, let session = model.cachedSession(id) { Text(L10n.format("来自对话：{0}", session.title)).font(Theme.label).foregroundStyle(Theme.secondary) }

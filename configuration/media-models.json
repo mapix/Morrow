@@ -1,0 +1,153 @@
+{
+  "baseURL": "https://llm-proxy.learnings.ai/v1",
+  "verifiedAt": "2026-11-02",
+  "defaultImageModel": "gpt-image-2.5-flare",
+  "defaultVideoModel": "veo-3.1-fast-generate-preview",
+  "defaultVideoUnderstandingModel": "gemini-omni-flash",
+  "models": [
+    {
+      "id": "gemini-3-pro-image-preview",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gemini-3.1-flash-image-preview",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gemini-2.5-flash-image",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "nano-banana-pro",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "nano-banana",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "veo-3.1-generate-preview",
+      "capability": "video_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "veo-3.1-fast-generate-preview",
+      "capability": "video_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gpt-image-1",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gpt-image-1.5",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gpt-image-2",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gpt-image-2.5-flare",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gemini-3.1-flash-lite-image",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gemini-3-pro-image",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "gemini-3.1-flash-image",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "veo-3.1-generate-001",
+      "capability": "video_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "veo-3.1-fast-generate-001",
+      "capability": "video_generation",
+      "enabled": true,
+      "note": null
+    },
+    {
+      "id": "nano-banana-2.1",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": "Gateway model-list alias"
+    },
+    {
+      "id": "gemini-nano-banana-2.1",
+      "capability": "image_generation",
+      "enabled": true,
+      "note": "Gateway model-list alias"
+    },
+    {
+      "id": "gemini-omni-flash",
+      "capability": "video_understanding",
+      "enabled": true,
+      "note": "Video understanding through Vertex Interactions API; not a video generator"
+    },
+    {
+      "id": "gemini-omni-flash-preview",
+      "capability": "video_understanding",
+      "enabled": true,
+      "note": "Video understanding through Vertex Interactions API; not a video generator"
+    },
+    {
+      "id": "gemini-omni-1.1-flash",
+      "capability": "video_understanding",
+      "enabled": true,
+      "note": "Video understanding through Vertex Interactions API; not a video generator"
+    },
+    {
+      "id": "gemini-omni-1.1-flash-preview",
+      "capability": "video_understanding",
+      "enabled": true,
+      "note": "Video understanding through Vertex Interactions API; not a video generator"
+    },
+    {
+      "id": "sora-2",
+      "capability": "video_generation",
+      "enabled": false,
+      "note": "Listed by gateway; official Sora API retired 2026-09-24. Gateway-specific live availability unverified."
+    }
+  ]
+}

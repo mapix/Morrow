@@ -15,6 +15,7 @@ extension AppModel {
                 chatSessions[i].archived = false; chatSessions[i].updatedAt = session.updatedAt
             } catch { self.error = "来源会话未恢复：" + error.localizedDescription; return }
         }
+        await sessionWorkspaces.restore(id)
         switchChatSession(id); chatExpanded = true; chatFocusNonce += 1
         scrollChatID = nil
         await Task.yield()
@@ -139,10 +140,18 @@ extension AppModel {
         } catch { self.error = error.localizedDescription }
     }
     func archiveChatSession(_ id: String, archived: Bool = true) async {
-        guard let i = chatSessions.firstIndex(where: { $0.id == id }), id != executingSessionID else { return }
+        guard chatSessions.contains(where: { $0.id == id }) else { return }
+        guard let i = chatSessions.firstIndex(where: { $0.id == id }) else { return }
         if id == activeSessionID { persistCurrentSessionDraft() }
-        chatSessions[i].archived = archived; chatSessions[i].updatedAt = Date()
-        do { _ = try await store.saveSessionMetadata(chatSessions[i]) } catch { self.error = error.localizedDescription }
+        var updated = chatSessions[i]; updated.archived = archived; updated.updatedAt = Date()
+        do {
+            _ = try await store.saveSessionMetadata(updated)
+            chatSessions[i] = updated
+        } catch { self.error = error.localizedDescription; return }
+        if archived {
+            if id == executingSessionID { let task = sidebarTask; task?.cancel(); await task?.value }
+            do { try await sessionWorkspaces.archive(id) } catch { self.error = error.localizedDescription }
+        } else { await sessionWorkspaces.restore(id) }
         if id == activeSessionID && archived {
             if let other = chatSessions.first(where: { !$0.archived }) { switchChatSession(other.id) } else { _ = await createChatSession() }
         }

@@ -17,9 +17,11 @@ struct UnifiedSidebar: View {
             Text("Morrow").font(Theme.wordmark).padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 16)
             VStack(alignment: .leading, spacing: 4) {
                     ForEach([WorkspacePage.desk, .mail, .people, .attachments]) { page in
-                        SidebarRow(title: page == .desk ? L10n.t("工作") : L10n.t(page.rawValue), icon: page == .desk && (model.partnerBusy || model.delegationBusy) ? "hourglass" : icon(page), selected: model.workspacePage == page && (page != .mail || (model.selectedAccount == nil && model.destination != .settings && model.destination != .drafts)), count: page == .mail ? model.inboxUnreadCount(nil) : page == .desk ? model.pendingDecisions.count : 0, compact: model.compactLayout) { model.openWorkspace(page) }.help(page == .desk && (model.partnerBusy || model.delegationBusy) ? L10n.t("伙伴正在处理委托") : L10n.t(page.rawValue))
+                        SidebarRow(title: page == .desk ? L10n.t("工作") : L10n.t(page.rawValue), icon: page == .desk && (model.partnerBusy || model.delegationBusy) ? "hourglass" : icon(page), selected: model.workspacePage == page && (page != .mail || (model.selectedAccount == nil && model.destination == .inbox)), count: page == .mail ? model.inboxUnreadCount(nil) : page == .desk ? model.pendingDecisions.count : 0, compact: model.compactLayout) { model.openWorkspace(page) }.help(page == .desk && (model.partnerBusy || model.delegationBusy) ? L10n.t("伙伴正在处理委托") : L10n.t(page.rawValue))
                     }
-                    SidebarRow(title: L10n.t("草稿箱"), icon: "doc.text", selected: model.workspacePage == .mail && model.destination == .drafts, count: model.drafts.filter { $0.state != "sent" }.count, compact: model.compactLayout) { model.dismissInlineTools(); model.navigate(.drafts) }.accessibilityIdentifier("morrow.drafts")
+                    SidebarRow(title: L10n.t("已发送"), icon: "paperplane", selected: model.workspacePage == .mail && model.destination == .sent, count: 0, compact: model.compactLayout) { model.dismissInlineTools(); model.navigate(.sent) }.accessibilityIdentifier("morrow.sent")
+                    SidebarRow(title: L10n.t("发件箱"), icon: "tray.and.arrow.up", selected: model.workspacePage == .mail && model.destination == .outbox, count: model.outboxDrafts.count, compact: model.compactLayout) { model.dismissInlineTools(); model.navigate(.outbox) }.accessibilityIdentifier("morrow.outbox")
+                    SidebarRow(title: L10n.t("草稿箱"), icon: "doc.text", selected: model.workspacePage == .mail && model.destination == .drafts, count: model.editableDrafts.count, compact: model.compactLayout) { model.dismissInlineTools(); model.navigate(.drafts) }.accessibilityIdentifier("morrow.drafts")
                     SidebarRow(title: L10n.t("简报"), icon: "doc.text.magnifyingglass", selected: model.workspacePage == .briefs, count: model.briefArtifacts.count, compact: model.compactLayout) { model.openBriefs() }.accessibilityIdentifier("morrow.briefs")
             }.padding(.horizontal, 12)
             if !model.accounts.isEmpty {
@@ -27,7 +29,7 @@ struct UnifiedSidebar: View {
                 ScrollView { LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(model.accounts) { account in
                             SidebarRow(title: account.name.isEmpty ? account.email : account.name, subtitle: account.email, icon: "envelope", selected: model.selectedAccount == account.id && model.workspacePage == .mail && model.destination != .settings, count: model.inboxUnreadCount(account.id), compact: model.compactLayout) { model.chooseMailbox(account.id) }
-                                .contextMenu { Button(L10n.t("同步这个邮箱")) { Task { await model.sync(accountID: account.id) } }; Button(L10n.t("邮箱设置")) { model.openSettings() } }
+                                .contextMenu { Button(L10n.t("同步这个邮箱")) { Task { await model.sync(accountID: account.id, userInitiated: true) } }; Button(L10n.t("邮箱设置")) { model.openSettings() } }
                         }
                 } }.frame(height: min(CGFloat(model.accounts.count) * (model.compactLayout ? 52 : 58), 170)).padding(.horizontal, 12)
             }

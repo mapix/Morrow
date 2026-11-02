@@ -7,17 +7,20 @@ struct MailSyncProgress: Equatable {
     var downloaded = 0
     var reused = 0
     var serverTotal: Int?
+    var checkMode: String?
     var fraction: Double? { total > 0 ? min(1, max(0, Double(processed) / Double(total))) : nil }
     var summary: String {
-        if serverTotal != nil && total == 0 { return L10n.format("本地复用 {0} 封，本轮没有待下载正文", "\(reused)") }
-        return L10n.format("本轮进度 {0}/{1} · 本地复用 {2} · 新下载 {3}", "\(processed)", "\(total)", "\(reused)", "\(downloaded)")
+        let detail = serverTotal != nil && total == 0 ? L10n.format("本地复用 {0} 封，本轮没有待下载正文", "\(reused)")
+            : L10n.format("本轮进度 {0}/{1} · 本地复用 {2} · 新下载 {3}", "\(processed)", "\(total)", "\(reused)", "\(downloaded)")
+        return checkMode.map { L10n.t($0) + " · " + detail } ?? detail
     }
     init(processed: Int = 0, total: Int = 0, downloaded: Int = 0, reused: Int = 0, serverTotal: Int? = nil) {
         self.processed = processed; self.total = total; self.downloaded = downloaded; self.reused = reused; self.serverTotal = serverTotal
     }
-    init(plan: MailSyncDownloadPlan, processed: Int = 0, downloaded: Int = 0, reusedBodies: Int = 0) {
+    init(plan: MailSyncDownloadPlan, processed: Int = 0, downloaded: Int = 0, reusedBodies: Int = 0, checkMode: String? = nil) {
         self.init(processed: processed, total: plan.remainingUIDs.count, downloaded: downloaded,
                   reused: plan.reusedCount + reusedBodies, serverTotal: plan.serverCount)
+        self.checkMode = checkMode
     }
 }
 
@@ -26,19 +29,28 @@ struct MailSyncButton: View {
     @State private var showingProgress = false
     var body: some View {
         Button {
-            if model.syncBusy { showingProgress.toggle() }
-            else { let account = model.selectedAccount; Task { await model.sync(accountID: account) } }
+            if model.syncBusy || model.mailSyncIssue != nil { showingProgress.toggle() }
+            else { let account = model.selectedAccount; Task { await model.sync(accountID: account, userInitiated: true) } }
         } label: {
-            Image(systemName: model.syncBusy ? "arrow.down.circle" : "arrow.clockwise")
-                .foregroundStyle(model.syncBusy ? Theme.accent2 : Theme.ink)
+            Image(systemName: model.syncBusy ? "arrow.down.circle" : (model.mailSyncIssue == nil ? "arrow.clockwise" : "exclamationmark.arrow.circlepath"))
+                .foregroundStyle(model.mailSyncIssue != nil ? Theme.error : model.syncBusy ? Theme.accent2 : Theme.ink)
         }.buttonStyle(.plain).frame(width: 32, height: 36)
             .accessibilityIdentifier("mail.sync.control")
-            .accessibilityLabel(L10n.t(model.syncBusy ? "正在同步邮箱，点击查看进度" : "同步当前邮箱"))
-            .help(L10n.t(model.syncBusy ? "正在同步邮箱，点击查看进度" : "同步当前邮箱"))
+            .accessibilityLabel(L10n.t(model.syncBusy ? "正在同步邮箱，点击查看进度" : model.mailSyncIssue == nil ? "同步当前邮箱" : "同步暂时中断，点击查看详情"))
+            .help(L10n.t(model.syncBusy ? "正在同步邮箱，点击查看进度" : model.mailSyncIssue == nil ? "同步当前邮箱" : "同步暂时中断，点击查看详情"))
             .popover(isPresented: $showingProgress) {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(L10n.t("邮箱同步")).font(Theme.heading)
                     Text(L10n.status(model.syncStatus)).font(Theme.label).textSelection(.enabled)
+                    if model.mailSyncIssue != nil {
+                        if model.mailSyncNeedsAuthorization {
+                            Button(L10n.t("邮箱设置")) { model.openSettings() }.buttonStyle(QuietButtonStyle())
+                        } else {
+                            Text(L10n.t("同步暂时中断，后台会自动重试。已有邮件仍可使用。")).font(Theme.label).foregroundStyle(Theme.secondary)
+                            Button(L10n.t("重试同步")) { let account = model.selectedAccount; Task { await model.sync(accountID: account, userInitiated: true) } }.buttonStyle(QuietButtonStyle()).disabled(model.syncBusy)
+                        }
+                    }
+                    Text(L10n.t("同步范围") + "：" + L10n.t(model.settings.effectiveMailSyncScope.title)).font(Theme.label).foregroundStyle(Theme.muted)
                     if let progress = model.mailSyncProgress {
                         if let fraction = progress.fraction { ProgressView(value: fraction).progressViewStyle(.linear) }
                         if progress.total > 0 || progress.serverTotal != nil { Text(progress.summary).font(Theme.label) }

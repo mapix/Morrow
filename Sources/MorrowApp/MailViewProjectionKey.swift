@@ -18,7 +18,7 @@ struct MailListScope {
         if let folder, mail.folder != folder { return false }
         if unreadOnly && mail.isRead { return false }
         if let category, mail.analysis?.category != category { return false }
-        let role = roles[mail.accountID + "\u{1f}" + mail.folder] ?? "inbox"
+        let role = roles[mail.accountID + "\u{1f}" + mail.folder] ?? (mail.uid == 0 && mail.folder == "Sent" && mail.id.hasPrefix("sent:") ? "sent" : "inbox")
         switch destination {
         case .focus, .partner:
             let outbound = ownEmails[mail.accountID].map { own in
@@ -28,6 +28,7 @@ struct MailListScope {
         case .starred: return mail.isStarred && role != "trash"
         case .snoozed: return mail.snoozedUntil.map { $0 > now } ?? false
         case .sent: return role == "sent"
+        case .outbox, .drafts: return false
         case .trash: return role == "trash"
         default: return folder != nil || role == "inbox"
         }

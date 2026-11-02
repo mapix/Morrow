@@ -254,6 +254,7 @@ public struct ComposeDraft: Codable, Identifiable, Sendable {
 public struct AgentSettings: Codable, Sendable {
     public var attachmentAutoDownloadLimitMB: Int?
     public var mailAnalysis: MailAnalysisSettings?
+    public var mailSyncScope: MailSyncScope?
     public var runBudget: AgentRunBudget?
     public var enabled: Bool = true
     public var provider: String = "auto"
@@ -319,6 +320,8 @@ public struct PartnerEvent: Codable, Identifiable, Sendable {
 }
 
 public struct PartnerChat: Codable, Identifiable, Sendable {
+    public var workspaceVideoJobs: [AgentWorkspaceVideoJob]?
+    public var workspaceMedia: [AgentWorkspaceMedia]?
     public var artifactIDs: [String]?
     public var continuationPrompt: String?
     public var executionTrace: AgentExecutionTrace?

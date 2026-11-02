@@ -3,7 +3,14 @@ import Foundation
 public struct MailSyncFlags: Codable, Sendable, Equatable {
     public var read: Bool
     public var starred: Bool
-    public init(read: Bool, starred: Bool) { self.read = read; self.starred = starred }
+    public var deleted: Bool
+    public init(read: Bool, starred: Bool, deleted: Bool = false) { self.read = read; self.starred = starred; self.deleted = deleted }
+    private enum CodingKeys: String, CodingKey { case read, starred, deleted }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        read = try values.decode(Bool.self, forKey: .read); starred = try values.decode(Bool.self, forKey: .starred)
+        deleted = try values.decodeIfPresent(Bool.self, forKey: .deleted) ?? false
+    }
 }
 
 /// Server inventory survives interrupted history downloads. The mod-sequence
@@ -16,11 +23,13 @@ public struct MailFolderSyncCursor: Codable, Sendable {
     public var highestModSequence: UInt64?
     public var uidNext: UInt64?
     public var knownUIDs: [UInt64]
+    public var deletedUIDs: [UInt64]?
     public var id: String { MailStore.hash(accountID + "\n" + folder) }
-    public init(account: MailAccount, folder: String, validity: UInt64, highestModSequence: UInt64?, uidNext: UInt64?, knownUIDs: Set<UInt64>) {
+    public init(account: MailAccount, folder: String, validity: UInt64, highestModSequence: UInt64?, uidNext: UInt64?, knownUIDs: Set<UInt64>, deletedUIDs: Set<UInt64> = []) {
         accountID = account.id; self.folder = folder; accountFingerprint = Self.fingerprint(account)
         self.validity = validity; self.highestModSequence = highestModSequence; self.uidNext = uidNext
         self.knownUIDs = knownUIDs.sorted()
+        self.deletedUIDs = deletedUIDs.isEmpty ? nil : deletedUIDs.intersection(knownUIDs).sorted()
     }
     public static func fingerprint(_ account: MailAccount) -> String {
         MailStore.hash([account.email, account.imapHost, String(account.imapPort), account.authMethod].joined(separator: "\n"))
@@ -29,6 +38,7 @@ public struct MailFolderSyncCursor: Codable, Sendable {
         accountID == account.id && self.folder == folder && accountFingerprint == Self.fingerprint(account)
             && validity > 0 && validity <= UInt64(UInt32.max)
             && knownUIDs.allSatisfy { $0 > 0 && $0 <= UInt64(UInt32.max) }
+            && (deletedUIDs.map { Set($0).isSubset(of: Set(knownUIDs)) } ?? true)
     }
 }
 
@@ -39,8 +49,9 @@ public struct MailSyncInventory: Sendable {
     public var highestModSequence: UInt64?
     public var uidNext: UInt64?
     public var incremental: Bool
+    public var deletedUIDs: Set<UInt64> = []
     public func cursor(account: MailAccount, folder: String) -> MailFolderSyncCursor {
-        .init(account: account, folder: folder, validity: validity, highestModSequence: highestModSequence, uidNext: uidNext, knownUIDs: presentUIDs)
+        .init(account: account, folder: folder, validity: validity, highestModSequence: highestModSequence, uidNext: uidNext, knownUIDs: presentUIDs, deletedUIDs: deletedUIDs)
     }
 }
 
@@ -69,7 +80,7 @@ extension MailStore {
     public func mailSyncDownloadPlan(account: MailAccount, folder: String, inventory: MailSyncInventory) throws -> MailSyncDownloadPlan {
         let saved = Set(try syncRecords(account: account.id, folder: folder).filter { $0.uidValidity == inventory.validity && $0.uid > 0 }.map(\.uid))
         let queued = Set(try queuedMailDownloads().filter { $0.accountID == account.id && $0.folder == folder && $0.validity == inventory.validity }.map(\.uid))
-        return .init(presentUIDs: inventory.presentUIDs, savedUIDs: saved, queuedUIDs: queued)
+        return .init(presentUIDs: inventory.presentUIDs.subtracting(inventory.deletedUIDs), savedUIDs: saved, queuedUIDs: queued)
     }
 }
 

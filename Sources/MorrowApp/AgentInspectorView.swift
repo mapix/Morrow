@@ -154,16 +154,8 @@ struct AgentInspectorView: View {
                         .foregroundStyle(Theme.secondary)
                 }
             }
-            if !artifact.sourceMailIDs.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(L10n.t("引用邮件"))
-                        .font(Theme.label)
-                        .foregroundStyle(Theme.secondary)
-                        .padding(.bottom, 8)
-                    ForEach(uniqueIDs(artifact.sourceMailIDs), id: \.self) { id in
-                        sourceRow(id)
-                    }
-                }
+            MailReferenceList(ids: artifact.sourceMailIDs, title: L10n.t("引用邮件"), collapsible: false, showsDetails: true) { mail in
+                model.selectedID = mail.id; model.inspectorPage = .evidence
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -193,12 +185,12 @@ struct AgentInspectorView: View {
                         .font(Theme.label)
                         .foregroundStyle(Theme.secondary)
                         .padding(.bottom, 12)
-                    ForEach(uniqueIDs(run.sourceMailIDs), id: \.self) { id in
-                        sourceRow(id)
+                    MailReferenceList(ids: run.sourceMailIDs, collapsible: false, showsDetails: true) { mail in
+                        model.selectedID = mail.id; model.inspectorPage = .evidence
                     }
                     if unavailableSources(run) && !model.realAccounts.isEmpty {
                         InspectorButton(kind: .quiet) {
-                            Task { await model.sync() }
+                            Task { await model.sync(userInitiated: true) }
                         } label: {
                             HStack(spacing: 8) {
                                 if model.syncBusy {
@@ -215,48 +207,6 @@ struct AgentInspectorView: View {
                 }
                 .padding(20)
             }
-        }
-    }
-
-    @ViewBuilder private func sourceRow(_ id: String) -> some View {
-        if let mail = model.mails.first(where: { $0.id == id }) {
-            InspectorButton(kind: .row, selected: model.selectedID == id, expands: true) {
-                model.selectedID = id
-                model.inspectorPage = .evidence
-            } label: {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(mail.subject.isEmpty ? L10n.t("无主题邮件") : mail.subject)
-                        .font(Theme.body.weight(.medium))
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text(mail.from.display)
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                        Text(mail.date.uiFormatted(date: .abbreviated, time: .omitted))
-                            .monospacedDigit()
-                            .fixedSize()
-                    }
-                    .font(Theme.label)
-                    .foregroundStyle(Theme.secondary)
-                }
-                .padding(.vertical, 10)
-            }
-            .accessibilityLabel(L10n.t("查看原邮件：") + (mail.subject.isEmpty ? L10n.t("无主题邮件") : mail.subject))
-            .accessibilityHint(L10n.t("在证据页展开原文"))
-            InspectorRule()
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(L10n.t("引用邮件暂不可用"))
-                    .font(Theme.body)
-                Text(L10n.t("这封原邮件当前不可用。"))
-                    .font(Theme.label)
-                    .foregroundStyle(Theme.secondary)
-            }
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            InspectorRule()
         }
     }
 
@@ -389,12 +339,8 @@ struct AgentInspectorView: View {
     private func runDecisions(_ run: AgentRun) -> [AgentDecision] {
         model.agentDecisions.filter { $0.runID == run.id && $0.state == "pending" }.sorted { $0.createdAt < $1.createdAt }
     }
-    private func uniqueIDs(_ ids: [String]) -> [String] {
-        var seen = Set<String>()
-        return ids.filter { seen.insert($0).inserted }
-    }
     private func unavailableSources(_ run: AgentRun) -> Bool {
-        run.sourceMailIDs.contains { id in !model.mails.contains { $0.id == id } }
+        run.sourceMailIDs.contains { model.mailByID($0) == nil }
     }
     private func artifactLabel(_ kind: AgentArtifactKind) -> String {
         switch kind {

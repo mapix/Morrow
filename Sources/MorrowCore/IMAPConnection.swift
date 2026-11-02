@@ -15,7 +15,7 @@ public actor IMAPConnection {
     private let maximumResponseBytes: Int
     public init() { maximumResponseBytes = 96 * 1024 * 1024 }
     init(maximumResponseBytes: Int) { self.maximumResponseBytes = max(1, maximumResponseBytes) }
-    public var connected: Bool { connection != nil }
+    public var connected: Bool { if let connection, case .ready = connection.state { return true }; return false }
     public var supportsIdle: Bool { capabilities.contains("IDLE") }
 
     public func connect(host: String, port: Int, email: String, password: String, tls: Bool = true, oauth: Bool = false) async throws {
@@ -131,9 +131,12 @@ public actor IMAPConnection {
                 else { present = Set(flags.keys) }
             }
             flags = flags.filter { present.contains($0.key) }
+            var deletedUIDs = cursor?.validity == validity ? Set(cursor?.deletedUIDs ?? []) : []
+            for (uid, flag) in flags { if flag.deleted { deletedUIDs.insert(uid) } else { deletedUIDs.remove(uid) } }
+            deletedUIDs.formIntersection(present)
             // Use SELECT's watermark, never a later FETCH watermark: concurrent
             // changes after SELECT must be replayed on the next sync.
-            return .init(validity: validity, flags: flags, presentUIDs: present, highestModSequence: highest, uidNext: uidNext, incremental: incremental)
+            return .init(validity: validity, flags: flags, presentUIDs: present, highestModSequence: highest, uidNext: uidNext, incremental: incremental, deletedUIDs: deletedUIDs)
         } catch { close(); throw error }
     }
     private static func responseNumber(_ name: String, _ text: String) -> UInt64? {
@@ -141,7 +144,7 @@ public actor IMAPConnection {
     }
     private static func syncFlags(_ lines: [String]) -> [UInt64: MailSyncFlags] {
         var result: [UInt64: MailSyncFlags] = [:]
-        for line in lines { if let row = IMAPFlagRow.parse(line) { result[row.uid] = .init(read: row.read, starred: row.starred) } }
+        for line in lines { if let row = IMAPFlagRow.parse(line) { result[row.uid] = .init(read: row.read, starred: row.starred, deleted: row.deleted) } }
         return result
     }
     private func fetchSyncFlags(_ set: String, modSequence: UInt64?) async throws -> [UInt64: MailSyncFlags] {
@@ -150,7 +153,7 @@ public actor IMAPConnection {
         try await write(Data("\(tag) UID FETCH \(set) (UID FLAGS)\(modifier)\r\n".utf8))
         var flags: [UInt64: MailSyncFlags] = [:]
         _ = try await readResponse(tag, retainLines: false, allowLiterals: false) { line in
-            if let row = IMAPFlagRow.parse(line) { flags[row.uid] = .init(read: row.read, starred: row.starred) }
+            if let row = IMAPFlagRow.parse(line) { flags[row.uid] = .init(read: row.read, starred: row.starred, deleted: row.deleted) }
         }
         return flags
     }
@@ -565,7 +568,7 @@ public actor IMAPConnection {
             if l.hasPrefix(tag + " ") {
                 guard l.uppercased().hasPrefix(tag + " OK") else { throw MailError.message(String(l.dropFirst(tag.count + 1))) }; return Reply(lines: lines, literals: literals, completion: l)
             }
-            if l.uppercased().hasPrefix("* BYE") { close(); throw MailError.message("服务器断开了邮件连接，请重新同步。") }
+            if l.uppercased().hasPrefix("* BYE") { close(); throw MailConnectionError.disconnected("服务器断开了邮件连接，请重新同步。") }
             if retainLines { lines.append(l) }; onLine?(l)
             if l.hasSuffix("}"), let opening = l.lastIndex(of: "{") {
                 var rawSize = l[l.index(after: opening)..<l.index(before: l.endIndex)]

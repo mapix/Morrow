@@ -49,8 +49,8 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>app.smail.desktop</string>
 <key>CFBundleExecutable</key><string>Morrow</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.16.2</string>
-<key>CFBundleVersion</key><string>162</string>
+<key>CFBundleShortVersionString</key><string>0.16.4</string>
+<key>CFBundleVersion</key><string>164</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>NSHighResolutionCapable</key><true/>
@@ -64,6 +64,7 @@ cat > "$app_path/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeName</key><string>Email message</string><key>CFBundleTypeExtensions</key><array><string>eml</string><string>mbox</string></array><key>CFBundleTypeRole</key><string>Viewer</string></dict></array>
 </dict></plist>
 PLIST
+cp configuration/media-models.json "$app_path/Contents/Resources/media-models.json"
 oauth_configuration="${MORROW_OAUTH_CONFIG:-configuration/oauth-clients.example.json}"
 if [[ -f "$oauth_configuration" ]]; then cp "$oauth_configuration" "$app_path/Contents/Resources/oauth-clients.json"; fi
 if [[ ! -f Runtime/SandboxRuntime/node_modules/@anthropic-ai/sandbox-runtime/package.json ]]; then
@@ -87,7 +88,24 @@ cp Tests/Fixtures/OpenUI/LICENSE "$app_path/Contents/Resources/Notices/OpenUI-MI
 cp Runtime/AgentRuntime/node_modules/@openai/agents/LICENSE "$app_path/Contents/Resources/Notices/OpenAI-Agents-MIT-LICENSE"
 cp docs/public/OPENUI-NATIVE-LIBRARY.json "$app_path/Contents/Resources/Notices/OpenUI-native-library.json"
 cp docs/public/EMBEDDING-MODEL-CARD.md "$app_path/Contents/Resources/Notices/EmbeddingGemma2-MODEL-CARD.md"
-codesign --force --deep --sign - "$app_path"
+sign_identity="${MORROW_CODESIGN_IDENTITY:-}"
+if [[ -z "$sign_identity" ]]; then
+  sign_identity=$(python3 - <<'PYSIGN'
+import re, subprocess
+report = subprocess.check_output(["security", "find-identity", "-v", "-p", "codesigning"], text=True)
+identities = re.findall(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"Developer ID Application:[^"]+"', report, re.M)
+if len(identities) > 1:
+    raise SystemExit("Multiple Developer ID identities found. Set MORROW_CODESIGN_IDENTITY explicitly.")
+print(identities[0] if identities else "-")
+PYSIGN
+)
+fi
+if [[ "$sign_identity" == - ]]; then
+  print -u2 "Ad hoc signing: Keychain identity changes after rebuilds. Use a Developer ID identity for persistent credential access."
+  codesign --force --deep --sign - "$app_path"
+else
+  codesign --force --deep --timestamp --sign "$sign_identity" "$app_path"
+fi
 codesign --verify --deep --strict "$app_path"
 if [[ -d "$final_app_path" ]]; then
   if [[ -d "$previous_app_path" ]]; then rm -rf "$previous_app_path"; fi
