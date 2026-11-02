@@ -15,6 +15,7 @@ struct AgentMediaPreview: View {
     @State private var player: AVPlayer?
     @State private var playing = false
     @State private var available = false
+    @State private var loading = true
     @State private var saving = false
     @State private var saved = false
     private var archived: Bool { model.chatSessions.first { $0.id == file.lease.sessionID }?.archived == true }
@@ -30,10 +31,12 @@ struct AgentMediaPreview: View {
                     VStack(alignment: .leading, spacing: 8) { playback; HStack(spacing: 8) { retain; export } }
                 }.buttonStyle(CompactButtonStyle())
                 Text(L10n.t(saved ? "已保留为聊天资料" : "临时文件，归档后清理")).font(Theme.small).foregroundStyle(Theme.muted)
-            } else { Text(L10n.t(archived ? "临时工作区已清理" : "临时文件不可用")).font(Theme.label).foregroundStyle(Theme.secondary) }
+            } else if loading { ProgressView(L10n.t("正在准备预览…")).font(Theme.label) }
+            else { Text(L10n.t(archived ? "临时工作区已清理" : "临时文件不可用")).font(Theme.label).foregroundStyle(Theme.secondary) }
         }.padding(.vertical, 8)
             .task(id: file.id + String(archived)) {
-                available = false; player?.pause(); player = nil; thumbnail = nil; playing = false
+                loading = true; available = false; player?.pause(); player = nil; thumbnail = nil; playing = false
+                defer { loading = false }
                 do {
                     let material = try await model.savedWorkspaceMedia(file); saved = material != nil
                     let url: URL
