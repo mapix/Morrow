@@ -12,7 +12,7 @@ The masthead uses `assets/morrow-icon-128.webp` and `assets/favicon.png`, export
 
 ## Public release boundary
 
-`downloads/latest.json` remains the authoritative public download manifest. This UI work does not publish an application, change signing or notarization records, or replace a release artifact. The current manifest points to **v0.11.1**; the site illustrates the current native project interface, accepted locally in 0.17.0. The page makes this distinction beside the first download action and again in the download section. Features in a public binary are defined by its release notes.
+`downloads/latest.json` remains the authoritative public download manifest. The current manifest points to **v0.17.1**, a Developer ID signed, Apple-notarized and stapled macOS build. The site illustrates the current native project interface. The page makes this distinction beside the first download action and again in the download section. Features in a public binary are defined by its release notes.
 
 The manifest accepts a HTTPS URL or a same-origin `/downloads/…` path, rejects embedded credentials, and displays the actual version, system requirements, size and SHA-256 when provided. An absent or invalid URL keeps downloading disabled. GitHub release and source links remain available; a failed manifest request exposes a retry action. Requests have a five-second timeout and never include mailbox credentials.
 
@@ -50,3 +50,7 @@ The native screenshot is an 82,896-byte WebP. Its reviewed fictional content con
 November 2, 2026: the updated site is live at [morrow.novarock.io](https://morrow.novarock.io/). Website source commit: `779e5ad3b02c103fddcbc09a50125e12b69b001e`. Image: `morrow-website:landing-20261102-workbench`; previous image `morrow-website:0.11.1` is retained for rollback.
 
 The rolling update completed with one ready replica and no restarts. Public HTTPS verification matched all nine served files to their source SHA-256 values; `/healthz` returned `ok`. The live browser verified Chinese and English at 320, 375, 1280 and 1920px, full native-image loading, scene and conversation selection, and the download anchor. All same-origin resources returned HTTP 200. Download metadata remains the verified public v0.11.1 release.
+
+## 0.17.1 download update
+
+The public download is `Morrow-0.17.1-macOS-arm64.zip`, 532874646 bytes, SHA-256 `9c3ee0a0f8c33e7cf417262b77e973932bf7ff036e11100b299ad80645bccf62`. Apple accepted the submission, the ticket is stapled, and Gatekeeper assessment passed. Public release: https://github.com/mapix/Morrow/releases/tag/v0.17.1. The earlier v0.11.1 entries above describe historical verification.
