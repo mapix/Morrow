@@ -44,3 +44,9 @@ This earlier check covered locally served source. The native screenshot has its 
 The updated page passed Chinese and English layouts at 320, 375, 768, 1280 and 1920px, with no overflowing content or broken images. Actual browser actions verified language switching, scene and session keyboard navigation, visible focus, automatic-response choices, and the hero download anchor. Unavailable manifests exposed retry; retry recovered; an invalid download URL stayed disabled. Without JavaScript, product content and the GitHub download fallback remained available. A clean reload reported no JavaScript errors; all eight resource requests returned successfully from the local origin.
 
 The native screenshot is an 82,896-byte WebP. Its reviewed fictional content contains no real mailbox data. Public download metadata still points to v0.11.1, as confirmed by the live manifest and published GitHub releases.
+
+## Production publication
+
+November 2, 2026: the updated site is live at [morrow.novarock.io](https://morrow.novarock.io/). Website source commit: `779e5ad3b02c103fddcbc09a50125e12b69b001e`. Image: `morrow-website:landing-20261102-workbench`; previous image `morrow-website:0.11.1` is retained for rollback.
+
+The rolling update completed with one ready replica and no restarts. Public HTTPS verification matched all nine served files to their source SHA-256 values; `/healthz` returned `ok`. The live browser verified Chinese and English at 320, 375, 1280 and 1920px, full native-image loading, scene and conversation selection, and the download anchor. All same-origin resources returned HTTP 200. Download metadata remains the verified public v0.11.1 release.
