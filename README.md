@@ -16,6 +16,7 @@ An open-source native AI mail partner for macOS. Morrow reads incoming mail, org
 - Prepare replies, reports and structured OpenUI interactions.
 - Keep editable memories and configure scoped automatic responders.
 - Use local models, compatible HTTPS model APIs, or native ChatGPT sign-in.
+- Connect external MCP clients through an optional HTTP server with generated, resettable authentication tokens. [Setup and tools](docs/public/MCP-SERVER.md).
 - Switch languages, themes and layout density. Optional iCloud workspace sync starts off.
 
 Morrow requires Apple Silicon and macOS 26 or later. Mail credentials remain in Keychain. Optional iCloud sync covers chat, memories, contacts and artifacts across your Macs; each Mac obtains mail from its provider.
@@ -43,7 +44,7 @@ The landing page is static and multilingual. Its downloads come from a release m
 
 ## Privacy and security
 
-Mail and chat data remain local unless you choose a remote model or enable iCloud. External mail images load by default and can be disabled in settings or per message; scripts stay blocked. Review the scope and delivery behavior of any automatic responder before enabling it.
+Mail and chat data stay on this Mac by default. Configured remote models and optional iCloud can receive that data. Enabling MCP lets clients with your token read local mail, contacts and briefs. External mail images load by default and can be disabled in settings or per message; scripts stay blocked. Review the scope and delivery behavior of any automatic responder before enabling it.
 
 [Security policy](SECURITY.md) · [Publication privacy checks](docs/public/PUBLICATION-PRIVACY.md)
 

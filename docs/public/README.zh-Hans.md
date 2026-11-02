@@ -4,6 +4,8 @@
 
 自动索引来信，按联系人组织往来，集中管理附件。通过多会话 Chat 委托工作，准备回复与报告，管理长期记忆和限定范围的自动响应器。支持文件、图片、语音输入，以及语言、主题和布局密度切换。
 
+设置中的 MCP Server 可提供经过认证的 HTTP 接口，供外部客户端查询本机邮件、联系人和简报。token 自动生成并保存在钥匙串，可随时复制或点击重置；默认仅允许本机连接，可选择开放局域网访问。持有 token 的客户端可以读取本工作区中的缓存内容。[连接配置与工具说明](MCP-SERVER.md)。
+
 [主页](https://morrow.novarock.io) · [下载](https://github.com/mapix/Morrow/releases)
 
 需要 Apple Silicon 和 macOS 26。向量推理使用固定版本的 EmbeddingGemma 2，在本机生成 768 维向量。模型权重独立下载，不存入 Git。

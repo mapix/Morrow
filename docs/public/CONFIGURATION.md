@@ -6,6 +6,11 @@ In the app settings, choose local Ollama/Apple Intelligence, a compatible HTTPS 
 
 Optional iCloud needs a properly signed build with an authorized container. The shipped signing templates retain migration compatibility identifiers, while each distributor supplies its own Apple configuration. User workspace sync remains opt-in.
 
+Settings → MCP Server provides an optional authenticated HTTP endpoint for local
+mail, contacts and briefs. Tokens are generated automatically, stored in
+Keychain, and can be copied or reset. Localhost is the default; LAN access is
+explicitly enabled. See [MCP server setup and available tools](MCP-SERVER.md).
+
 ## Keychain access and build identity
 
 `scripts/package-app.sh` uses the unique valid Developer ID Application identity

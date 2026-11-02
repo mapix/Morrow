@@ -228,6 +228,7 @@ enum Destination: String, CaseIterable, Identifiable {
     lazy var sessionWorkspaces = AgentSessionWorkspaces(owner: store.root)
     var gatewayMediaClientOverride: GatewayMediaClient?
     lazy var cloudWorkspace = CloudWorkspaceModel(store: store)
+    lazy var mcpServer = MCPServerModel(store: store, preview: isQualityPreview)
     private let notifications: any MailNotificationManaging
 
     init(root: URL? = nil, notifications: (any MailNotificationManaging)? = nil, partner: PartnerEngine? = nil, agentToolModel: AgentToolModel? = nil, writeReadFlag: (@Sendable (MailAccount, MailMessage, Bool) async throws -> Void)? = nil, qualityPreview: QualityPreviewRequest? = nil) {
@@ -395,6 +396,7 @@ enum Destination: String, CaseIterable, Identifiable {
             await migrateContactKnowledge(); scheduleMemoryIndex()
             cloudWorkspace.onImport = { [weak self] in await self?.reloadCloudWorkspace() }
             await cloudWorkspace.restore()
+            await mcpServer.restore()
             if !realAccounts.isEmpty { Task { await sync() } }
             process()
             timerTask = Task { [weak self] in
@@ -437,6 +439,7 @@ enum Destination: String, CaseIterable, Identifiable {
         }
     }
     func stopBackgroundWork() {
+        mcpServer.stop()
         timerTask?.cancel(); scheduledDeliveryTask?.cancel(); periodicResponderTask?.cancel()
         periodicDelegationTask?.cancel(); periodicMonitorTask?.cancel(); periodicSyncTask?.cancel()
         mailboxSyncTask?.cancel(); mailDownloadProcessingTask?.cancel(); processingTask?.cancel()

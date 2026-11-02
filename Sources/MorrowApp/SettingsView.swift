@@ -72,9 +72,9 @@ struct AccountSetupView: View {
 }
 
 enum SettingsCategory: String, CaseIterable, Identifiable {
-    case accounts = "邮箱账户", appearance = "外观", sync = "同步与附件", notifications = "通知", models = "聊天与委托模型", automation = "自动邮件分析", budget = "任务运行预算", data = "数据与系统"
+    case accounts = "邮箱账户", appearance = "外观", sync = "同步与附件", notifications = "通知", models = "聊天与委托模型", automation = "自动邮件分析", budget = "任务运行预算", mcp = "MCP Server", data = "数据与系统"
     var id: String { rawValue }
-    var symbol: String { switch self { case .accounts: return "envelope"; case .appearance: return "circle.lefthalf.filled"; case .sync: return "arrow.triangle.2.circlepath"; case .notifications: return "bell"; case .models: return "bubble.left"; case .automation: return "tray"; case .budget: return "gauge.with.dots.needle.50percent"; case .data: return "externaldrive" } }
+    var symbol: String { switch self { case .accounts: return "envelope"; case .appearance: return "circle.lefthalf.filled"; case .sync: return "arrow.triangle.2.circlepath"; case .notifications: return "bell"; case .models: return "bubble.left"; case .automation: return "tray"; case .budget: return "gauge.with.dots.needle.50percent"; case .mcp: return "network"; case .data: return "externaldrive" } }
     var explanation: String {
         switch self {
         case .accounts: return "管理已连接邮箱及连接状态。"
@@ -84,6 +84,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .automation: return "自动处理开关立即保存；分析模型保存后应用。"
         case .sync, .budget: return "更改立即应用并保存在本机。"
         case .data: return "管理本机索引、系统运行和同步。"
+        case .mcp: return "通过认证的 HTTP 接口连接 MCP 客户端。"
         }
     }
 }
@@ -198,6 +199,8 @@ struct SettingsView: View {
             }
         case .budget:
             AgentBudgetSettingsView()
+        case .mcp:
+            MCPServerSettingsView(server: model.mcpServer)
         case .data:
             section("本机索引") {
                 HStack { Text("EmbeddingGemma 2").font(Theme.body.weight(.medium)); Spacer(); Text(L10n.format("{0} / {1} 封已索引", "\(model.indexCount)", "\(model.mailCount)")).font(Theme.label).foregroundStyle(Theme.secondary) }

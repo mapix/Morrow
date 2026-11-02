@@ -74,7 +74,7 @@ import PDFKit
         if UIQualityChatFixture.configure(screen: screen, model: model) { model.openWorkspace(.desk); return themed(RootView(), model: model) }
         if screen.hasPrefix("settings-") {
             let category: SettingsCategory
-            switch String(screen.dropFirst(9)) { case "appearance": category = .appearance; case "sync": category = .sync; case "notifications": category = .notifications; case "models": category = .models; case "automation": category = .automation; case "budget": category = .budget; case "data": category = .data; default: category = .accounts }
+            switch String(screen.dropFirst(9)) { case "appearance": category = .appearance; case "sync": category = .sync; case "notifications": category = .notifications; case "models": category = .models; case "automation": category = .automation; case "budget": category = .budget; case "mcp": category = .mcp; case "data": category = .data; default: category = .accounts }
             model.navigate(.settings)
             return themed(RootView(previewSettingsCategory: category), model: model)
         }
