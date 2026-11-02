@@ -3,6 +3,83 @@ import MorrowCore
 @testable import MorrowApp
 
 final class SDKChatIntegrationTests: XCTestCase {
+    @MainActor func testBudgetShorteningDoesNotForgetRecentDialogueAfterToolCalls() async throws {
+        let (model, _, _) = try await fixture(mode: "history-after-tools")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        model.openWorkspace(.responders)
+        let text = String(repeating: "历史内容仅供上下文压力测试。", count: 400)
+        for (role, value) in [("user", text + " GOAL_KEEP：准备未启用的响应器。"),
+                              ("partner", text + " 需要来源信息。"),
+                              ("user", "USER_SENDER_KEEP scope-sender@example.invalid " + text),
+                              ("partner", text + " 请继续。") ] {
+            var item = PartnerChat(role: role, text: value); item.context = model.currentContext
+            try await model.recordChat(item)
+        }
+        await model.askPartner("继续刚才的配置", uiContext: model.currentContext)
+        XCTAssertEqual(model.visibleChat.last?.text, "Conversation facts retained")
+        XCTAssertEqual(SDKChatHTTPFixture.count, 3)
+    }
+    @MainActor func testResponderFollowUpAcceptsSenderFromEarlierUserMessageForReviewOnly() async throws {
+        let (model, _, _) = try await fixture(mode: "responder")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        model.openWorkspace(.responders)
+        try await model.recordChat(PartnerChat(role: "user", text: "来源地址使用 trusted@example.invalid"))
+        try await model.recordChat(PartnerChat(role: "partner", text: "已收到来源信息，请继续。"))
+        await model.askPartner("按此前来源创建响应器，先让我审阅策略", uiContext: model.currentContext)
+        XCTAssertEqual(model.responderEditor?.senderAllowlist, ["trusted@example.invalid"])
+        XCTAssertEqual(model.responderEditor?.enabled, false)
+    }
+    @MainActor func testAssistantSuggestedAddressDoesNotGrantResponderSenderScope() async throws {
+        let (model, _, _) = try await fixture(mode: "responder")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        try await model.recordChat(PartnerChat(role: "partner", text: "可试着使用 trusted@example.invalid"))
+        await model.askPartner("创建响应器，先审阅策略", uiContext: model.currentContext)
+        XCTAssertNil(model.responderEditor)
+        XCTAssertTrue(model.responders.isEmpty)
+    }
+    @MainActor func testConversationFactsSurviveToolDiscoveryAndAnotherModelRound() async throws {
+        let (model, _, _) = try await fixture(mode: "history-after-tools")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        model.openWorkspace(.responders)
+        model.mails = (0..<60).map { index in
+            var mail = MailMessage(accountID: "a", from: .init(name: "示例联系人\(index / 3)", email: "contact-\(index / 3)@example.invalid"), subject: "示例往来", text: "虚构资料")
+            mail.id = "00000000-0000-0000-0000-000000000000:[Gmail]/All Mail:1234567890:\(index)"
+            return mail
+        }
+        model.contactProfiles = ContactProfileBuilder.build(mails: model.mails, accounts: model.accounts, manual: [])
+        for (role, text) in [("user", "GOAL_KEEP：创建收到指定字样后准备图片附件回复的响应器。"),
+                             ("partner", "需要确认来源地址与绑定邮箱。"),
+                             ("user", "USER_SENDER_KEEP：使用 scope-sender@example.invalid 作为来源地址。"),
+                             ("partner", "已收到来源信息，请补充后继续。") ] {
+            var item = PartnerChat(role: role, text: text); item.context = model.currentContext
+            try await model.recordChat(item)
+        }
+        await model.askPartner("按刚才的要求继续配置，先保留为未启用状态", uiContext: model.currentContext)
+        XCTAssertEqual(model.visibleChat.last?.text, "Conversation facts retained")
+        XCTAssertEqual(SDKChatHTTPFixture.count, 3)
+        let body = try XCTUnwrap(SDKChatHTTPFixture.lastBody), messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let content = messages.compactMap { $0["content"] as? String }.joined(separator: "\n")
+        XCTAssertTrue(content.contains("GOAL_KEEP")); XCTAssertTrue(content.contains("USER_SENDER_KEEP"))
+        XCTAssertTrue(content.contains("scope-sender@example.invalid"))
+        XCTAssertTrue(model.responders.isEmpty, "The model fixture only reads; it must not create a real responder")
+    }
+    @MainActor func testPinnedScopeKeepsItsDialogueAndExcludesDifferentScopeHistory() async throws {
+        let (model, _, _) = try await fixture(mode: "directory-only")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        model.pinCurrentChatScope(); let scope = model.resolvedChatContext
+        var other = scope; other.mailIDs = ["target"]
+        var excluded = PartnerChat(role: "user", text: "DIFFERENT_SCOPE_PRIVATE_CONTENT"); excluded.context = other
+        try await model.recordChat(excluded)
+        var fact = PartnerChat(role: "user", text: "SCOPED_DIALOGUE_FACT_KEEP：上一轮确认的项目名称是橡树。"); fact.context = scope
+        try await model.recordChat(fact)
+        var reply = PartnerChat(role: "partner", text: "已收到，请继续。"); reply.context = scope
+        try await model.recordChat(reply)
+        await model.askPartner("上次项目名称是什么？", uiContext: scope)
+        let body = try XCTUnwrap(SDKChatHTTPFixture.lastBody), messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let content = messages.compactMap { $0["content"] as? String }.joined(separator: "\n")
+        XCTAssertTrue(content.contains("SCOPED_DIALOGUE_FACT_KEEP"))
+        XCTAssertFalse(content.contains("DIFFERENT_SCOPE_PRIVATE_CONTENT"))
+    }
     @MainActor func testSDKCanReadVerifiedMovedMailByItsOriginalID() async throws {
         let (model, selected, original) = try await fixture(mode: "read-moved"); defer { try? FileManager.default.removeItem(at: model.store.root) }
         var target = original; target.uid = 77; target.uidValidity = 42; target.messageID = "<target@example.invalid>"; target.folder = "INBOX"
@@ -260,7 +337,13 @@ private final class SDKChatHTTPFixture: URLProtocol {
         let (call, mode) = Self.lock.withLock { Self.calls += 1; return (Self.calls, Self.mode) }
         let operation: (String, [String: Any])?
         let answer: String
-        if mode == "read-moved" { operation = call == 1 ? ("read_mail", ["messageID": "target"]) : nil; answer = "SDK moved evidence" }
+        if mode == "history-after-tools" {
+            operation = call == 1 ? ("find_tools", ["query": "响应器"]) : call == 2 ? ("list_accounts", [:]) : nil
+            let messages = Self.lastBody?["messages"] as? [[String: Any]] ?? []
+            let content = messages.compactMap { $0["content"] as? String }.joined(separator: "\n")
+            answer = content.contains("GOAL_KEEP") && content.contains("USER_SENDER_KEEP") ? "Conversation facts retained" : "Conversation facts missing"
+        }
+        else if mode == "read-moved" { operation = call == 1 ? ("read_mail", ["messageID": "target"]) : nil; answer = "SDK moved evidence" }
         else if mode == "directory-only" { operation = nil; answer = "SDK direct contacts" }
         else if mode == "batch-read" { operation = call == 1 ? ("read_mails", ["messageIDs": ["selected", "target"]]) : nil; answer = "SDK batch evidence" }
         else if mode == "coding" {

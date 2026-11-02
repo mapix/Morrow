@@ -75,7 +75,7 @@ function receiptSummary(message,call) {
   const result=JSON.parse(compactToolContent(JSON.stringify(value),200,0));
   return {callId:message.tool_call_id,tool:call?.function?.name??call?.name??'unknown',result};
 }
-function prepareModelContext(messages, tools, {contextWindow=16384,maxTokens=1800,resuming=false} = {}) {
+function prepareModelContext(messages, tools, {contextWindow=16384,maxTokens=1800,resuming=false,conversationIndices=[]} = {}) {
   const view=messages.map(message=>({...message}));
   const textBudget=Math.max(1000,Math.floor(contextWindow/2));
   const estimatedBudget=Math.max(2000,contextWindow-maxTokens-1000);
@@ -84,6 +84,23 @@ function prepareModelContext(messages, tools, {contextWindow=16384,maxTokens=180
   const request = () => ({messages:view,tools,maxTokens,toolChoice:tools.length?'auto':'none'});
   const bodyCharacters = () => view.filter(message=>message.role==='tool').reduce((n,message)=>n+toolBodyCharacters(message.content),0);
   const overBudget = () => view.length>MODEL_CONTEXT_MESSAGES-4 || modelBytes(request())>MODEL_CONTEXT_BYTES-4096 || tokenEstimate(request())>estimatedBudget-768 || bodyCharacters()>textBudget;
+  const recentConversation = conversationIndices.slice(-6);
+  // Preserve the latest dialogue even after tool calls become the newest
+  // assistant exchange. Only shorten the model view, never saved SDK history.
+  if (overBudget() && recentConversation.length) {
+    const historySet = new Set(conversationIndices);
+    const base = {messages:view.filter((_,index)=>!historySet.has(index)),tools,maxTokens};
+    let remaining = Math.max(1024, Math.min(Math.floor(contextWindow * 0.3), estimatedBudget-tokenEstimate(base)-1024));
+    for (let position=recentConversation.length-1;position>=0;position--) {
+      const message = view[recentConversation[position]], allowance=Math.max(128,Math.floor(remaining/(position+1)));
+      if (tokenEstimate(message)>allowance && typeof message.content==='string') {
+        const marker='\n[较长前序消息的中间部分已省略，未展示部分仍保存在会话中。]\n';
+        const characters=Math.max(40,Math.floor((allowance-80)/1.5)), head=Math.floor(characters*2/3);
+        message.content=prefix(message.content,head)+marker+message.content.slice(-(characters-head));shortened=true;
+      }
+      remaining-=tokenEstimate(message);
+    }
+  }
   // Shorten old observations first, retaining IDs, flags, offsets and coverage.
   for (const limit of [1200,400,100,0]) {
     if (!overBudget()) break;
@@ -99,6 +116,7 @@ function prepareModelContext(messages, tools, {contextWindow=16384,maxTokens=180
     if (lastUser!==undefined) protectedIndices.add(lastUser);
     if (generated!==undefined) protectedIndices.add(generated);
     else if (resuming && users.length>1) protectedIndices.add(users.at(-2));
+    recentConversation.forEach(index=>protectedIndices.add(index));
     const units=messageUnits(view), newestExchange=[...units].reverse().find(unit=>view[unit.start].role==='assistant');
     const removed=new Set();
     for (const unit of units) {
@@ -144,7 +162,7 @@ class NativeModel {
     const startedAt = Date.now(); emit({ type: 'phase', stage: 'model', step, startedAt });
     const messages = request.systemInstructions ? [{ role: 'system', content: request.systemInstructions }] : [];
     const items = typeof request.input === 'string' ? [{ role: 'user', content: request.input }] : request.input;
-    const replayGroups = new Set();
+    const replayGroups = new Set(), conversationIndices = [];
     for (const item of items) {
       const group = item.providerData?.morrowGroup;
       if (group && replayGroups.has(group)) continue;
@@ -159,7 +177,7 @@ class NativeModel {
       else if (item.role) {
         const content = text(item.content), last = messages.at(-1);
         if (item.role === 'assistant' && last?.role === 'assistant' && last.tool_calls && !last.providerItems) last.content += content;
-        else messages.push({ role: item.role, content });
+        else { if(item.providerData?.morrowConversation===true)conversationIndices.push(messages.length); messages.push({ role: item.role, content }); }
       }
     }
     const latestUser=messages.findLastIndex(message=>message.role==='user');
@@ -170,7 +188,7 @@ class NativeModel {
     const tools = answerNow ? [] : [...request.tools.filter(x => x.type === 'function' && (!this.nativeNames?.has(x.name) || this.visibleNames?.has(x.name))).map(x => ({ type: 'function', function: { name: x.name, description: x.description, parameters: x.parameters, strict: false } })),
       ...request.handoffs.map(x => ({ type: 'function', function: { name: x.toolName, description: x.toolDescription, parameters: x.inputJsonSchema, strict: false } }))];
     const maxTokens=request.modelSettings.maxTokens??1800;
-    const prepared=prepareModelContext(messages,tools,{contextWindow:this.contextWindow,maxTokens,resuming:this.resuming});
+    const prepared=prepareModelContext(messages,tools,{contextWindow:this.contextWindow,maxTokens,resuming:this.resuming,conversationIndices});
     if(prepared.shortened)emit({type:'context_budget',step,bytes:prepared.bytes,estimatedTokens:prepared.estimatedTokens,omittedMessages:prepared.omittedMessages});
     const response = await rpc('model', { messages:prepared.messages, tools, maxTokens, toolChoice: answerNow ? 'none' : 'auto' }, chunk => emit({ type: 'text_delta', text: chunk }));
     emit({ type: 'model_timing', step, elapsedMs: Date.now() - startedAt, ...(response.timing ?? {}), model: response.model });
@@ -303,7 +321,7 @@ export async function runAgent(request) {
     for (const approval of approvals) input.approve(approval);
     if (!approvals.length) input.addInput(request.resume);
   }
-  else if (!(await session.getItems()).length && request.history?.length) await session.addItems(request.history.map(x=> x.role==='partner'?{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:x.text}]}:{role:x.role,content:x.text}));
+  else if (!(await session.getItems()).length && request.history?.length) await session.addItems(request.history.map(x=> x.role==='partner'?{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:x.text}],providerData:{morrowConversation:true}}:{role:x.role,content:x.text,providerData:{morrowConversation:true}}));
   let result;
   try { result = await runner.run(agent,input,{session,context,maxTurns}); }
   catch (error) {
