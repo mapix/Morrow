@@ -11,7 +11,11 @@
     "heroLead": "Morrow 是为 Mac 打造的邮件工作台。检索往来、查看附件、准备回复，并按明确范围使用 AI 辅助工作。",
     "getMac": "查看 macOS 下载",
     "tryStory": "查看工作示例",
-    "heroAlt": "Morrow 的折叠信件品牌图形",
+    "previewLabel": "原生邮件界面",
+    "previewOpen": "放大查看原生邮件界面",
+    "previewAlt": "Morrow 原生邮件工作台：左侧邮件导航，中间原文与附件，右侧对话和来源。全部内容均为虚构示例。",
+    "previewCaption": "当前原生界面 · 邮件原文、附件与辅助对话 · 虚构示例",
+    "previewExpand": "放大查看",
     "requirements": "运行条件",
     "platformNative": "为 Mac 打造的原生应用。",
     "platformSource": "查看项目与公开版本。",
@@ -88,7 +92,7 @@
     "downloadTitle": "下载公开版本",
     "downloadLead": "检查系统要求、公开版本说明与文件校验信息。",
     "downloadMac": "下载 macOS 公开版",
-    "downloadPending": "下载清单尚未发布。可前往 GitHub 查看版本。",
+    "downloadPending": "正在读取公开版本信息。",
     "downloadUnavailable": "暂时无法读取下载清单。请在 GitHub 查看版本，或稍后重试。",
     "downloadReady": "公开版本下载信息已读取。",
     "releases": "查看 GitHub 版本",
@@ -99,7 +103,7 @@
     "description": "Morrow 是为 Mac 打造的邮件工作台，提供邮件检索、联系人与附件管理，以及可配置的 AI 辅助工作。",
     "navFeatures": "功能",
     "navDownload": "下载",
-    "releaseBoundary": "界面更新仍在开发中。公开下载版本与功能以发布说明为准。",
+    "releaseBoundary": "本站展示当前项目界面。公开下载版本与功能以发布说明为准。",
     "factsTitle": "为桌面邮件工作设计",
     "factsPlatform": "运行平台",
     "factsMail": "邮件协议",
@@ -137,7 +141,11 @@
     "heroLead": "Morrow is an email workspace for Mac. Search correspondence, inspect attachments, prepare replies, and use AI assistance within a defined scope.",
     "getMac": "View macOS downloads",
     "tryStory": "Explore the examples",
-    "heroAlt": "Morrow folded correspondence brand artwork",
+    "previewLabel": "Native email interface",
+    "previewOpen": "View the native email interface at full size",
+    "previewAlt": "Morrow's native email workspace with navigation on the left, original email and attachments in the center, and chat with sources on the right. All content is fictional.",
+    "previewCaption": "Current native interface · Original mail, attachments, and chat · Fictional example",
+    "previewExpand": "View full size",
     "requirements": "System requirements",
     "platformNative": "A native application built for Mac.",
     "platformSource": "Explore the project and public releases.",
@@ -214,7 +222,7 @@
     "downloadTitle": "Download a public release",
     "downloadLead": "Check system requirements, release notes, and file verification details.",
     "downloadMac": "Download the macOS public release",
-    "downloadPending": "The download manifest is not published yet. View releases on GitHub.",
+    "downloadPending": "Loading public release information.",
     "downloadUnavailable": "The download manifest is unavailable. Check GitHub releases or try again later.",
     "downloadReady": "Public release download information is available.",
     "releases": "View GitHub releases",
@@ -225,7 +233,7 @@
     "description": "Morrow is an email workspace for Mac with mail search, contact and attachment management, and configurable AI assistance.",
     "navFeatures": "Features",
     "navDownload": "Download",
-    "releaseBoundary": "Interface updates are in development. Public download versions and features are defined by their release notes.",
+    "releaseBoundary": "This site shows the current project interface. Public downloads and features are defined by their release notes.",
     "factsTitle": "Designed for desktop email",
     "factsPlatform": "Platform",
     "factsMail": "Mail protocols",
@@ -361,6 +369,7 @@
       if (!response.ok) throw new Error('manifest unavailable');
       const manifest = await response.json();
       if (manifest?.schemaVersion !== 1 || !manifest.macOS || typeof manifest.macOS !== 'object') throw new Error('manifest invalid');
+      if (!safeURL(manifest.macOS.url)) throw new Error('download URL invalid');
       downloadManifest = manifest; downloadState = 'ready';
     } catch (_) { downloadState = 'unavailable'; }
     finally { clearTimeout(timer); document.getElementById('download-retry').disabled = false; updateDownload(); }

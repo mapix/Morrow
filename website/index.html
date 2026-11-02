@@ -7,16 +7,18 @@
   <meta property="og:title" content="Morrow：Mac 邮件工作台">
   <meta property="og:description" content="原生邮件、资料管理与可配置的 AI 辅助工作。">
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://morrow.novarock.io/">
+  <link rel="canonical" href="https://morrow.novarock.io/">
   <title>Morrow：Mac 邮件工作台</title>
-  <link rel="icon" href="assets/favicon.png" type="image/png">
-  <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
+  <link rel="icon" href="assets/favicon.png?v=20261102" type="image/png">
+  <link rel="stylesheet" href="styles.css?v=20261102-workbench">
+  <script src="app.js?v=20261102-workbench" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main" data-i18n="skip">跳到内容</a>
   <header class="site-header">
     <nav class="container nav" aria-label="主导航" data-i18n-aria="navigation">
-      <a class="brand" href="#main" aria-label="Morrow 首页" data-i18n-aria="home"><img src="assets/morrow-icon-128.webp" alt="" width="36" height="36"><span>Morrow</span></a>
+      <a class="brand" href="#main" aria-label="Morrow 首页" data-i18n-aria="home"><img src="assets/morrow-icon-128.webp?v=20261102" alt="" width="36" height="36"><span>Morrow</span></a>
       <div class="nav-links"><a href="#features" data-i18n="navFeatures">功能</a><a href="#story" data-i18n="navStory">工作示例</a><a href="#download" data-i18n="navDownload">下载</a><a href="https://github.com/mapix/Morrow" data-i18n="source">源码</a></div>
       <div class="language-switch" role="group" aria-label="语言 / Language"><button type="button" data-language="zh" aria-pressed="true">中文</button><button type="button" data-language="en" aria-pressed="false">English</button></div>
     </nav>
@@ -28,7 +30,7 @@
           <h1 data-i18n="heroTitle">邮件、资料与后续工作。</h1>
           <p class="lead" data-i18n="heroLead">Morrow 是为 Mac 打造的邮件工作台。检索往来、查看附件、准备回复，并按明确范围使用 AI 辅助工作。</p>
           <div class="hero-actions"><a class="button button-primary" href="#download" data-i18n="getMac">查看 macOS 下载</a><a class="text-link" href="#story" data-i18n="tryStory">查看工作示例</a></div>
-          <p class="release-note" data-i18n="releaseBoundary">界面更新仍在开发中。公开下载版本与功能以发布说明为准。</p>
+          <p class="release-note" data-i18n="releaseBoundary">本站展示当前项目界面。公开下载版本与功能以发布说明为准。</p>
         </div>
         <aside class="product-facts" aria-labelledby="facts-title">
           <h2 id="facts-title" data-i18n="factsTitle">为桌面邮件工作设计</h2>
@@ -40,6 +42,12 @@
           </dl>
         </aside>
       </div>
+    </section>
+    <section class="product-preview" aria-label="原生邮件界面" data-i18n-aria="previewLabel">
+      <figure class="container">
+        <a class="preview-image" href="assets/morrow-workbench-20261102.webp" aria-label="放大查看原生邮件界面" data-i18n-aria="previewOpen"><img src="assets/morrow-workbench-20261102.webp" alt="Morrow 原生邮件工作台：左侧邮件导航，中间原文与附件，右侧对话和来源。全部内容均为虚构示例。" width="1440" height="900" fetchpriority="high" decoding="async" data-i18n-alt="previewAlt"></a>
+        <figcaption><span data-i18n="previewCaption">当前原生界面 · 邮件原文、附件与辅助对话 · 虚构示例</span><a href="assets/morrow-workbench-20261102.webp" data-i18n="previewExpand">放大查看</a></figcaption>
+      </figure>
     </section>
     <section class="platforms" aria-label="运行条件" data-i18n-aria="requirements">
       <div class="container platform-line"><p data-i18n="platformNative">为 Mac 打造的原生应用。</p><p>macOS 26+<br><span>Apple Silicon</span></p><a class="text-link" href="https://github.com/mapix/Morrow" data-i18n="platformSource">查看项目与公开版本。</a></div>
@@ -111,7 +119,7 @@
     </section>
 
     <section class="section download-section" id="download">
-      <div class="container download-layout"><div class="section-heading"><h2 data-i18n="downloadTitle">下载公开版本</h2><p class="lead" data-i18n="downloadLead">检查系统要求、公开版本说明与文件校验信息。</p></div><div class="download-details"><button class="button button-primary" type="button" id="download-action" disabled aria-describedby="download-status download-boundary" data-i18n="downloadMac">下载 macOS 公开版</button><p id="download-status" class="download-status" role="status" data-i18n="downloadPending">下载清单尚未发布。可前往 GitHub 查看版本。</p><p class="download-meta" id="download-meta">macOS 26+ / Apple Silicon</p><p id="download-boundary" class="release-note" data-i18n="releaseBoundary">界面更新仍在开发中。公开下载版本与功能以发布说明为准。</p><button class="button" type="button" id="download-retry" hidden data-i18n="retryDownload">重新读取下载信息</button><a class="text-link" id="release-link" href="https://github.com/mapix/Morrow/releases" data-i18n="releases">查看 GitHub 版本</a><details class="checksum" id="checksum" hidden><summary data-i18n="verifyDownload">验证下载文件</summary><code id="checksum-value"></code></details></div></div>
+      <div class="container download-layout"><div class="section-heading"><h2 data-i18n="downloadTitle">下载公开版本</h2><p class="lead" data-i18n="downloadLead">检查系统要求、公开版本说明与文件校验信息。</p></div><div class="download-details"><button class="button button-primary" type="button" id="download-action" disabled aria-describedby="download-status download-boundary" data-i18n="downloadMac">下载 macOS 公开版</button><p id="download-status" class="download-status" role="status" data-i18n="downloadPending">正在读取公开版本信息。</p><p class="download-meta" id="download-meta">macOS 26+ / Apple Silicon</p><p id="download-boundary" class="release-note" data-i18n="releaseBoundary">本站展示当前项目界面。公开下载版本与功能以发布说明为准。</p><button class="button" type="button" id="download-retry" hidden data-i18n="retryDownload">重新读取下载信息</button><a class="text-link" id="release-link" href="https://github.com/mapix/Morrow/releases" data-i18n="releases">查看 GitHub 版本</a><noscript><p class="release-note">请通过 GitHub 查看版本与下载。 / View releases and downloads on GitHub.</p></noscript><details class="checksum" id="checksum" hidden><summary data-i18n="verifyDownload">验证下载文件</summary><code id="checksum-value"></code></details></div></div>
     </section>
   </main>
   <footer class="site-footer"><div class="container footer-layout"><a class="footer-brand" href="#main" aria-label="Morrow 首页" data-i18n-aria="home">Morrow</a><div><a href="https://github.com/mapix/Morrow" data-i18n="source">源码</a><a href="https://github.com/mapix/Morrow/issues" data-i18n="feedback">反馈问题</a></div><p data-i18n="footerDescription">Mac 邮件工作台。<br>网站交互均使用固定虚构示例。</p></div></footer>

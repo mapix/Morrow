@@ -1,6 +1,6 @@
 /* Morrow product site: native workbench palette, real product capabilities, explicit fictional examples. */
-@import url("./tokens.css");
-@import url("./base.css");
+@import url("./tokens.css?v=20261102-workbench");
+@import url("./base.css?v=20261102-workbench");
 
 .skip-link { position: fixed; top: var(--space-sm); left: var(--space-sm); z-index: 10; background: var(--color-surface); padding: var(--space-sm) var(--space-lg); transform: translateY(-160%); }
 .skip-link:focus { transform: translateY(0); }
@@ -34,6 +34,11 @@
 .product-facts dl > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: var(--space-lg); padding-block: var(--space-md); border-bottom: 1px solid var(--color-rule); }
 .product-facts dt { color: var(--color-muted); font-size: var(--text-sm); }
 .product-facts dd { margin: 0; font-size: var(--text-sm); }
+.product-preview { padding-block: var(--space-2xl); border-top: 1px solid var(--color-rule); }
+.preview-image { display: block; border: 1px solid var(--color-rule); border-radius: var(--radius-panel); overflow: hidden; }
+.preview-image img { width: 100%; }
+.product-preview figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-lg); margin-top: var(--space-md); font-size: var(--text-xs); color: var(--color-muted); }
+.product-preview figcaption a { flex-shrink: 0; }
 .platforms { border-block: 1px solid var(--color-rule); }
 .platform-line { display: flex; align-items: center; justify-content: space-between; gap: var(--space-xl); padding-block: var(--space-lg); font-size: var(--text-sm); color: var(--color-secondary); }
 .section { padding-block: var(--space-section); }
@@ -97,6 +102,7 @@ html:not(.js) .conversation-layout { grid-template-columns: minmax(0, 1fr); }
 .download-layout .lead { margin-top: var(--space-lg); }
 .download-details { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-md); }
 .download-status { font-size: var(--text-sm); color: var(--color-secondary); }
+html:not(.js) #download-action, html:not(.js) #download-status { display: none; }
 .download-meta { font-size: var(--text-sm); font-variant-numeric: tabular-nums; color: var(--color-ink); }
 .checksum { width: 100%; font-size: var(--text-xs); color: var(--color-muted); }
 .checksum code { display: block; font-family: var(--font-code); overflow-wrap: anywhere; margin-top: var(--space-sm); }
@@ -118,11 +124,13 @@ html:not(.js) .conversation-layout { grid-template-columns: minmax(0, 1fr); }
   .language-switch { margin-left: auto; }
   .hero { padding-block: var(--space-2xl); }
   .hero-layout { gap: var(--space-xl); }
+  .product-preview { padding-block: var(--space-xl); }
+  .product-preview figcaption { align-items: flex-start; }
   .platform-line { align-items: flex-start; flex-direction: column; gap: var(--space-sm); }
   .feature-grid, .scene, .authority-layout, .privacy-line, .conversation-layout { grid-template-columns: minmax(0, 1fr); }
   .product-facts dl { grid-template-columns: minmax(0, 1fr); }
   .scene { gap: var(--space-xl); padding: var(--space-xl) var(--space-lg); }
-  .scene-controls { overflow-x: auto; white-space: nowrap; }
+  .scene-controls { flex-wrap: wrap; }
   .session-picker { flex-direction: row; flex-wrap: wrap; }
   .capability-list > div, .input-list > div { grid-template-columns: minmax(0, 1fr); gap: var(--space-sm); }
   .authority-layout { gap: var(--space-2xl); }
