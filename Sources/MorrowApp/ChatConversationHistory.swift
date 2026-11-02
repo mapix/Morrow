@@ -23,7 +23,7 @@ enum ChatConversationHistory {
         return Array(history.prefix { $0.id != currentID }.filter { message in
             guard ["user", "partner"].contains(message.role) else { return false }
             guard let scope, scope.enforcesMailScope else { return true }
-            if scope.page == "materials", message.role == "user" { materialTurnMatches = !materialIDs.isEmpty && Set((message.materials ?? []).map(\.id)) == materialIDs }
+            if scope.page == "materials", message.role == "user" { materialTurnMatches = !materialIDs.isEmpty && Set((message.materials ?? []).map(\.id)) == materialIDs && message.context.map { sameScope($0, scope) } == true }
             guard let previous = message.context, previous.enforcesMailScope else { return false }
             return sameScope(previous, scope) && (scope.page != "materials" || materialTurnMatches)
         })

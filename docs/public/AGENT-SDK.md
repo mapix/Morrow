@@ -50,6 +50,19 @@ authentication and delivery policy checks. Their policy loop is still native.
 
 ## Context and authority
 
+Conversation history and execution checkpoints have separate identities. A new
+SDK run keeps the same Chat's bounded dialogue (up to 24 prior messages and
+24,000 characters). Pinned scopes retain compatible dialogue; other scopes and
+different uploaded material identities are excluded. Longer messages retain
+their beginning and end with an explicit omission marker. Model-view compaction
+protects recent dialogue after new tool exchanges without rewriting saved SDK
+items. The current user request retains priority over historical tasks.
+
+Disabled responder setup can use precise addresses supplied by the user in
+earlier compatible conversation messages. Assistant suggestions, contact data
+and mail text do not establish that sender evidence. Setup still requires native
+review and does not enable automatic delivery or send a test message.
+
 UI state is a hint, not a retrieval ceiling. Explicit user scopes and accepted
 work agreements remain native boundaries. Tool loading does not expand them.
 Mail and attachments are evidence, never authorization. Unknown or forbidden
