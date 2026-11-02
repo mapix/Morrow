@@ -8,6 +8,7 @@ struct ChatSubmission: Sendable {
     var materials: [ChatMaterial]
     var context: WorkspaceContext
     var newWork: Bool
+    var intent: ChatRunIntent = .newRequest
 }
 
 extension AppModel {
@@ -16,14 +17,17 @@ extension AppModel {
         let reply = PartnerChat(role: "partner", text: text, messageIDs: context.mailIDs)
         try? await recordChat(human); try? await recordChat(reply); await rememberExecution(user, receipt: text, context: context)
     }
-    func beginSidebarChat() {
-        guard !partnerBusy, sidebarTask == nil, !materialBusy, !chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chatMaterials.isEmpty else { return }
-        let snapshot = ChatSubmission(sessionID: activeSessionID, instruction: chatInput, materials: chatMaterials, context: resolvedChatContext, newWork: newChatWork)
-        chatInput = ""; chatMaterials = []; newChatWork = false
-        if chatPinnedContext?.page == "materials" { chatPinnedContext = nil }
+    func beginSidebarChat(intent: ChatRunIntent = .newRequest, instructionOverride: String? = nil) {
+        let instruction = instructionOverride ?? chatInput
+        guard !partnerBusy, sidebarTask == nil, !materialBusy, !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chatMaterials.isEmpty else { return }
+        let snapshot = ChatSubmission(sessionID: activeSessionID, instruction: instruction, materials: instructionOverride == nil ? chatMaterials : [], context: resolvedChatContext, newWork: instructionOverride == nil && newChatWork, intent: intent)
+        if instructionOverride == nil {
+            chatInput = ""; chatMaterials = []; newChatWork = false
+            if chatPinnedContext?.page == "materials" { chatPinnedContext = nil }
+        }
         persistCurrentSessionDraft(); executingSessionID = snapshot.sessionID
         sidebarEvidenceMailIDs = []; sidebarToolStatus = nil
-        sidebarTask = Task { await ChatTaskContext.$sessionID.withValue(snapshot.sessionID) { await submitSidebarChat(snapshot) }; sidebarTask = nil; executingSessionID = nil; sidebarToolStatus = nil }
+        sidebarTask = Task { await ChatTaskContext.$sessionID.withValue(snapshot.sessionID) { await ChatTaskContext.$runIntent.withValue(snapshot.intent) { await submitSidebarChat(snapshot) } }; sidebarTask = nil; executingSessionID = nil; sidebarToolStatus = nil }
     }
     func submitSidebarChat(_ submission: ChatSubmission? = nil) async {
         let instruction = (submission?.instruction ?? chatInput).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -31,6 +35,9 @@ extension AppModel {
         let context = submission?.context ?? resolvedChatContext
         let formingWork = submission?.newWork ?? newChatWork
         guard !partnerBusy, !materialBusy, !instruction.isEmpty || !materials.isEmpty else { return }
+        if let intent = submission?.intent, intent != .newRequest {
+            await ChatTaskContext.$runIntent.withValue(intent) { await askPartner(instruction, runID: nil, uiContext: context, materials: materials) }; return
+        }
         if submission == nil { chatInput = ""; chatMaterials = []; newChatWork = false; persistCurrentSessionDraft() }
         if formingWork {
             var human = PartnerChat(role: "user", text: instruction); human.context = context; human.materials = materials

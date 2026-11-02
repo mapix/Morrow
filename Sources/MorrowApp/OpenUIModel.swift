@@ -37,9 +37,15 @@ extension AppModel {
         let encoded = String(data: try JSONEncoder().encode(event), encoding: .utf8) ?? ""
         switch event.type {
         case "continue_conversation":
-            page.completedAt = Date(); page.receipt = "你的选择已提交，正在继续这项工作。"; await saveOpenUIInteraction(page)
-            selectedRunID = page.runID
-            await workspaceCommand("用户通过结构化交互提交的要求：" + event.humanFriendlyMessage + "\n表单与上下文：" + encoded)
+            if page.chatID != nil {
+                try await answerAgentInteraction(interactionID: interactionID, response: "用户通过结构化交互提交的回答：" + event.humanFriendlyMessage + "\n表单与上下文：" + encoded)
+            } else {
+                guard !partnerBusy, sidebarTask == nil, let runID = page.runID,
+                      agentRuns.contains(where: { $0.id == runID && [.waitingUser, .paused, .monitoring].contains($0.phase) }) else { throw OpenUIError.message("这份工作选择已结束或正在处理，请查看当前工作。") }
+                page.completedAt = Date(); page.receipt = "选择已提交，正在继续这项工作。"; await saveOpenUIInteraction(page)
+                selectedRunID = runID
+                await ChatTaskContext.$runIntent.withValue(.newRequest) { await workspaceCommand("用户通过结构化交互提交的要求：" + event.humanFriendlyMessage + "\n表单与上下文：" + encoded) }
+            }
         case "SaveResponder":
             guard buttonLabel.contains("响应器") && (buttonLabel.contains("保存") || buttonLabel.contains("启用")), let name = event.formName, let fields = event.formState?[name] else { throw OpenUIError.message("请通过明确的响应器保存按钮提交完整表单。") }
             func text(_ name: String) -> String { fields[name]?.value.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }

@@ -4,6 +4,12 @@ import MorrowCore
 extension AppModel {
     func openDraft(_ value: ComposeDraft) {
         let draft = drafts.first(where: { $0.id == value.id }) ?? value
+        if draft.state == "sent", let mail = mails.filter({ mail in
+            mail.accountID == draft.accountID && mail.messageID == "<" + draft.id + "@morrow.local>" &&
+                (folders.contains { $0.accountID == mail.accountID && $0.path == mail.folder && $0.role == "sent" } || mail.id == "sent:" + draft.id)
+        }).sorted(by: { $0.uid > $1.uid }).first {
+            dismissInlineTools(); navigate(.sent); selectedID = mail.id; return
+        }
         workspacePage = .mail; destination = .drafts; selectedAccount = nil; selectedFolder = nil; selectedID = nil
         composer = draft
     }

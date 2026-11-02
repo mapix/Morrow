@@ -79,6 +79,8 @@ final class SDKChatIntegrationTests: XCTestCase {
         let table = try XCTUnwrap(artifact.briefDocument?.tables.first)
         XCTAssertNoThrow(try OpenUILang.parse(table.openUISource).root())
         XCTAssertEqual(model.agentRuns.first { $0.id == artifact.runID }?.phase, .paused)
+        XCTAssertEqual(model.agentRuns.first { $0.id == artifact.runID }?.sessionID, origin)
+        XCTAssertTrue(artifact.runID.hasPrefix("sdk-chat:sdk-run:"))
         let other = await model.createChatSession(title: "Other"); model.chatInput = "Unsent other input"
         model.openBrief(artifact); XCTAssertEqual(model.activeSessionID, origin); XCTAssertEqual(model.workspacePage, .briefs)
         await model.openBriefSource(artifact); XCTAssertEqual(model.scrollChatID, artifact.sourceChatID)
@@ -89,6 +91,10 @@ final class SDKChatIntegrationTests: XCTestCase {
         var legacy = artifact; legacy.sessionID = nil; legacy.sourceChatID = nil; legacy.runID = "sdk-chat:" + other
         model.chat = model.chat.map { item in var copy = item; copy.artifactIDs = nil; return copy }; model.agentArtifacts = [legacy]
         XCTAssertEqual(model.briefs(in: origin).first?.id, legacy.id)
+        var unlinked = legacy; unlinked.id = "unlinked-artifact"; unlinked.runID = "sdk-chat:sdk-run:unconfirmed"
+        XCTAssertNil(model.briefSessionID(unlinked), "A runtime identifier must not be treated as a UI session")
+        var oldStyle = unlinked; oldStyle.runID = "sdk-chat:" + origin
+        XCTAssertEqual(model.briefSessionID(oldStyle), origin, "Known legacy UI session IDs remain supported")
     }
     @MainActor private func fixture(mode: String) async throws -> (AppModel, MailMessage, MailMessage) {
         let runtime = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Runtime/AgentRuntime")
@@ -140,11 +146,56 @@ final class SDKChatIntegrationTests: XCTestCase {
         await model.askPartner("请先让我选择范围再继续", uiContext: model.currentContext)
         let first = try XCTUnwrap(model.visibleChat.last), uiID = try XCTUnwrap(first.openUIID)
         XCTAssertTrue(first.text.contains("选择")); XCTAssertFalse(model.partnerBusy)
-        await model.askPartner("选择 A，继续", uiContext: model.currentContext)
+        let sdkRunID = try XCTUnwrap(first.sdkRunID)
+        await ChatTaskContext.$runIntent.withValue(.answer(sdkRunID: sdkRunID, sourceChatID: first.id, interactionID: uiID)) { await model.askPartner("选择 A，继续", uiContext: model.currentContext) }
         XCTAssertEqual(model.visibleChat.last?.text, "SDK choice resumed")
         XCTAssertEqual(model.openUIInteractions.filter { $0.id == uiID }.count, 1)
-        let pending = try await model.store.object(OpenUIJSON.self, kind: "agent-sdk-waiting", id: model.activeSessionID)
+        let pending = try await model.store.object(OpenUIJSON.self, kind: "agent-sdk-waiting", id: sdkRunID)
         XCTAssertNil(pending)
+    }
+    @MainActor func testNewRequestDoesNotResumeAnotherTaskInTheSameConversation() async throws {
+        let (model, _, _) = try await fixture(mode: "form"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("第一项任务：先选择范围", uiContext: model.currentContext)
+        let question = try XCTUnwrap(model.visibleChat.last), runA = try XCTUnwrap(question.sdkRunID)
+        SDKChatHTTPFixture.reset("search")
+        await model.askPartner("第二项任务：查找游戏变现邮件，只查询", uiContext: model.currentContext)
+        let response = try XCTUnwrap(model.visibleChat.last), runB = try XCTUnwrap(response.sdkRunID)
+        XCTAssertNotEqual(runA, runB); XCTAssertEqual(response.text, "SDK verified source result")
+        let waitingA = try await model.store.object(OpenUIJSON.self, kind: "agent-sdk-waiting", id: runA)
+        XCTAssertEqual(waitingA?.object["sourceChatID"]?.text, question.id)
+        XCTAssertNil(model.openUIInteractions.first?.completedAt)
+    }
+    @MainActor func testMismatchedResumeIdentityNeverCallsTheModel() async throws {
+        let (model, _, _) = try await fixture(mode: "form"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("第一项任务：先选择范围", uiContext: model.currentContext)
+        let question = try XCTUnwrap(model.visibleChat.last), run = try XCTUnwrap(question.sdkRunID)
+        SDKChatHTTPFixture.reset("search")
+        await ChatTaskContext.$runIntent.withValue(.resume(sdkRunID: run, sourceChatID: "another-message")) { await model.askPartner("继续", uiContext: model.currentContext) }
+        XCTAssertEqual(SDKChatHTTPFixture.count, 0)
+        XCTAssertTrue(model.visibleChat.last?.text.contains("不能恢复") == true)
+    }
+    @MainActor func testAnswerRetainsOriginalScopeAfterTheUserNavigatesElsewhere() async throws {
+        let (model, selected, target) = try await fixture(mode: "form"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        model.pinCurrentChatScope()
+        await model.askPartner("在明确限定的这封邮件中先让我选择", uiContext: model.resolvedChatContext)
+        let question = try XCTUnwrap(model.visibleChat.last), run = try XCTUnwrap(question.sdkRunID), ui = try XCTUnwrap(question.openUIID)
+        model.selectedID = target.id; model.chatInput = "下一项还未提交的要求"
+        try await model.answerAgentInteraction(interactionID: ui, response: "选择 A，继续")
+        XCTAssertEqual(model.chatInput, "下一项还未提交的要求")
+        await model.sidebarTask?.value
+        XCTAssertEqual(model.visibleChat.last?.text, "SDK choice resumed")
+        XCTAssertEqual(model.visibleChat.last?.context?.mailIDs, [selected.id])
+        XCTAssertFalse(model.visibleChat.last?.messageIDs.contains(target.id) == true)
+        XCTAssertNotNil(model.openUIInteractions.first(where: { $0.id == ui })?.completedAt)
+    }
+    @MainActor func testCompletedQuestionCannotBeSubmittedAgain() async throws {
+        let (model, _, _) = try await fixture(mode: "form"); defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("先选择范围", uiContext: model.currentContext)
+        let question = try XCTUnwrap(model.visibleChat.last), run = try XCTUnwrap(question.sdkRunID), ui = try XCTUnwrap(question.openUIID)
+        await ChatTaskContext.$runIntent.withValue(.answer(sdkRunID: run, sourceChatID: question.id, interactionID: ui)) { await model.askPartner("选择 A，继续", uiContext: model.currentContext) }
+        SDKChatHTTPFixture.reset("search")
+        await ChatTaskContext.$runIntent.withValue(.answer(sdkRunID: run, sourceChatID: question.id, interactionID: ui)) { await model.askPartner("再提交", uiContext: model.currentContext) }
+        XCTAssertEqual(SDKChatHTTPFixture.count, 0)
     }
     @MainActor func testSDKResponderSetupUsesExplicitSenderAndStaysDisabled() async throws {
         let (model, _, _) = try await fixture(mode: "responder"); defer { try? FileManager.default.removeItem(at: model.store.root) }

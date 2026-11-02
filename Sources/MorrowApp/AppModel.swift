@@ -86,7 +86,8 @@ enum Destination: String, CaseIterable, Identifiable {
     var retrievedMemoryIDs: [String: [String]] = [:]
     @Published var memoryRevealIDs: [String] = []
     @Published var contacts: [ContactEntry] = []
-    @Published var contactProfiles: [ContactProfile] = []
+    @Published var contactProfiles: [ContactProfile] = [] { didSet { contactProfileRevision += 1 } }
+    var contactProfileRevision = 0
     @Published var selectedContactEmail: String?
     @Published var selectedAttachmentIDs = Set<String>()
     @Published var selectedBriefID: String?
@@ -157,6 +158,9 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var syncStatus = "尚未连接邮箱"
     @Published var mailSyncIssue: String?
     @Published var mailSyncNeedsAuthorization = false
+    @Published var notificationPermission: MailNotificationPermission = .unknown
+    private var activeArrivalNotificationIDs = Set<String>()
+    var pendingNotificationTask: Task<Void, Never>?
     @Published var indexStatus = "等待邮件"
     @Published var indexCount = 0
     @Published var partnerBusy = false
@@ -178,6 +182,13 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var started = false
     @Published var ready = false
     private var timerTask: Task<Void, Never>?
+    var scheduledDeliveryTask: Task<Void, Never>?
+    var periodicResponderTask: Task<Void, Never>?
+    var periodicDelegationTask: Task<Void, Never>?
+    var periodicMonitorTask: Task<Void, Never>?
+    var periodicSyncTask: Task<Void, Never>?
+    private var lastMaintenanceTick = Date()
+    private var lastPeriodicSyncTick = Date()
     let mailRealtimeMonitor = MailRealtimeMonitor()
     var pendingRealtimeAccounts: Set<String> = []
     var mailRealtimeSuspendedUntil = Date.distantPast
@@ -192,6 +203,8 @@ enum Destination: String, CaseIterable, Identifiable {
     private var undoAction: (() async -> Void)?
     private var undoing = false
     var outboundBusy = false
+    var deliveryReconciliationTask: Task<Void, Never>?
+    var verifiedLocalDeliveryIDs = Set<String>()
     @Published var delegationBusy = false
     @Published var executingRunIDs = Set<String>()
     @Published var sidebarEvidenceMailIDs = Set<String>()
@@ -200,6 +213,7 @@ enum Destination: String, CaseIterable, Identifiable {
     @Published var sdkLiveTrace: AgentExecutionTrace?
     let agentToolModel: AgentToolModel
     let usesAgentSDK: Bool
+    let isQualityPreview: Bool
     private var lastSyncFailure: String?
     let store: MailStore
     let transport = MailTransport()
@@ -216,7 +230,7 @@ enum Destination: String, CaseIterable, Identifiable {
     lazy var cloudWorkspace = CloudWorkspaceModel(store: store)
     private let notifications: any MailNotificationManaging
 
-    init(root: URL? = nil, notifications: (any MailNotificationManaging)? = nil, partner: PartnerEngine? = nil, agentToolModel: AgentToolModel? = nil, writeReadFlag: (@Sendable (MailAccount, MailMessage, Bool) async throws -> Void)? = nil) {
+    init(root: URL? = nil, notifications: (any MailNotificationManaging)? = nil, partner: PartnerEngine? = nil, agentToolModel: AgentToolModel? = nil, writeReadFlag: (@Sendable (MailAccount, MailMessage, Bool) async throws -> Void)? = nil, qualityPreview: QualityPreviewRequest? = nil) {
         self.writeReadFlag = writeReadFlag
         self.partner = partner ?? PartnerEngine()
         self.agentToolModel = agentToolModel ?? AgentToolModel()
@@ -225,9 +239,13 @@ enum Destination: String, CaseIterable, Identifiable {
         self.usesAgentSDK = partner == nil || agentToolModel != nil
         self.notifications = notifications ?? NativeMailNotifications()
         let args = ProcessInfo.processInfo.arguments
+        let quality: QualityPreviewRequest?
+        do { quality = try qualityPreview ?? QualityPreviewRequest.parse(arguments: args) }
+        catch { fputs(error.localizedDescription + "\n", stderr); exit(64) }
+        isQualityPreview = quality != nil
         let customRoot = args.firstIndex(of: "--data-dir").flatMap { i in i + 1 < args.count ? URL(fileURLWithPath: args[i + 1]) : nil }
         let rememberedRoot = UserDefaults.standard.string(forKey: "SmailWorkspaceRoot").map { URL(fileURLWithPath: $0) }.flatMap { FileManager.default.fileExists(atPath: $0.appendingPathComponent("mail.sqlite").path) ? $0 : nil }
-        do { store = try MailStore(root: root ?? customRoot ?? rememberedRoot) } catch { fatalError("无法打开 Morrow 邮件库：\(error.localizedDescription)") }
+        do { store = try MailStore(root: quality?.directory ?? root ?? customRoot ?? rememberedRoot) } catch { fatalError("无法打开 Morrow 邮件库：\(error.localizedDescription)") }
         if root == nil, let customRoot, !args.contains("--transient-workspace") { UserDefaults.standard.set(customRoot.path, forKey: "SmailWorkspaceRoot") }
     }
     var selected: MailMessage? { selectedID.flatMap { mailProjection.byID[$0] } }
@@ -314,10 +332,11 @@ enum Destination: String, CaseIterable, Identifiable {
                 _ = await AcceptanceHarness().run(mode: acceptance.mode, id: acceptance.id, workspace: workspace, modelDir: acceptance.modelDirectory ?? Bundle.main.resourceURL?.appendingPathComponent("embeddinggemma-2"), peerBinding: acceptance.peerBinding)
                 return
             }
-            try importOAuthApplicationSecret()
+            if !isQualityPreview { try importOAuthApplicationSecret() }
             accounts = try await store.load(MailAccount.self, kind: "account")
             folders = try await store.load(MailFolder.self, kind: "folder")
             settings = try await store.load(AgentSettings.self, kind: "settings").first ?? AgentSettings()
+            if !isQualityPreview { await refreshNotificationPermission() }
             settings.replyLanguage = PresentationPreferences.shared.replyLanguageName
             drafts = try await store.load(ComposeDraft.self, kind: "draft")
             delegations = try await store.load(Delegation.self, kind: "delegation")
@@ -335,7 +354,7 @@ enum Destination: String, CaseIterable, Identifiable {
             memories = try await store.load(AgentMemory.self, kind: "agent-memory")
             for var status in try await store.load(AccountSyncState.self, kind: "account-sync-state") { status.syncing = false; accountSyncStates[status.accountID] = status }
             await restoreChatSessions()
-            for session in chatSessions where session.archived {
+            for session in chatSessions where session.archived && !isQualityPreview {
                 do { try await sessionWorkspaces.archive(session.id) }
                 catch { await log("归档工作区未清理", detail: error.localizedDescription, kind: "error") }
             }
@@ -345,6 +364,15 @@ enum Destination: String, CaseIterable, Identifiable {
             agentRuns = try await store.load(AgentRun.self, kind: "agent-run")
             agentArtifacts = try await store.load(AgentArtifact.self, kind: "agent-artifact")
             agentDecisions = try await store.load(AgentDecision.self, kind: "agent-decision")
+            if isQualityPreview {
+                isDemo = !accounts.isEmpty && accounts.allSatisfy(\.isDemo)
+                if ProcessInfo.processInfo.arguments.contains("--demo"), accounts.isEmpty { await loadDemo() }
+                else { await reload() }
+                if ProcessInfo.processInfo.arguments.contains("--agent-demo") { await installAgentDemoScenarios() }
+                if ProcessInfo.processInfo.arguments.contains("--iteration-demo") { await installIterationDemo() }
+                if ProcessInfo.processInfo.arguments.contains("--multi-demo") { await installMultiAccountDemo() }
+                return
+            }
             for var run in agentRuns where run.phase == .completed && delegations.contains(where: { $0.id == run.delegationID && $0.active }) {
                 run.phase = .monitoring; run.summary = "已有成果已保留，委托仍在持续关注后续邮件。"; await saveRun(run)
             }
@@ -370,21 +398,54 @@ enum Destination: String, CaseIterable, Identifiable {
             if !realAccounts.isEmpty { Task { await sync() } }
             process()
             timerTask = Task { [weak self] in
-                var lastSync = Date()
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(15))
-                    guard let self else { return }
-                    await self.runResponders(); await self.sendPending(); await self.runDelegations()
-                    await self.refreshMailRealtimeMonitoring()
-                    if Date().timeIntervalSince(lastSync) >= Double(max(60, self.settings.syncInterval)) {
-                        lastSync = Date(); await self.sync(); self.process()
-                    }
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    guard let self, !Task.isCancelled else { return }
+                    self.runBackgroundTick()
                 }
             }
         } catch { self.error = error.localizedDescription }
     }
+    /// Independent singleflight jobs keep a slow agent/model/sync pass from
+    /// delaying reviewed delivery deadlines. The ticker never awaits a job.
+    func runBackgroundTick(now: Date = Date()) {
+        guard !isQualityPreview else { return }
+        if scheduledDeliveryTask == nil, !outboundBusy, drafts.contains(where: { $0.state == "queued" && ($0.scheduledAt ?? .distantFuture) <= now }) {
+            scheduledDeliveryTask = Task { [weak self] in
+                guard let self else { return }; defer { self.scheduledDeliveryTask = nil }
+                guard !Task.isCancelled else { return }; await self.sendPending()
+            }
+        }
+        if now.timeIntervalSince(lastMaintenanceTick) >= 15 {
+            lastMaintenanceTick = now
+            if periodicResponderTask == nil, !responderBusy {
+                periodicResponderTask = Task { [weak self] in guard let self else { return }; defer { self.periodicResponderTask = nil }; guard !Task.isCancelled else { return }; await self.runResponders() }
+            }
+            if periodicDelegationTask == nil, !delegationBusy {
+                periodicDelegationTask = Task { [weak self] in guard let self else { return }; defer { self.periodicDelegationTask = nil }; guard !Task.isCancelled else { return }; await self.runDelegations() }
+            }
+            if periodicMonitorTask == nil {
+                periodicMonitorTask = Task { [weak self] in guard let self else { return }; defer { self.periodicMonitorTask = nil }; guard !Task.isCancelled else { return }; await self.refreshMailRealtimeMonitoring() }
+            }
+            if pendingNotificationTask == nil {
+                pendingNotificationTask = Task { [weak self] in guard let self else { return }; defer { self.pendingNotificationTask = nil }; guard !Task.isCancelled else { return }; await self.retryArrivalNotifications() }
+            }
+        }
+        if now.timeIntervalSince(lastPeriodicSyncTick) >= Double(max(60, settings.syncInterval)), periodicSyncTask == nil, !syncBusy {
+            lastPeriodicSyncTick = now
+            periodicSyncTask = Task { [weak self] in guard let self else { return }; defer { self.periodicSyncTask = nil }; guard !Task.isCancelled else { return }; await self.sync(); if !Task.isCancelled { self.process() } }
+        }
+    }
+    func stopBackgroundWork() {
+        timerTask?.cancel(); scheduledDeliveryTask?.cancel(); periodicResponderTask?.cancel()
+        periodicDelegationTask?.cancel(); periodicMonitorTask?.cancel(); periodicSyncTask?.cancel()
+        mailboxSyncTask?.cancel(); mailDownloadProcessingTask?.cancel(); processingTask?.cancel()
+        analysisTask?.cancel(); profileTask?.cancel(); contactRefreshTask?.cancel(); realtimeSyncTask?.cancel()
+        deliveryReconciliationTask?.cancel()
+        pendingNotificationTask?.cancel()
+    }
     func reload(incoming: [MailMessage]? = nil) async {
-        await reconcileStoredDeliveries()
+        if !isQualityPreview { await reconcileStoredDeliveries() }
         reloadEpoch += 1; let request = reloadEpoch, mutationAtStart = localMutationEpoch
         let folderAtStart = folderMutationEpoch
         activeFolderReloads[request] = folderAtStart
@@ -395,23 +456,30 @@ enum Destination: String, CaseIterable, Identifiable {
         }
         do {
             let cache = mailProjection, store = store, current = mails
-            let worker = Task.detached(priority: .utility) { () async throws -> ([MailMessage], MailProjectionCache) in
+            let worker = Task.detached(priority: .utility) { () async throws -> ([MailMessage], MailProjectionCache, Bool) in
                 let loaded: [MailMessage]
                 if let incoming {
                     var merged = current
                     var positions = cache.positions
                     for mail in incoming {
                         let header = Self.validatedMail(mail)
-                        if let position = positions[mail.id] { merged[position] = header } else { positions[mail.id] = merged.count; merged.append(header) }
+                        if let position = positions[mail.id] { if merged[position] != header { merged[position] = header } } else { positions[mail.id] = merged.count; merged.append(header) }
                     }
                     loaded = merged
                 } else { loaded = try await store.messageSummaries().map { Self.validatedMail($0.displayMessage) } }
                 try Task.checkCancellation()
+                if loaded == current { return (current, cache, false) }
                 var projection = cache; projection.rebuild(loaded)
-                return (loaded, projection)
+                return (loaded, projection, true)
             }
-            var (loaded, projection) = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+            var (loaded, projection, changed) = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
             guard request == reloadEpoch else { return }
+            if !changed && mutationAtStart == localMutationEpoch && folderAtStart == folderMutationEpoch {
+                let nextDemo = !accounts.isEmpty && accounts.allSatisfy(\.isDemo)
+                if isDemo != nextDemo { isDemo = nextDemo }
+                if incoming == nil { await refreshIndexCount(force: true) }
+                return
+            }
             let beforeFolderIDs = Set(loaded.map(\.id))
             loaded = reconcileFolderSnapshot(loaded, since: folderAtStart)
             let folderChanged = beforeFolderIDs != Set(loaded.map(\.id)) || loaded.contains { projection.byID[$0.id]?.folder != $0.folder }
@@ -424,14 +492,14 @@ enum Destination: String, CaseIterable, Identifiable {
                 }
             }
             if folderChanged || !projection.applyMetadataUpdates(overrides) { projection.rebuild(loaded) }
-            for mail in loaded where Self.indexInputsChanged(cache.byID[mail.id], mail) { enqueueIndex(mail.id) }
+            if !isQualityPreview { for mail in loaded where Self.indexInputsChanged(cache.byID[mail.id], mail) { enqueueIndex(mail.id) } }
             // Mutating a @Published array element republishes and copies the
             // entire array. Prepare locally, then publish one validated snapshot.
             preparedMailProjection = projection
             mails = loaded
             if incoming == nil { await refreshIndexCount(force: true) }
             isDemo = !accounts.isEmpty && accounts.allSatisfy(\.isDemo)
-            scheduleContactRefresh()
+            if !isQualityPreview { scheduleContactRefresh() }
             if isDemo { syncStatus = "示例工作区，未连接真实邮箱" }
             if processingTask == nil && indexCount > 0 && indexFailure == nil { indexStatus = "\(indexCount) 封邮件已建立向量索引" }
             if analysisTask == nil && !mails.isEmpty && primaryMails.allSatisfy({ $0.analysis != nil && $0.analysis?.source != "规则分析" }) { partnerStatus = "已整理，等待新邮件或你的委托" }
@@ -465,9 +533,10 @@ enum Destination: String, CaseIterable, Identifiable {
         if !settings.enabled { responderExecutionTask?.cancel() }
         process()
     }
-    func refreshModels() async { do { models = try await ai.configuredModels(settings: settings) } catch { self.error = error.localizedDescription } }
+    func refreshModels() async { guard !isQualityPreview else { return }; do { models = try await ai.configuredModels(settings: settings) } catch { self.error = error.localizedDescription } }
 
     func addAccount(_ account: MailAccount, password: String, storedSecret: String? = nil) async throws {
+        guard !isQualityPreview else { throw MailError.message("本机界面验收模式不会连接邮箱。") }
         try Task.checkCancellation()
         _ = try await transport.test(account, password: password)
         try Task.checkCancellation()
@@ -483,12 +552,13 @@ enum Destination: String, CaseIterable, Identifiable {
         do { try await store.deleteAccount(account.id); SecretStore.delete(accountID: account.id); accounts.removeAll { $0.id == account.id }; folders.removeAll { $0.accountID == account.id }; await refreshMailRealtimeMonitoring(); await reload() } catch { self.error = error.localizedDescription }
     }
     func sync(accountID: String? = nil, userInitiated: Bool = false) async {
-        guard !realAccounts.isEmpty else { return }
+        guard !isQualityPreview, !realAccounts.isEmpty else { return }
         mailRealtimeSuspendedUntil = .distantPast
         await runMailSynchronization { await self.performMailboxSync(accountID: accountID, userInitiated: userInitiated) }
         scheduleRealtimeMailSync()
     }
     func runMailSynchronization(_ operation: @escaping @MainActor () async -> Void) async {
+        guard !isQualityPreview else { return }
         guard mailboxSyncTask == nil else { return }
         let task = Task(priority: .utility) { await operation() }
         mailboxSyncTask = task
@@ -503,6 +573,7 @@ enum Destination: String, CaseIterable, Identifiable {
         task.cancel()
     }
     private func performMailboxSync(accountID: String?, userInitiated: Bool) async {
+        guard !isQualityPreview else { return }
         guard !syncBusy, !realAccounts.isEmpty else { return }; syncBusy = true; defer { syncBusy = false; if searchNeedsRefresh { scheduleSearchRefresh() } }
         mailSyncProgress = MailSyncProgress()
         defer { mailSyncProgress = nil }
@@ -602,11 +673,14 @@ enum Destination: String, CaseIterable, Identifiable {
                                 case .selective(var mail):
                                     mail.isRead = flag.read; mail.isStarred = flag.starred; mail.analysis = PartnerEngine.baseline(mail)
                                     if let override = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted) { mail.isRead = override.0; mail.localFlagModifiedAt = override.1 }
-                                    let saved = try await store.upsert(mail); await reload(incoming: [saved]); process(); newCount += 1
+                                    let saved = try await store.upsert(mail); await reload(incoming: [saved])
+                                    await notifyNewArrival(saved, isNewArrival: MailArrivalNotificationPolicy.isNewArrival(uid: uid, inventory: inventory, previous: cursor, account: account, folder: folder))
+                                    process(); newCount += 1
                                     continue
                                 }
                                 let job = MailDownloadJob(accountID: account.id, folder: folder.path, uid: uid, validity: validity,
-                                    read: flag.read, starred: flag.starred, byteCount: raw.count, inventoryStarted: inventoryStarted)
+                                    read: flag.read, starred: flag.starred, byteCount: raw.count, inventoryStarted: inventoryStarted,
+                                    isNewArrival: MailArrivalNotificationPolicy.isNewArrival(uid: uid, inventory: inventory, previous: cursor, account: account, folder: folder))
                                 let staged = ProcessInfo.processInfo.systemUptime
                                 if try await enqueueDownloadedMail(raw, job: job) { newCount += 1 }
                                 MailReaderMetrics.record("sync_raw_stage", since: staged)
@@ -644,6 +718,10 @@ enum Destination: String, CaseIterable, Identifiable {
         let defaults = try await transport.folders(account, password: secret)
         for folder in defaults where !folders.contains(where: { $0.id == folder.id }) { folders.append(folder); try await store.save(folder, kind: "folder", id: folder.id) }
         let inventory = try await transport.popInventory(account, password: secret)
+        let currentUIDs = Set(inventory.keys)
+        let arrivalCursor = try await store.object(POPArrivalCursor.self, kind: "pop-arrival-cursor", id: account.id)
+        let newArrivalUIDs = arrivalCursor?.newUIDs(account: account, current: currentUIDs) ?? []
+        try await store.save(POPArrivalCursor(account: account, knownUIDs: currentUIDs), kind: "pop-arrival-cursor", id: account.id)
         let known = Set(try await store.syncRecords(account: account.id).compactMap(\.popUID))
         var added = 0; var failures: [String] = []
         let pending = inventory.filter { !known.contains($0.key) }.sorted(by: { $0.value > $1.value })
@@ -652,7 +730,12 @@ enum Destination: String, CaseIterable, Identifiable {
             let (uid, number) = entry
             mailSyncProgress = .init(processed: position, total: pending.count, downloaded: added)
             syncStatus = "正在下载 \(account.name) / 邮件\(number)"
-            do { var mail = try await transport.popFetch(account, uid: uid, number: number, password: secret); mail.analysis = PartnerEngine.baseline(mail); try await store.upsert(mail); added += 1; if added % 10 == 0 { await reload(); process() } }
+            do {
+                var mail = try await transport.popFetch(account, uid: uid, number: number, password: secret); mail.analysis = PartnerEngine.baseline(mail)
+                let saved = try await store.upsert(mail); added += 1
+                if newArrivalUIDs.contains(uid) { await reload(incoming: [saved]); await notifyNewArrival(saved, isNewArrival: true) }
+                if added % 10 == 0 { await reload(); process() }
+            }
             catch { if Task.isCancelled { throw CancellationError() }; failures.append(account.name + " / 邮件\(number)：" + error.localizedDescription) }
         }
         // POP3 has no server folders or read flags. Local mail remains after remote deletion.
@@ -667,6 +750,7 @@ enum Destination: String, CaseIterable, Identifiable {
     }
 
     func process() {
+        guard !isQualityPreview else { return }
         scheduleProfileAnalysis()
         Task { await runResponders() }
         analyzeNew()
@@ -707,6 +791,7 @@ enum Destination: String, CaseIterable, Identifiable {
         }
     }
     private func analyzeNew() {
+        guard !isQualityPreview else { return }
         guard analysisTask == nil, settings.enabled, settings.autoAnalyze else { return }
         analysisTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }; defer { self.analysisTask = nil }
@@ -724,8 +809,7 @@ enum Destination: String, CaseIterable, Identifiable {
                     current.analysis = analysis; current = try await store.upsert(current)
                     if reused == nil && analysis.priority > 0 && current.actionable && !isOutbound(current) {
                         await log(analysis.action ?? "发现重要邮件", detail: analysis.summary, messageIDs: [current.id], kind: "attention")
-                        await notify(id: "mail:" + current.id, title: "有件事需要你处理", body: analysis.action ?? current.subject)
-                        if let deadline = analysis.deadline, deadline > Date() { await notify(id: "due:" + current.id, title: "事项即将到期", body: analysis.action ?? current.subject, at: max(Date().addingTimeInterval(1), deadline.addingTimeInterval(-1800))) }
+                        if let deadline = analysis.deadline, deadline > Date(), try await store.wasNotifiedArrival(current) { await notify(id: "due:" + current.id, title: "事项即将到期", body: analysis.action ?? current.subject, at: max(Date().addingTimeInterval(1), deadline.addingTimeInterval(-1800))) }
                     }
                     replaceCachedMails([current])
                 } catch { partnerStatus = "模型暂不可用：" + error.localizedDescription; return }
@@ -734,6 +818,7 @@ enum Destination: String, CaseIterable, Identifiable {
         }
     }
     func reanalyze(_ mail: MailMessage) async {
+        guard !isQualityPreview else { return }
         guard !partnerBusy else { return }; partnerBusy = true; defer { partnerBusy = false }
         do { let analysis = try await partner.analyze(MailEvidence.forAnalysis(mail, store: store), settings: settings.mailAnalysisModelSettings); guard var m = try await store.message(mail.id) else { return }; m.analysis = analysis; try await store.upsert(m); await reload() } catch { self.error = error.localizedDescription }
     }
@@ -755,6 +840,7 @@ enum Destination: String, CaseIterable, Identifiable {
     }
     var searchUpdatesAvailable: Bool { searchMode && searchNeedsRefresh && !searchBusy }
     func search(preserveSelection: Bool = false) {
+        guard !isQualityPreview else { return }
         searchRefreshTask?.cancel(); searchRefreshTask = nil
         searchNeedsRefresh = false; searchGeneration += 1
         let generation = searchGeneration
@@ -811,9 +897,18 @@ enum Destination: String, CaseIterable, Identifiable {
         guard !updates.isEmpty else { return }
         let pendingEpoch = indexPendingEpoch
         var updated = mails
-        localMutationEpoch += 1
-        for mail in updates { if let position = mailProjection.positions[mail.id], updated.indices.contains(position) { let header = Self.validatedMail(mail); if Self.indexInputsChanged(updated[position], header) { enqueueIndex(mail.id) }; updated[position] = header; localMutationVersions[mail.id] = localMutationEpoch } }
-        publishMetadataSnapshot(updated, ids: Set(updates.map(\.id)))
+        var changedIDs = Set<String>()
+        for mail in updates {
+            if let position = mailProjection.positions[mail.id], updated.indices.contains(position) {
+                let header = Self.validatedMail(mail)
+                guard updated[position] != header else { continue }
+                if changedIDs.isEmpty { localMutationEpoch += 1 }
+                if Self.indexInputsChanged(updated[position], header) { enqueueIndex(mail.id) }
+                updated[position] = header; changedIDs.insert(mail.id); localMutationVersions[mail.id] = localMutationEpoch
+            }
+        }
+        guard !changedIDs.isEmpty else { return }
+        publishMetadataSnapshot(updated, ids: changedIDs)
         if started && indexPendingEpoch != pendingEpoch { process() }
     }
     private func enqueueIndex(_ id: String) { indexPendingEpoch += 1; indexPending[id] = indexPendingEpoch }
@@ -1055,8 +1150,9 @@ enum Destination: String, CaseIterable, Identifiable {
         if let mail {
             draft.subject = (forward ? "Fwd: " : "Re: ") + mail.normalizedSubject
             if !forward {
-                draft.to = (mail.replyTo.isEmpty ? [mail.from] : mail.replyTo).map(\.email).joined(separator: ", ")
-                if replyAll { let own = Set(accounts.map { $0.email.lowercased() }); draft.cc = (mail.to + mail.cc).filter { !own.contains($0.email.lowercased()) && $0.email.lowercased() != mail.from.email.lowercased() }.map(\.email).joined(separator: ", ") }
+                let recipients = ReplyRecipients.resolve(mail: mail, ownEmails: Set(accounts.map(\.email)), isSent: folders.contains { $0.accountID == mail.accountID && $0.path == mail.folder && $0.role == "sent" } || mail.id.hasPrefix("sent:"), replyAll: replyAll)
+                draft.to = recipients.to.map(\.email).joined(separator: ", ")
+                draft.cc = recipients.cc.map(\.email).joined(separator: ", ")
                 draft.inReplyTo = mail.messageID; draft.references = mail.references + " " + mail.messageID
                 draft.body = suggested ? (mail.analysis?.replySuggestion ?? "") : ""
             } else { if let hydrated = try? await store.hydrate(mail) { draft.attachments = hydrated.attachments } }
@@ -1167,6 +1263,7 @@ enum Destination: String, CaseIterable, Identifiable {
     }
 
     func askPartner(_ instruction: String, runID: String? = nil, uiContext: WorkspaceContext? = nil, materials: [ChatMaterial] = []) async {
+        guard !isQualityPreview else { return }
         let id = taskSessionID
         await ChatTaskContext.$sessionID.withValue(id) {
             #if os(macOS)
@@ -1176,6 +1273,7 @@ enum Destination: String, CaseIterable, Identifiable {
         }
     }
     private func askPartnerInSession(_ instruction: String, runID: String?, uiContext: WorkspaceContext?, materials: [ChatMaterial]) async {
+        guard !isQualityPreview else { return }
         guard !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !partnerBusy else { return }
         partnerBusy = true; defer { partnerBusy = false; sidebarToolStatus = nil }; var human = PartnerChat(role: "user", text: instruction); human.context = uiContext; human.materials = materials; try? await recordChat(human)
         do {
@@ -1344,6 +1442,7 @@ enum Destination: String, CaseIterable, Identifiable {
         _ = await ensureRun(d)
     }
     func runDelegations(forceID: String? = nil) async {
+        guard !isQualityPreview else { return }
         guard !delegationBusy, settings.enabled else { return }; delegationBusy = true; defer { delegationBusy = false }
         for var d in delegations where d.active && (forceID == nil || d.id == forceID) {
             if let run = agentRuns.first(where: { $0.delegationID == d.id }), let agreement = run.agreement, agreement.resolvedScope?.excludedExistingIDs == nil {
@@ -1459,9 +1558,47 @@ enum Destination: String, CaseIterable, Identifiable {
         let e = PartnerEvent(title: title, detail: detail, messageIDs: messageIDs, delegationID: delegationID, kind: kind); events.append(e); try? await store.save(e, kind: "event", id: e.id)
     }
     func requestNotifications() async {
-        do { settings.notifications = try await notifications.requestAuthorization(); await saveSettings() } catch { self.error = error.localizedDescription }
+        guard !isQualityPreview else { return }
+        do { settings.notifications = try await notifications.requestAuthorization(); await refreshNotificationPermission(); await saveSettings() } catch { self.error = error.localizedDescription }
+    }
+    func refreshNotificationPermission() async { guard !isQualityPreview else { return }; notificationPermission = await notifications.permission() }
+    func sendTestNotification() async {
+        guard !isQualityPreview else { return }
+        await refreshNotificationPermission()
+        guard settings.notifications, notificationPermission.allowsDelivery else { error = "请先启用新邮件通知并允许系统通知权限。"; return }
+        do { try await notifications.add(id: "morrow-test-" + UUID().uuidString, title: "Morrow 通知测试", body: "新邮件通知已就绪。这是一条本机测试通知，不会发送邮件。", at: nil) }
+        catch { self.error = error.localizedDescription }
+    }
+    func notifyNewArrival(_ mail: MailMessage, isNewArrival: Bool) async {
+        guard !isQualityPreview, settings.notifications, let account = accounts.first(where: { $0.id == mail.accountID }),
+              MailArrivalNotificationPolicy.shouldNotify(mail, isNewArrival: isNewArrival, account: account, folders: folders, ownEmails: Set(accounts.map(\.email))) else { return }
+        await refreshNotificationPermission()
+        guard notificationPermission.allowsDelivery else { return }
+        do { if let notice = try await store.prepareArrivalNotification(mail) { await deliverArrivalNotification(notice, mail: mail) } }
+        catch { await log("新邮件通知待重试", detail: error.localizedDescription, kind: "notification") }
+    }
+    private func retryArrivalNotifications() async {
+        guard !isQualityPreview, settings.notifications else { return }
+        await refreshNotificationPermission(); guard notificationPermission.allowsDelivery else { return }
+        do {
+            for notice in try await store.pendingArrivalNotifications() {
+                guard !Task.isCancelled else { return }
+                guard let mail = try await store.readerMessage(notice.mailID), let account = accounts.first(where: { $0.id == mail.accountID }), MailArrivalNotificationPolicy.shouldNotify(mail, isNewArrival: true, account: account, folders: folders, ownEmails: Set(accounts.map(\.email))) else { try await store.finishArrivalNotification(notice.id, delivered: false); continue }
+                await deliverArrivalNotification(notice, mail: mail)
+            }
+        } catch { await log("新邮件通知待重试", detail: error.localizedDescription, kind: "notification") }
+    }
+    private func deliverArrivalNotification(_ notice: MailArrivalNotice, mail: MailMessage) async {
+        guard activeArrivalNotificationIDs.insert(notice.id).inserted else { return }
+        defer { activeArrivalNotificationIDs.remove(notice.id) }
+        do {
+            guard settings.notifications, try await store.beginArrivalNotificationAttempt(notice.id) else { return }
+            try await notifications.addMail(id: "new-mail:" + notice.id, title: "新邮件：" + String(mail.from.display.prefix(80)), body: String(mail.subject.prefix(180)), mailID: mail.id)
+            try await store.finishArrivalNotification(notice.id, delivered: true)
+        } catch { await log("新邮件通知待重试", detail: error.localizedDescription, kind: "notification") }
     }
     private func notify(id: String, title: String, body: String, at date: Date? = nil) async {
+        guard !isQualityPreview else { return }
         guard settings.notifications else { return }
         try? await notifications.add(id: id, title: title, body: body, at: date)
     }

@@ -12,7 +12,7 @@ struct MorrowApp: App {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     var body: some Scene {
         Window("Morrow", id: "main") {
-            RootView().environmentObject(model).environmentObject(presentationState).environment(\.locale, presentationState.locale).frame(minWidth: 1180, minHeight: 760).tint(Theme.accent2).preferredColorScheme(presentationState.colorScheme).task { await model.start(); delegate.model = model; if model.ready { delegate.drainPendingURLs() } }
+            RootView(registerWindowAction: { action in delegate.openMainWindow = { action(id: "main") } }).environmentObject(model).environmentObject(presentationState).environment(\.locale, presentationState.locale).frame(minWidth: 1040, minHeight: 700).tint(Theme.accent2).preferredColorScheme(presentationState.colorScheme).task { await model.start(); delegate.model = model; if model.ready { delegate.drainPendingURLs() } }
                 .onChange(of: presentationState.language) { model.settings.replyLanguage = presentationState.replyLanguageName }
         }.windowStyle(.hiddenTitleBar).windowBackgroundDragBehavior(.enabled).defaultSize(width: 1440, height: 900).commands {
             CommandMenu(L10n.t("伙伴")) { Button(L10n.t("给伙伴新要求")) { NotificationCenter.default.post(name: Notification.Name("MorrowFocusMission"), object: nil) }.keyboardShortcut("k") }
@@ -52,6 +52,7 @@ private struct MenuBarContent: View {
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     weak var model: AppModel?
     var pendingURLs: [URL] = []
+    var openMainWindow: (() -> Void)?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular); UNUserNotificationCenter.current().delegate = self
         model = AppState.shared
@@ -62,7 +63,7 @@ private struct MenuBarContent: View {
         guard let model, model.ready else { return .terminateNow }
         finishFocusedChatComposition()
         Task {
-            do { try await model.flushCurrentSessionDraft(); sender.reply(toApplicationShouldTerminate: true) }
+            do { try await model.flushCurrentSessionDraft(); model.stopBackgroundWork(); sender.reply(toApplicationShouldTerminate: true) }
             catch { model.error = "未发送输入尚未保存：" + error.localizedDescription; sender.reply(toApplicationShouldTerminate: false) }
         }
         return .terminateLater
@@ -78,4 +79,15 @@ private struct MenuBarContent: View {
         }; await model.reload(); model.process() }
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions { [.banner, .sound] }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let mailID = response.notification.request.content.userInfo["mailID"] as? String else { return }
+        await openNotificationMail(mailID)
+    }
+    private func openNotificationMail(_ id: String) async {
+        let model = model ?? AppState.shared
+        if !model.ready { await model.start() }
+        guard let mail = try? await model.store.message(id) else { return }
+        openMainWindow?(); NSApp.activate(ignoringOtherApps: true)
+        model.revealMail(mail)
+    }
 }

@@ -26,7 +26,7 @@ struct AttachmentWorkspaceView: View {
         let query = model.attachmentQuery
         let selected = model.selectedAttachmentIDs
         let compact = model.compactLayout
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 16) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline) { attachmentTitle(entries.count); Spacer(); browserControls }
                 VStack(alignment: .leading, spacing: 12) { HStack { attachmentTitle(entries.count); Spacer() }; HStack { browserControls; Spacer(minLength: 0) } }
@@ -57,7 +57,7 @@ struct AttachmentWorkspaceView: View {
                                     if selecting { selectionButton(entry, selected: selected.contains(entry.id)) }
                                     Button { previewRecord = entry } label: {
                                         HStack(spacing: 12) {
-                                            Image(systemName: AttachmentFileSymbol.symbol(entry)).font(Theme.heading).foregroundStyle(Theme.muted).frame(width: 28).accessibilityHidden(true)
+                                            Image(systemName: AttachmentFileSymbol.symbol(entry)).font(Theme.body).foregroundStyle(Theme.muted).frame(width: 28).accessibilityHidden(true)
                                             VStack(alignment: .leading, spacing: 6) {
                                                 Text(displayName(entry)).font(Theme.body.weight(.medium)).lineLimit(2)
                                                 HStack(spacing: 10) { Text(L10n.t(entry.kind)); Text(entry.attachment.size).fixedSize(); if entry.attachment.isRemoteOnly { Text(L10n.t("仅关联")) }; Text(entry.mail.from.display).lineLimit(1); Spacer(minLength: 0); Text(entry.mail.date.uiFormatted(date: .abbreviated, time: .omitted)).font(Theme.small).fixedSize() }.font(Theme.label).foregroundStyle(Theme.muted)
@@ -67,7 +67,7 @@ struct AttachmentWorkspaceView: View {
                                     actions(entry)
                                 }
                                 Button(entry.mail.subject) { model.revealMail(entry.mail) }.buttonStyle(ReferenceRowButtonStyle()).font(Theme.label).lineLimit(2).padding(.leading, selecting ? 44 : 40)
-                            }.padding(.vertical, compact ? 10 : 16).background(selecting && selected.contains(entry.id) ? Theme.selected.opacity(0.5) : Theme.clear)
+                            }.padding(.vertical, compact ? 8 : 12).background(selecting && selected.contains(entry.id) ? Theme.selected.opacity(0.5) : Theme.clear)
                             Rectangle().fill(Theme.rule).frame(height: 1)
                         }
                     }

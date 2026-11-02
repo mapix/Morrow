@@ -15,14 +15,16 @@ final class CompanionPresentationTests: XCTestCase {
     func testDraggingAndSmallWindowsRespectBothContentMinimums() {
         for preferred: CGFloat in [-100, 340, 400, 1000] {
             let layout = CompanionPaneLayout.resolve(available: 970, preferredChat: preferred, expanded: true)
-            XCTAssertGreaterThanOrEqual(layout.workspace, 600)
-            XCTAssertGreaterThanOrEqual(layout.chat, 340)
-            XCTAssertLessThanOrEqual(layout.chat, 500)
+            XCTAssertGreaterThanOrEqual(layout.workspace, CompanionPaneLayout.minimumWorkspace)
+            XCTAssertGreaterThanOrEqual(layout.chat, CompanionPaneLayout.minimumChat)
+            XCTAssertLessThanOrEqual(layout.chat, CompanionPaneLayout.maximumChat)
             XCTAssertEqual(layout.workspace + layout.chat + 1, 970)
         }
         let measuredEarly = CompanionPaneLayout.resolve(available: 0, preferredChat: 400, expanded: true)
-        XCTAssertEqual(measuredEarly.workspace, 600)
-        XCTAssertEqual(measuredEarly.chat, 340)
+        XCTAssertGreaterThanOrEqual(measuredEarly.workspace, CompanionPaneLayout.minimumWorkspace)
+        XCTAssertGreaterThanOrEqual(measuredEarly.chat, CompanionPaneLayout.minimumChat)
+        let small = CompanionPaneLayout.resolve(available: 840, preferredChat: 340, expanded: true)
+        XCTAssertEqual(small.workspace + small.chat + 1, 840)
     }
     func testCurrentAndOtherSessionActivityUsesActualSidebarTaskOwnership() {
         let current = CompanionActivity.resolve(activeSessionID: "first", executingSessionID: "first", sidebarRunning: true, executingRunIDs: [], runs: [])

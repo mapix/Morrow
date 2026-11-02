@@ -2,9 +2,9 @@ import Foundation
 import MorrowCore
 
 struct CompanionPaneLayout: Equatable {
-    static let minimumWorkspace: CGFloat = 600
-    static let minimumChat: CGFloat = 340
-    static let maximumChat: CGFloat = 500
+    static let minimumWorkspace: CGFloat = 440
+    static let minimumChat: CGFloat = 300
+    static let maximumChat: CGFloat = 440
     static let divider: CGFloat = 1
     var workspace: CGFloat
     var chat: CGFloat
@@ -13,7 +13,7 @@ struct CompanionPaneLayout: Equatable {
         guard expanded else { return .init(workspace: max(minimumWorkspace, measured), chat: 0) }
         let width = max(minimumWorkspace + minimumChat + divider, measured)
         let maximum = min(maximumChat, width - minimumWorkspace - divider)
-        let preferred = preferredChat.isFinite ? preferredChat : 400
+        let preferred = preferredChat.isFinite ? preferredChat : 340
         let chat = min(max(minimumChat, preferred), maximum)
         return .init(workspace: width - chat - divider, chat: chat)
     }

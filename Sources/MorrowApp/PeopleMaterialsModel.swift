@@ -96,6 +96,7 @@ extension AppModel {
     func selectAttachment(_ id: String, additive: Bool = false) { if additive { if selectedAttachmentIDs.contains(id) { selectedAttachmentIDs.remove(id) } else { selectedAttachmentIDs.insert(id) } } else { selectedAttachmentIDs = [id] }; workspacePage = .attachments }
     func revealMail(_ mail: MailMessage) { dismissInlineTools(); workspacePage = .mail; selectedAccount = nil; selectedFolder = nil; searchMode = false; selectedID = mail.id }
     func scheduleContactRefresh() {
+        guard !isQualityPreview else { return }
         contactRefreshNeeded = true
         guard contactRefreshTask == nil else { return }
         contactRefreshTask = Task(priority: .utility) { [weak self] in
@@ -111,6 +112,7 @@ extension AppModel {
         }
     }
     func refreshContactProfiles() async {
+        guard !isQualityPreview else { return }
         guard !profileBuildBusy else { return }; profileBuildBusy = true; defer { profileBuildBusy = false }
         let accountSnapshot = accounts, manual = contacts
         do {
@@ -123,13 +125,13 @@ extension AppModel {
                 let profiles = cache.build(mails: snapshot, accounts: accountSnapshot, manual: manual, previous: previous)
                 return (cache, profiles)
             }.value
+            guard accountSnapshot == accounts, manual == contacts else { contactRefreshNeeded = true; scheduleContactRefresh(); return }
             contactMetadataIndex = result.0
             let affected = result.0.affectedEmails
             guard !affected.isEmpty else { return }
             var updated = result.1
             let prior = Dictionary(contactProfiles.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
             let versions = Dictionary(snapshot.map { ($0.id, $0.bodyVersion) }, uniquingKeysWith: { _, last in last })
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
             for i in updated.indices {
                 if !affected.contains(updated[i].email) { if let current = prior[updated[i].id] { updated[i] = current }; continue }
                 if let current = prior[updated[i].id] {
@@ -145,11 +147,19 @@ extension AppModel {
                 if let old = prior[updated[i].id], old.analyzedMailVersions == nil, old.fingerprint == updated[i].fingerprint, old.analysisFingerprint == "profile-ai-v2:" + old.fingerprint {
                     updated[i].analyzedMailVersions = Dictionary(updated[i].mailIDs.compactMap { id in versions[id].map { (id, $0) } }, uniquingKeysWith: { _, last in last })
                 }
-                if let old = prior[updated[i].id], try encoder.encode(old) == encoder.encode(updated[i]) { continue }
-                try await store.save(updated[i], kind: "contact-profile", id: updated[i].id)
+                if let old = prior[updated[i].id], ContactProfilePersistence.sameMetadata(old, updated[i]), ContactProfilePersistence.sameMutableFields(old, updated[i]) { continue }
+                updated[i] = try await store.commitContactProfileMetadata(updated[i])
             }
             let updatedIDs = Set(updated.map(\.id))
             for removed in previous where affected.contains(removed.email) && !updatedIDs.contains(removed.id) { try await store.remove(kind: "contact-profile", id: removed.id) }
+            // A correction or validated AI batch may have arrived while the
+            // metadata writer awaited SQLite. Retain those live fields once.
+            let live = Dictionary(contactProfiles.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            for index in updated.indices {
+                if let current = live[updated[index].id], let baseline = prior[current.id], !ContactProfilePersistence.sameMutableFields(current, baseline) {
+                    updated[index] = ContactProfilePersistence.preservingMutableFields(updated[index], from: current)
+                }
+            }
             contactProfiles = updated; profileInventory = inventory
             try await store.save(inventory, kind: "profile-inventory", id: "current")
             profileStatus = "\(updated.count)位联系人，已整理全部\(mailCount)封本机历史邮件"
@@ -159,12 +169,13 @@ extension AppModel {
     func saveProfileCorrection(_ text: String, email: String) async {
         guard let i = contactProfiles.firstIndex(where: { $0.email == email }) else { return }
         contactProfiles[i].correction = text
-        do { try await store.save(contactProfiles[i], kind: "contact-profile", id: email) } catch { self.error = error.localizedDescription }
+        do { _ = try await store.commitContactProfileCorrection(text, id: email) } catch { self.error = error.localizedDescription }
     }
     private func profileNeedsAnalysis(_ profile: ContactProfile) -> Bool {
         mails(withIDs: profile.mailIDs).contains(where: isInAutomaticMailScope) && profile.analysisFingerprint != "profile-ai-v2:" + settings.effectiveMailSyncScope.rawValue + ":" + profile.fingerprint && (profile.analysisRetryAt == nil || profile.analysisRetryAt! <= Date())
     }
     func scheduleProfileAnalysis(force email: String? = nil) {
+        guard !isQualityPreview else { return }
         if let email, let i = contactProfiles.firstIndex(where: { $0.email == email }) {
             contactProfiles[i].analysisFingerprint = ""; contactProfiles[i].analyzedMailVersions = [:]; contactProfiles[i].analysisRetryAt = nil
         }
@@ -199,19 +210,19 @@ extension AppModel {
                         guard let i = self.contactProfiles.firstIndex(where: { $0.email == email }) else { break }
                         self.contactProfiles[i].claims = claims; self.contactProfiles[i].analyzedMailVersions = analyzed; self.contactProfiles[i].analysisRetryAt = nil
                         self.contactProfiles[i].analysisStatus = "已整理新增摘录，继续处理剩余线索"
-                        try await self.store.save(self.contactProfiles[i], kind: "contact-profile", id: snapshot.id)
+                        _ = try await self.store.commitContactProfileAnalysis(self.contactProfiles[i])
                     }
                     guard let i = self.contactProfiles.firstIndex(where: { $0.email == email }), self.contactProfiles[i].fingerprint == snapshot.fingerprint else { continue }
                     self.contactProfiles[i].claims = claims; self.contactProfiles[i].analyzedMailVersions = analyzed
                     self.contactProfiles[i].analysisFingerprint = "profile-ai-v2:" + settings.effectiveMailSyncScope.rawValue + ":" + snapshot.fingerprint; self.contactProfiles[i].analyzedAt = Date(); self.contactProfiles[i].analysisRetryAt = nil
                     self.contactProfiles[i].analysisStatus = claims.isEmpty ? "已整理历史摘录，未发现可核验线索" : "已整理历史邮件摘录；线索保留逐字依据"
-                    try await self.store.save(self.contactProfiles[i], kind: "contact-profile", id: snapshot.id)
+                    _ = try await self.store.commitContactProfileAnalysis(self.contactProfiles[i])
                 } catch {
                     if Task.isCancelled { return }
                     if let i = self.contactProfiles.firstIndex(where: { $0.email == email }) {
                         self.contactProfiles[i].analysisStatus = "AI线索暂未完成：" + error.localizedDescription
                         self.contactProfiles[i].analysisRetryAt = Date().addingTimeInterval(300)
-                        try? await self.store.save(self.contactProfiles[i], kind: "contact-profile", id: snapshot.id)
+                        _ = try? await self.store.commitContactProfileAnalysis(self.contactProfiles[i])
                     }
                 }
             }
@@ -223,7 +234,7 @@ extension AppModel {
         guard sessionMaterials(targetID).count < 8 else { error = "每次对话最多带8份资料。"; return }
         do { let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]); guard values.isRegularFile == true, (values.fileSize ?? 0) <= 32 * 1024 * 1024 else { throw MailError.message("请选择32 MB以内的普通文件。") }; try await addChatData(Data(contentsOf: url), name: url.lastPathComponent, mime: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream", sessionID: targetID) } catch { self.error = error.localizedDescription }
     }
-    func addChatData(_ bytes: Data, name: String, mime: String, sessionID: String? = nil) async throws {
+    @discardableResult func addChatData(_ bytes: Data, name: String, mime: String, sessionID: String? = nil) async throws -> ChatMaterial {
         let targetID = sessionID ?? activeSessionID
         if chatSessions.isEmpty { await restoreChatSessions() }
         guard sessionMaterials(targetID).count < 8, bytes.count <= 32 * 1024 * 1024 else { throw MailError.message("每次最多8份资料，每份不超过32 MB。") }
@@ -234,6 +245,7 @@ extension AppModel {
         let material = ChatMaterial(name: name, mimeType: mime, path: relative, byteCount: bytes.count)
         try await store.save(material, kind: "chat-material", id: material.id)
         try await attachChatMaterial(material, to: targetID)
+        return material
     }
     func chatMaterialData(_ material: ChatMaterial) throws -> Data {
         let root = store.root.standardizedFileURL, url = root.appendingPathComponent(material.path).standardizedFileURL

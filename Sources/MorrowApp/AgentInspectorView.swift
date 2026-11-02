@@ -1,4 +1,4 @@
-// Hallmark v2.0.0: Vantage native app screen; artifacts, evidence and decisions share one flat inspector.
+// Native inspector for outputs, original sources and pending decisions.
 import SwiftUI
 import MorrowCore
 
@@ -23,7 +23,7 @@ struct AgentInspectorView: View {
         .font(Theme.body)
         .foregroundStyle(Theme.ink)
         .background(Theme.sheet)
-        .frame(minWidth: 360, idealWidth: 392, maxWidth: 420, maxHeight: .infinity)
+        .frame(minWidth: 300, idealWidth: 360, maxWidth: 420, maxHeight: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n.t("工作详情"))
         .onChange(of: model.selectedRunID) {
@@ -33,18 +33,9 @@ struct AgentInspectorView: View {
     }
 
     private var tabs: some View {
-        HStack(spacing: 0) {
-            ForEach(InspectorPage.allCases) { page in
-                InspectorButton(kind: .tab, selected: model.inspectorPage == page, expands: true) {
-                    model.inspectorPage = page
-                } label: {
-                    Text(L10n.t(page.rawValue))
-                }
-                .accessibilityLabel(L10n.t("查看") + L10n.t(page.rawValue))
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        Picker(L10n.t("工作详情"), selection: $model.inspectorPage) {
+            ForEach(InspectorPage.allCases) { page in Text(L10n.t(page.rawValue)).tag(page) }
+        }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 16).padding(.vertical, 12)
     }
 
     private func runContext(_ run: AgentRun) -> some View {
@@ -67,7 +58,7 @@ struct AgentInspectorView: View {
                     .help(run.summary)
             }
         }
-        .padding(20)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -108,7 +99,7 @@ struct AgentInspectorView: View {
                         }
                     }
                 }
-                .padding(20)
+                .padding(16)
             }
         }
     }
@@ -136,16 +127,16 @@ struct AgentInspectorView: View {
             } else {
                 Text(artifact.content)
                     .font(Theme.reader)
-                    .lineSpacing(7)
+                    .lineSpacing(4)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let draftID = artifact.linkedDraftID {
                 if let draft = model.drafts.first(where: { $0.id == draftID }) {
                     InspectorButton(kind: .quiet) {
-                        model.composer = draft
+                        model.openDraft(draft)
                     } label: {
-                        Label(L10n.t("打开草稿"), systemImage: "square.and.pencil")
+                        Label(L10n.t(draft.state == "sent" ? "查看已发送" : "打开草稿"), systemImage: draft.state == "sent" ? "paperplane" : "square.and.pencil")
                     }
                     .accessibilityLabel(L10n.t("打开草稿：") + artifact.title)
                 } else {
@@ -164,9 +155,9 @@ struct AgentInspectorView: View {
     }
 
     @ViewBuilder private func evidence(_ run: AgentRun) -> some View {
-        if let mail = model.selected {
+        let sourceIDs = Set(run.sourceMailIDs + model.selectedArtifacts.flatMap(\.sourceMailIDs))
+        if let mail = model.selected, sourceIDs.contains(mail.id) {
             ReaderView(mail: mail)
-                .id(mail.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if run.sourceMailIDs.isEmpty {
             if isWorking(run) {
@@ -205,7 +196,7 @@ struct AgentInspectorView: View {
                         .padding(.top, 20)
                     }
                 }
-                .padding(20)
+                .padding(16)
             }
         }
     }
@@ -248,7 +239,7 @@ struct AgentInspectorView: View {
                         }
                     }
                 }
-                .padding(20)
+                .padding(16)
             }
         }
     }
@@ -261,7 +252,7 @@ struct AgentInspectorView: View {
             Text(decision.detail)
                 .font(Theme.reader)
                 .foregroundStyle(Theme.secondary)
-                .lineSpacing(5)
+                .lineSpacing(4)
                 .textSelection(.enabled)
             if let artifactID = decision.artifactID,
                let artifact = model.agentArtifacts.first(where: { $0.id == artifactID }) {
@@ -334,7 +325,7 @@ struct AgentInspectorView: View {
     }
 
     private func isWorking(_ run: AgentRun) -> Bool {
-        run.phase == .reading || run.phase == .working || (run.phase == .queued && model.partnerBusy)
+        run.phase == .reading || run.phase == .working || model.executingRunIDs.contains(run.id)
     }
     private func runDecisions(_ run: AgentRun) -> [AgentDecision] {
         model.agentDecisions.filter { $0.runID == run.id && $0.state == "pending" }.sorted { $0.createdAt < $1.createdAt }
@@ -391,20 +382,19 @@ private struct InspectorButtonAppearance: ButtonStyle {
     var hovered: Bool
     @Environment(\.isEnabled) private var enabled
 
-    func makeBody(configuration: Configuration) -> some View {
-        let radius = kind == .primary ? Theme.controlRadius : Theme.radius
-        return configuration.label
-            .font(Theme.body)
-            .foregroundStyle(foreground)
-            .padding(.horizontal, kind == .row ? 8 : 12)
-            .frame(maxWidth: expands ? .infinity : nil, minHeight: 44, alignment: kind == .row ? .leading : .center)
-            .background(background(pressed: configuration.isPressed), in: RoundedRectangle(cornerRadius: radius))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius)
-                    .stroke(focused ? Theme.focus : (kind == .quiet ? Theme.rule : Theme.clear), lineWidth: 1)
-            }
-            .contentShape(Rectangle())
-            .opacity(enabled ? 1 : 0.55)
+    @ViewBuilder func makeBody(configuration: Configuration) -> some View {
+        if kind == .primary {
+            InteractiveControlBody(label: configuration.label, pressed: configuration.isPressed, kind: .primary)
+        } else if kind == .quiet {
+            InteractiveControlBody(label: configuration.label, pressed: configuration.isPressed, kind: .quiet)
+        } else {
+            configuration.label.font(Theme.label).foregroundStyle(foreground)
+                .padding(.horizontal, kind == .row ? 8 : 12)
+                .frame(maxWidth: expands ? .infinity : nil, minHeight: 30, alignment: kind == .row ? .leading : .center)
+                .background(background(pressed: configuration.isPressed), in: RoundedRectangle(cornerRadius: Theme.radius))
+                .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.clear, lineWidth: 1.5))
+                .contentShape(Rectangle()).opacity(enabled ? 1 : 0.55)
+        }
     }
 
     private var foreground: Color {
@@ -440,14 +430,14 @@ private struct InspectorState: View {
             Text(detail)
                 .font(Theme.body)
                 .foregroundStyle(Theme.secondary)
-                .lineSpacing(5)
+                .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             InspectorButton(kind: .quiet, action: action) {
                 Text(actionTitle)
             }
         }
-        .padding(28)
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
@@ -476,7 +466,7 @@ private struct InspectorLoadingState: View {
             .padding(.top, 12)
             .accessibilityHidden(true)
         }
-        .padding(28)
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title + "。" + detail)

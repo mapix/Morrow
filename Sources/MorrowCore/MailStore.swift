@@ -19,6 +19,8 @@ public actor MailStore {
         let schema = """
         PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
         CREATE TABLE IF NOT EXISTS objects(kind TEXT NOT NULL,id TEXT NOT NULL,json BLOB NOT NULL,PRIMARY KEY(kind,id));
+        CREATE TABLE IF NOT EXISTS mail_arrival_notifications(id TEXT PRIMARY KEY,mail TEXT NOT NULL,created REAL NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS mail_arrival_pending ON mail_arrival_notifications(state,created);
         CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, account TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL, validity INTEGER NOT NULL, date REAL NOT NULL, search TEXT NOT NULL, json BLOB NOT NULL,canonical TEXT NOT NULL DEFAULT '');
         CREATE INDEX IF NOT EXISTS folder_uid ON messages(account,folder,validity,uid);
         CREATE INDEX IF NOT EXISTS message_date ON messages(date DESC);
@@ -74,6 +76,35 @@ public actor MailStore {
         var result: [T] = []; while sqlite3_step(s) == SQLITE_ROW { result.append(try decoder.decode(type, from: bytes(s, 0))) }; return result
     }
     public func remove(kind: String, id: String) throws { try execute("DELETE FROM objects WHERE kind=? AND id=?", [.text(kind), .text(id)]) }
+    public func commitContactProfileMetadata(_ metadata: ContactProfile) throws -> ContactProfile {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let current = try object(ContactProfile.self, kind: "contact-profile", id: metadata.id)
+            var value = current.map { ContactProfilePersistence.preservingMutableFields(metadata, from: $0) } ?? metadata
+            if let current, current.analyzedMailVersions == nil, metadata.analyzedMailVersions != nil, current.fingerprint == metadata.fingerprint, current.analysisFingerprint == "profile-ai-v2:" + current.fingerprint {
+                value.analyzedMailVersions = metadata.analyzedMailVersions; value.analysisFingerprint = metadata.analysisFingerprint
+            }
+            if current.map({ !ContactProfilePersistence.sameMetadata($0, value) || !ContactProfilePersistence.sameMutableFields($0, value) }) ?? true { try save(value, kind: "contact-profile", id: value.id) }
+            try execute("COMMIT"); return value
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+    public func commitContactProfileAnalysis(_ analysis: ContactProfile) throws -> ContactProfile {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            guard let current = try object(ContactProfile.self, kind: "contact-profile", id: analysis.id) else { throw MailError.message("联系人档案已移除。") }
+            var value = ContactProfilePersistence.preservingMutableFields(current, from: analysis)
+            value.correction = current.correction
+            try save(value, kind: "contact-profile", id: value.id); try execute("COMMIT"); return value
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+    public func commitContactProfileCorrection(_ correction: String, id: String) throws -> ContactProfile {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            guard var current = try object(ContactProfile.self, kind: "contact-profile", id: id) else { throw MailError.message("联系人档案已移除。") }
+            current.correction = correction; try save(current, kind: "contact-profile", id: id)
+            try execute("COMMIT"); return current
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
     public func commitMailboxConnection(_ account: MailAccount, folders: [MailFolder]) throws {
         guard folders.allSatisfy({ $0.accountID == account.id }) else { throw MailError.message("Mailbox folders do not belong to this account.") }
         try execute("BEGIN IMMEDIATE")
@@ -86,6 +117,39 @@ public actor MailStore {
     public func object<T: Decodable>(_ type: T.Type, kind: String, id: String) throws -> T? {
         let s = try statement("SELECT json FROM objects WHERE kind=? AND id=?", [.text(kind), .text(id)]); defer { sqlite3_finalize(s) }
         return sqlite3_step(s) == SQLITE_ROW ? try decoder.decode(type, from: bytes(s, 0)) : nil
+    }
+    public func prepareArrivalNotification(_ mail: MailMessage, now: Date = Date()) throws -> MailArrivalNotice? {
+        let id = Self.hash(mail.canonicalID)
+        let prior = try statement("SELECT mail,created,state FROM mail_arrival_notifications WHERE id=?", [.text(id)]); defer { sqlite3_finalize(prior) }
+        let priorCode = sqlite3_step(prior)
+        if priorCode == SQLITE_ROW {
+            guard string(prior, 2) == "pending" else { return nil }
+            return .init(id: id, mailID: string(prior, 0), createdAt: Date(timeIntervalSince1970: sqlite3_column_double(prior, 1)))
+        }
+        guard priorCode == SQLITE_DONE else { throw databaseError() }
+        let duplicate = try statement("SELECT 1 FROM messages WHERE account=? AND canonical=? AND id<>? LIMIT 1", [.text(mail.accountID), .text(mail.canonicalID), .text(mail.id)]); defer { sqlite3_finalize(duplicate) }
+        let duplicateCode = sqlite3_step(duplicate)
+        if duplicateCode == SQLITE_ROW { return nil }
+        guard duplicateCode == SQLITE_DONE else { throw databaseError() }
+        try execute("INSERT OR IGNORE INTO mail_arrival_notifications(id,mail,created,state) VALUES(?,?,?,'pending')", [.text(id), .text(mail.id), .real(now.timeIntervalSince1970)])
+        return .init(id: id, mailID: mail.id, createdAt: now)
+    }
+    public func pendingArrivalNotifications(now: Date = Date()) throws -> [MailArrivalNotice] {
+        let cursor = try statement("SELECT id,mail,created FROM mail_arrival_notifications WHERE state='pending' AND created>=? AND attempts<3 ORDER BY created LIMIT 20", [.real(now.addingTimeInterval(-300).timeIntervalSince1970)]); defer { sqlite3_finalize(cursor) }
+        var values: [MailArrivalNotice] = []
+        while sqlite3_step(cursor) == SQLITE_ROW { values.append(.init(id: string(cursor, 0), mailID: string(cursor, 1), createdAt: Date(timeIntervalSince1970: sqlite3_column_double(cursor, 2)))) }
+        return values
+    }
+    public func beginArrivalNotificationAttempt(_ id: String) throws -> Bool {
+        try execute("UPDATE mail_arrival_notifications SET attempts=attempts+1 WHERE id=? AND state='pending' AND attempts<3", [.text(id)])
+        return sqlite3_changes(db) == 1
+    }
+    public func finishArrivalNotification(_ id: String, delivered: Bool) throws {
+        try execute("UPDATE mail_arrival_notifications SET state=? WHERE id=?", [.text(delivered ? "delivered" : "suppressed"), .text(id)])
+    }
+    public func wasNotifiedArrival(_ mail: MailMessage) throws -> Bool {
+        let cursor = try statement("SELECT 1 FROM mail_arrival_notifications WHERE id=? AND state IN ('pending','delivered')", [.text(Self.hash(mail.canonicalID))]); defer { sqlite3_finalize(cursor) }
+        return sqlite3_step(cursor) == SQLITE_ROW
     }
     public func commitDelegation(_ delegation: Delegation, draft: ComposeDraft?, event: PartnerEvent) throws {
         try execute("BEGIN IMMEDIATE")
@@ -123,9 +187,13 @@ public actor MailStore {
     }
     /// Indexed RFC Message-ID lookup. Imported/local messages cannot establish
     /// delivery. A server Sent copy or a verified self-addressed Inbox copy can.
-    public func recoverConfirmedDraftDeliveries(accounts: [MailAccount], folders: [MailFolder]) throws -> [ComposeDraft] {
+    public func recoverConfirmedDraftDeliveries(accounts: [MailAccount], folders: [MailFolder], knownDrafts: [ComposeDraft]? = nil) throws -> [ComposeDraft] {
         var recovered: [ComposeDraft] = []
-        for draft in try load(ComposeDraft.self, kind: "draft") where ["sending", "uncertain"].contains(draft.state) {
+        let candidates = try knownDrafts ?? load(ComposeDraft.self, kind: "draft")
+        for snapshot in candidates where ["sending", "uncertain"].contains(snapshot.state) {
+            // The UI already holds immutable draft snapshots. Re-read only a
+            // pending claim instead of decoding every sent attachment again.
+            guard let draft = try object(ComposeDraft.self, kind: "draft", id: snapshot.id), ["sending", "uncertain"].contains(draft.state) else { continue }
             guard let account = accounts.first(where: { $0.id == draft.accountID && !$0.isDemo }) else { continue }
             let messageID = "<" + draft.id + "@morrow.local>"
             let s = try statement("SELECT json FROM messages WHERE account=? AND canonical=? AND uid>0 AND validity>0 LIMIT 20", [.text(account.id), .text(account.id + ":message:" + messageID)])
@@ -808,7 +876,10 @@ public actor MailStore {
                 try discardQueuedMailDownload(job)
             }
         }
-        return valid
+        return valid.sorted { first, second in
+            if (first.isNewArrival == true) != (second.isNewArrival == true) { return first.isNewArrival == true }
+            return first.downloadedAt < second.downloadedAt
+        }
     }
     public func mailDownloadQueueState() throws -> MailDownloadQueueState {
         let jobs = try queuedMailDownloads(); return .init(count: jobs.count, bytes: jobs.reduce(0) { $0 + $1.byteCount })
@@ -856,46 +927,8 @@ public actor MailStore {
     public nonisolated static func hash(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
     public nonisolated static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
-    public func keywordSearch(_ query: String, limit: Int = 60, allowedIDs: Set<String>? = nil) async throws -> [SearchHit] {
-        if allowedIDs?.isEmpty == true { return [] }
-        guard limit > 0 else { return [] }
-        let parsed = MailQuery(query)
-        var scope = allowedIDs
-        if parsed.hasFilters {
-            scope = Set(try await messageSummaries().filter { (allowedIDs?.contains($0.id) ?? true) && parsed.matches($0.displayMessage) }.map(\.id))
-            if scope?.isEmpty == true { return [] }
-        }
-        let tokens = parsed.text.split(whereSeparator: \.isWhitespace).map(String.init)
-        if tokens.isEmpty && !parsed.hasFilters { return [] }
-        struct Candidate { var id: String; var canonical: String; var folder: String; var score: Float }
-        let clauses = tokens.isEmpty ? "1" : tokens.map { _ in "instr(lower(search),lower(?))>0" }.joined(separator: " OR ")
-        let sqlLimit = scope == nil ? " LIMIT ?" : ""
-        let bindings = tokens.map(Value.text) + (scope == nil ? [.int(Int64(limit * 4))] : [])
-        let s = try statement("SELECT id,search,canonical,folder FROM messages WHERE \(clauses) ORDER BY date DESC" + sqlLimit, bindings)
-        var candidates: [Candidate] = []
-        do {
-            while true {
-                let code = sqlite3_step(s); if code == SQLITE_DONE { break }
-                guard code == SQLITE_ROW else { throw databaseError() }
-                let id = string(s, 0); guard scope?.contains(id) ?? true else { continue }
-                let body = string(s, 1).lowercased()
-                let score = tokens.isEmpty ? 1 : Float(tokens.filter { body.contains($0.lowercased()) }.count) / Float(tokens.count)
-                let canonical = string(s, 2)
-                candidates.append(Candidate(id: id, canonical: canonical.isEmpty ? id : canonical, folder: string(s, 3), score: score))
-            }
-            sqlite3_finalize(s)
-        } catch { sqlite3_finalize(s); throw error }
-        // Rank and deduplicate small metadata before reading any body. Preserve
-        // the inbox representative used by the previous search implementation.
-        var order: [String] = [], best: [String: Candidate] = [:]
-        for candidate in candidates.sorted(by: { $0.score > $1.score }) {
-            if best[candidate.canonical] == nil { order.append(candidate.canonical); best[candidate.canonical] = candidate }
-            else if candidate.folder == "INBOX" { best[candidate.canonical] = candidate }
-        }
-        return try order.prefix(limit).compactMap { key in
-            guard let candidate = best[key], let mail = try message(candidate.id) else { return nil }
-            return SearchHit(message: mail, score: candidate.score, method: parsed.hasFilters ? "条件检索" : "关键词")
-        }
+    public nonisolated func keywordSearch(_ query: String, limit: Int = 60, allowedIDs: Set<String>? = nil) async throws -> [SearchHit] {
+        try await MailKeywordSearch.search(root: root, query: query, limit: limit, allowedIDs: allowedIDs)
     }
     private func deduplicate(_ values: [SearchHit], limit: Int) -> [SearchHit] {
         var ordered: [String] = []; var best: [String: SearchHit] = [:]

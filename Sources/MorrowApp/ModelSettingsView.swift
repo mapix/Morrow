@@ -16,13 +16,14 @@ struct ModelSettingsView: View {
     private var configurationID: String { SettingsSaveFeedback.configurationID(draft) }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(L10n.t("聊天与委托模型")).font(Theme.label.weight(.semibold))
             Picker(L10n.t("模型服务"), selection: $draft.provider) { Text(L10n.t("自动选择本机模型")).tag("auto"); Text("Ollama").tag("ollama"); Text(L10n.t("OpenAI兼容服务")).tag("openai"); Text("ChatGPT").tag("chatgpt"); Text("Apple Intelligence").tag("apple") }
             if draft.provider == "chatgpt" {
                 ChatGPTLoginView(draft: $draft)
             } else if draft.provider == "openai" {
-                TextField(L10n.t("服务基础地址，例如https://服务地址/v1"), text: Binding(get: { draft.openAIURL ?? "https://api.openai.com/v1" }, set: { draft.openAIURL = $0 })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("兼容模型服务地址"))
-                SecureField(L10n.t("API密钥，留空保留钥匙串中的密钥"), text: Binding(get: { key }, set: { key = $0; saveFeedback.edited(); onEdited() })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("模型API密钥"))
+                LabeledContent(L10n.t("服务地址")) { TextField("https://service.example/v1", text: Binding(get: { draft.openAIURL ?? "https://api.openai.com/v1" }, set: { draft.openAIURL = $0 })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("兼容模型服务地址")) }
+                LabeledContent(L10n.t("API密钥")) { SecureField("", text: Binding(get: { key }, set: { key = $0; saveFeedback.edited(); onEdited() })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("模型API密钥")) }
+                Text(L10n.t("留空保留已保存的密钥。")).font(Theme.small).foregroundStyle(Theme.secondary)
+                DisclosureGroup(L10n.t("连接问题")) {
                 Button(L10n.t("授权读取已存凭据")) {
                     let id = ModelEndpoint.credentialID(draft.openAIURL ?? "https://api.openai.com/v1")
                     busy = true; result = nil
@@ -34,11 +35,12 @@ struct ModelSettingsView: View {
                         } catch { result = error.localizedDescription }
                     }
                 }.buttonStyle(QuietButtonStyle()).disabled(busy).accessibilityIdentifier("settings.model.credentials.authorize")
-                TextField(L10n.t("模型ID"), text: Binding(get: { draft.openAIModel ?? "" }, set: { draft.openAIModel = $0 })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("兼容服务模型ID"))
+                }
+                LabeledContent(L10n.t("模型ID")) { TextField("", text: Binding(get: { draft.openAIModel ?? "" }, set: { draft.openAIModel = $0 })).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("兼容服务模型ID")) }
                 DisclosureGroup(L10n.t("兼容设置")) { Toggle(L10n.t("严格JSON Schema输出（需模型支持）"), isOn: Binding(get: { draft.strictJSON ?? false }, set: { draft.strictJSON = $0 })); Toggle(L10n.t("使用developer指令角色"), isOn: Binding(get: { draft.useDeveloperRole ?? false }, set: { draft.useDeveloperRole = $0 })) }.font(Theme.label)
             } else if draft.provider != "apple" {
-                TextField(L10n.t("Ollama服务地址"), text: $draft.ollamaURL).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("Ollama服务地址"))
-                TextField(L10n.t("模型名称"), text: $draft.model).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("本机思考模型名称"))
+                LabeledContent(L10n.t("Ollama服务地址")) { TextField("http://127.0.0.1:11434", text: $draft.ollamaURL).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("Ollama服务地址")) }
+                LabeledContent(L10n.t("模型名称")) { TextField("", text: $draft.model).textFieldStyle(PaperFieldStyle()).accessibilityLabel(L10n.t("本机思考模型名称")) }
             }
             if draft.provider != "apple" && draft.provider != "chatgpt" {
                 HStack {

@@ -1,18 +1,19 @@
-// Hallmark v2.0.0: Coral by user request. Native app scope, no top navigation bar; ongoing work and contextual OpenUI.
-// Pre-emit critique: P5 H4 E3 S5 R4 V5. Weakest: execution; live native states must be verified after recomposition.
+// Morrow native workbench: correspondence, delivery state and evidence define the hierarchy.
+// Shared semantic tokens serve every page, control and embedded document.
 import SwiftUI
 import AppKit
 
 enum Theme {
-    static var current: MorrowTheme { MorrowTheme(rawValue: UserDefaults.standard.string(forKey: "SmailPresentationTheme") ?? "coral") ?? .coral }
+    static var current: MorrowTheme {
+        let selected = MorrowTheme(rawValue: UserDefaults.standard.string(forKey: PresentationPreferences.themeKey) ?? "system") ?? .system
+        if selected == .system { return NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .slate }
+        return selected == .dark ? .dark : .slate
+    }
     static var active: ThemePalette { palette(for: current) }
+    private static let lightPalette = ThemePalette(paper: 0xF4F5F7, sheet: 0xFFFFFF, sidebar: 0xECEFF3, ink: 0x212A35, secondary: 0x4F5A68, muted: 0x667180, rule: 0xDDE1E7, accent: 0x2B61AF, accent2: 0x2B61AF, focus: 0x2B61AF, unreadPaper: 0xF4F7FC, selected: 0xDCE7F7, green: 0x327356, error: 0xBB3C3C)
+    private static let darkPalette = ThemePalette(paper: 0x1B1E23, sheet: 0x22262D, sidebar: 0x181B20, ink: 0xE9EDF3, secondary: 0xC3CAD4, muted: 0x9BA6B5, rule: 0x383F49, accent: 0x8DBDFF, accent2: 0x8DBDFF, focus: 0x8DBDFF, unreadPaper: 0x252F3B, selected: 0x2C3D54, green: 0x83C7A4, error: 0xF19494)
     static func palette(for theme: MorrowTheme) -> ThemePalette {
-        switch theme {
-        case .coral: return ThemePalette(paper: 0xF8F4F1, sheet: 0xFDFBF8, sidebar: 0xF1ECE8, ink: 0x1D1714, secondary: 0x312926, muted: 0x625955, rule: 0xD9D3CF, accent: 0xEF8B7B, accent2: 0xBB3D31, focus: 0xBD3A2B, unreadPaper: 0xFBE3DC, selected: 0xE8E1DD, green: 0x465639, error: 0xBA2B28)
-        case .slate: return ThemePalette(paper: 0xF4F6F8, sheet: 0xFFFFFF, sidebar: 0xE8EDF2, ink: 0x202F3A, secondary: 0x344B5D, muted: 0x586B78, rule: 0xCAD4DB, accent: 0x96BAD1, accent2: 0x32647F, focus: 0x246B94, unreadPaper: 0xE4EEF6, selected: 0xD5E2EA, green: 0x326249, error: 0xB23737)
-        case .forest: return ThemePalette(paper: 0xF2F5F1, sheet: 0xFBFCF8, sidebar: 0xE5EBE1, ink: 0x24362B, secondary: 0x394D3D, muted: 0x596B5B, rule: 0xCAD4C7, accent: 0x97B39A, accent2: 0x326447, focus: 0x297143, unreadPaper: 0xE0ECDA, selected: 0xD8E2D3, green: 0x326447, error: 0xB33D2C)
-        case .dark: return ThemePalette(paper: 0x1C242A, sheet: 0x242F36, sidebar: 0x172026, ink: 0xE9F0F3, secondary: 0xCDDAE2, muted: 0xA8B9C4, rule: 0x43525D, accent: 0xED9E89, accent2: 0xFFB29C, focus: 0xFFB29C, unreadPaper: 0x34323A, selected: 0x35424C, green: 0x9BCFA6, error: 0xFFACA5)
-        }
+        theme == .dark || (theme == .system && current == .dark) ? darkPalette : lightPalette
     }
     static var paper: Color { active.paper }
     static var sheet: Color { active.sheet }
@@ -26,7 +27,10 @@ enum Theme {
     static var accentInk: Color { current == .dark ? active.paper : active.ink }
     static var unreadInk: Color { active.ink }
     static var focus: Color { active.focus }
-    static var fieldEdge: Color { active.muted }
+    static var fieldEdge: Color { current == .dark ? Color(hex: 0x525C6B) : Color(hex: 0xC5CCD6) }
+    static var onAccent: Color { current == .dark ? Color(hex: 0x172A43) : Color.white }
+    static var hover: Color { active.ink.opacity(current == .dark ? 0.08 : 0.045) }
+    static var chartPalette: [Color] { [accent2, Color(hex: 0x368080), Color(hex: 0x8A6AAA), Color(hex: 0xB07D36), Color(hex: 0x6B7C91), green] }
     static var unreadPaper: Color { active.unreadPaper }
     static var selected: Color { active.selected }
     static var green: Color { active.green }
@@ -37,23 +41,23 @@ enum Theme {
     static let documentExportInk = Color(red: 0.11524, green: 0.08817, blue: 0.07974)
     static let shadow = Color(red: 0, green: 0, blue: 0)
     static let clear = Color.clear
-    static let title = Font.system(size: 30, weight: .semibold)
-    static let heading = Font.system(size: 19, weight: .semibold)
-    static let body = Font.system(size: 15)
+    static let title = Font.system(size: 22, weight: .semibold)
+    static let heading = Font.system(size: 15, weight: .semibold)
+    static let body = Font.system(size: 13)
     static let reader = Font.system(size: 15)
     static let label = Font.system(size: 12)
     static let small = Font.system(size: 11)
-    static let wordmark = Font.system(size: 25, weight: .semibold, design: .rounded)
-    static let navigation = Font.system(size: 14, weight: .medium)
+    static let wordmark = Font.system(size: 19, weight: .semibold)
+    static let navigation = Font.system(size: 13, weight: .medium)
     static let context = Font.system(size: 12, weight: .medium)
-    static let sidebarWidth: CGFloat = 210
-    static let compactControlHeight: CGFloat = 34
-    static let readerTitle = Font.system(size: 25, weight: .semibold)
-    static let actionIcon = Font.system(size: 18)
-    static let emptyIcon = Font.system(size: 32, weight: .light)
+    static let sidebarWidth: CGFloat = 200
+    static let compactControlHeight: CGFloat = 30
+    static let readerTitle = Font.system(size: 21, weight: .semibold)
+    static let actionIcon = Font.system(size: 16)
+    static let emptyIcon = Font.system(size: 24, weight: .regular)
     static let editorFont = NSFont.systemFont(ofSize: 15)
-    static let radius: CGFloat = 8
-    static let controlRadius: CGFloat = 8
+    static let radius: CGFloat = 6
+    static let controlRadius: CGFloat = 5
     static var htmlTokens: String { active.htmlTokens }
     static var readerHTMLOverrides: String {
         current == .dark ? "body{color-scheme:dark;}body,body div,body p,body span,body td,body th,body table{color:var(--ink)!important;background-color:var(--paper)!important;}body a{color:var(--ink)!important;text-decoration:underline;}" : ""
@@ -84,9 +88,9 @@ struct ChatSendButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(Theme.body.weight(.semibold)).foregroundStyle(Theme.sheet)
-            .frame(width: 36, height: 36)
-            .background(Theme.ink.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: Theme.radius))
+        configuration.label.font(Theme.body.weight(.semibold)).foregroundStyle(Theme.onAccent)
+            .frame(width: 30, height: 30)
+            .background(Theme.accent2.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: Theme.radius))
             .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.clear, lineWidth: 2))
             .contentShape(Rectangle()).opacity(enabled ? 1 : 0.4)
     }
@@ -125,18 +129,22 @@ private struct PaperFieldBody<Content: View>: View {
     @FocusState private var focused: Bool
     @Environment(\.isEnabled) private var enabled
     var body: some View {
-        content.focused($focused).font(Theme.body).foregroundStyle(Theme.ink).padding(.horizontal, 8).frame(minHeight: 44).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.fieldEdge, lineWidth: 1)).opacity(enabled ? 1 : 0.55)
+        content.focused($focused).font(Theme.body).foregroundStyle(Theme.ink).padding(.horizontal, 8).frame(minHeight: 30).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.fieldEdge, lineWidth: 1)).opacity(enabled ? 1 : 0.55)
     }
 }
 struct EmptyRegion: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     var icon: String; var title: String; var detail: String; var action: String?; var perform: (() -> Void)?
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             Image(systemName: icon).font(Theme.emptyIcon).foregroundStyle(Theme.muted).accessibilityHidden(true)
             Text(title).font(Theme.heading).foregroundStyle(Theme.ink)
-            Text(detail).font(Theme.body).foregroundStyle(Theme.muted).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+            Text(detail).font(Theme.body).foregroundStyle(Theme.muted).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
             if let action { Button(action) { perform?() }.buttonStyle(PrimaryButtonStyle()) }
-        }.frame(maxWidth: 340, alignment: .leading).padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.frame(maxWidth: 360, alignment: .leading).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
+
+private extension Color {
+    init(hex: UInt32) { self.init(red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255) }
 }

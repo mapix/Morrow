@@ -20,20 +20,33 @@ extension AppModel {
     }
     /// Recovery only updates local records and cache. It never transmits mail.
     func reconcileStoredDeliveries() async {
+        if let task = deliveryReconciliationTask { await task.value; return }
+        let task = Task<Void, Never> { [weak self] in guard let self else { return }; await self.performDeliveryReconciliation() }
+        deliveryReconciliationTask = task
+        await task.value
+        deliveryReconciliationTask = nil
+    }
+    private func performDeliveryReconciliation() async {
         do {
-            let recovered = try await store.recoverConfirmedDraftDeliveries(accounts: accounts, folders: folders)
+            let recovered = try await store.recoverConfirmedDraftDeliveries(accounts: accounts, folders: folders, knownDrafts: drafts)
             for draft in recovered { publishDelivery(draft); await reconcileResponderDelivery(draft) }
-            for draft in drafts where draft.state == "sent" {
-                guard let account = accounts.first(where: { $0.id == draft.accountID && !$0.isDemo }),
-                      let receipt = try await store.object(DraftDeliveryReceipt.self, kind: "mail-delivery", id: draft.id),
-                      try await store.messageSummaries(ids: ["sent:" + draft.id]).isEmpty else { continue }
+            for draft in drafts where draft.state == "sent" && !verifiedLocalDeliveryIDs.contains(draft.id) {
+                try Task.checkCancellation()
+                guard let account = accounts.first(where: { $0.id == draft.accountID && !$0.isDemo }) else { continue }
+                guard let receipt = try await store.object(DraftDeliveryReceipt.self, kind: "mail-delivery", id: draft.id) else { verifiedLocalDeliveryIDs.insert(draft.id); continue }
+                let existing = try await store.messageSummaries(ids: ["sent:" + draft.id])
+                if !existing.isEmpty { verifiedLocalDeliveryIDs.insert(draft.id); continue }
                 try await saveSentCopy(MIMEWriter.encode(draft, account: account, date: receipt.confirmedAt), draft: draft, account: account)
+                verifiedLocalDeliveryIDs.insert(draft.id)
             }
-        } catch { await log("本机投递记录待修复", detail: error.localizedDescription, kind: "delivery") }
+        } catch is CancellationError { }
+        catch { await log("本机投递记录待修复", detail: error.localizedDescription, kind: "delivery") }
     }
     func sendPending() async {
+        guard !isQualityPreview else { return }
         guard !outboundBusy else { return }; outboundBusy = true; defer { outboundBusy = false }
         for candidate in drafts where candidate.state == "queued" && (candidate.scheduledAt ?? Date()) <= Date() {
+            guard !Task.isCancelled else { return }
             guard let account = accounts.first(where: { $0.id == candidate.accountID && $0.enabled && !$0.isDemo }) else { continue }
             if candidate.automaticResponse == true && !settings.enabled { await cancelSend(candidate); await cancelResponderDelivery(candidate, detail: "伙伴已暂停，自动回复已撤回。"); continue }
             let claimed: ComposeDraft

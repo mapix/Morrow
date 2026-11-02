@@ -19,6 +19,7 @@ public struct AgentRun: Codable, Identifiable, Sendable {
     public var id: String = UUID().uuidString
     public var delegationID: String?
     public var responderID: String?
+    public var sessionID: String?
     public var title: String
     public var instruction: String
     public var phase: AgentPhase

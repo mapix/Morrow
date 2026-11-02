@@ -26,6 +26,9 @@ private actor MailDeliveryFixture {
         XCTAssertEqual(stored?.state, "sent"); XCTAssertNil(model.error); XCTAssertTrue(model.outboxDrafts.isEmpty)
         model.navigate(.sent)
         XCTAssertEqual(model.visibleMails.first?.messageID, "<" + draft.id + "@morrow.local>")
+        model.openDraft(try XCTUnwrap(stored))
+        XCTAssertEqual(model.destination, .sent); XCTAssertNil(model.composer)
+        XCTAssertEqual(model.selected?.messageID, "<" + draft.id + "@morrow.local>")
         await model.sendPending(); let count = await fixture.count(); XCTAssertEqual(count, 1)
         do { try await model.store.queueReviewedDraft(draft); XCTFail("Sent mail must remain protected") } catch {}
     }

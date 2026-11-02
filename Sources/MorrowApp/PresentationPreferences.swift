@@ -17,12 +17,13 @@ enum MorrowLanguage: String, CaseIterable, Identifiable {
 }
 
 enum MorrowTheme: String, CaseIterable, Identifiable {
-    case coral, slate, forest, dark
+    case system, coral, slate, forest, dark
+    static var selectable: [Self] { [.system, .slate, .dark] }
     var id: String { rawValue }
     var title: String {
-        switch self { case .coral: return "Coral"; case .slate: return L10n.t("雾蓝"); case .forest: return L10n.t("青苔"); case .dark: return L10n.t("夜色") }
+        switch self { case .system: return L10n.t("跟随系统"); case .coral, .slate, .forest: return L10n.t("浅色"); case .dark: return L10n.t("深色") }
     }
-    var colorScheme: ColorScheme { self == .dark ? .dark : .light }
+    var colorScheme: ColorScheme? { self == .system ? nil : self == .dark ? .dark : .light }
 }
 
 /// Presentation choices are local to this device. Changing them never recreates
@@ -34,8 +35,8 @@ enum MailReadingPreferences {
 
 @MainActor final class PresentationPreferences: ObservableObject {
     static let shared = PresentationPreferences()
-    static let languageKey = "SmailPresentationLanguage"
-    static let themeKey = "SmailPresentationTheme"
+    nonisolated static let languageKey = "SmailPresentationLanguage"
+    nonisolated static let themeKey = "SmailPresentationTheme"
     @Published var language: MorrowLanguage { didSet { defaults.set(language.rawValue, forKey: Self.languageKey) } }
     @Published var theme: MorrowTheme { didSet { defaults.set(theme.rawValue, forKey: Self.themeKey) } }
     @Published var loadExternalImagesByDefault: Bool { didSet { defaults.set(loadExternalImagesByDefault, forKey: MailReadingPreferences.externalImagesKey) } }
@@ -43,11 +44,14 @@ enum MailReadingPreferences {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         language = MorrowLanguage(rawValue: defaults.string(forKey: Self.languageKey) ?? "system") ?? .system
-        theme = MorrowTheme(rawValue: defaults.string(forKey: Self.themeKey) ?? "coral") ?? .coral
+        let saved = MorrowTheme(rawValue: defaults.string(forKey: Self.themeKey) ?? "system") ?? .system
+        let effective = [.coral, .forest].contains(saved) ? MorrowTheme.slate : saved
+        theme = effective
+        if effective != saved { defaults.set(effective.rawValue, forKey: Self.themeKey) }
         loadExternalImagesByDefault = MailReadingPreferences.loadsExternalImages(defaults: defaults)
     }
     var locale: Locale { Locale(identifier: language.resolvedCode) }
-    var colorScheme: ColorScheme { theme.colorScheme }
+    var colorScheme: ColorScheme? { theme.colorScheme }
     var replyLanguageName: String {
         switch language.resolvedCode { case "zh-Hans": return "Simplified Chinese"; case "ja": return "Japanese"; default: return "English" }
     }
@@ -63,23 +67,9 @@ struct PresentationSettingsView: View {
                 ForEach(MorrowLanguage.allCases) { Text($0.nativeName).tag($0) }
             }.frame(maxWidth: 360)
             Toggle(L10n.t("默认加载邮件外部图片"), isOn: $presentationState.loadExternalImagesByDefault)
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(MorrowTheme.allCases) { theme in
-                    Button { presentationState.theme = theme } label: {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 0) {
-                                Rectangle().fill(Theme.palette(for: theme).sidebar).frame(width: 22)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    RoundedRectangle(cornerRadius: 2).fill(Theme.palette(for: theme).ink).frame(width: 46, height: 4)
-                                    RoundedRectangle(cornerRadius: 2).fill(Theme.palette(for: theme).accent).frame(width: 34, height: 4)
-                                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading).padding(9).background(Theme.palette(for: theme).sheet)
-                            }.frame(height: 42).clipShape(RoundedRectangle(cornerRadius: Theme.radius))
-                            HStack { Text(theme.title).font(Theme.label.weight(.medium)); Spacer(minLength: 0); if theme == presentationState.theme { Image(systemName: "checkmark").font(Theme.label).foregroundStyle(Theme.accent2) } }
-                        }.padding(10).frame(width: 112).background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius))
-                            .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(theme == presentationState.theme ? Theme.focus : Theme.rule, lineWidth: theme == presentationState.theme ? 1.5 : 1))
-                    }.buttonStyle(.plain).accessibilityLabel(theme.title).accessibilityAddTraits(theme == presentationState.theme ? .isSelected : [])
-                }
-            }
+            Picker(L10n.t("外观"), selection: $presentationState.theme) {
+                ForEach(MorrowTheme.selectable) { Text($0.title).tag($0) }
+            }.pickerStyle(.segmented).frame(maxWidth: 360).accessibilityIdentifier("settings.appearance")
             Text(L10n.t("立即生效，当前输入和工作范围会保留。")).font(Theme.label).foregroundStyle(Theme.muted)
         }
     }

@@ -49,6 +49,7 @@ extension AppModel {
         catch { self.error = error.localizedDescription }
     }
     func responderDraft(_ rule: MailResponder, mail summary: MailMessage, runID: String? = nil, live: Bool = false) async throws -> ComposeDraft {
+        guard !isQualityPreview else { throw MailError.message("本机界面验收模式不会启动响应器推理。") }
         guard let account = accounts.first(where: { $0.id == rule.accountID && $0.enabled }), let mail = try await store.message(summary.id) else { throw MailError.message("绑定邮箱或来源邮件暂不可用。") }
         if live || rule.boundAccountFingerprint != nil { guard rule.boundAccountFingerprint == ResponderPolicy.accountFingerprint(account) else { throw MailError.message("绑定邮箱的身份或连接配置已变化，请重新确认来源。") } }
         let raw = (try? await store.rawHeader(mail)) ?? Data()
@@ -111,6 +112,7 @@ extension AppModel {
         return draft
     }
     func runResponders(retryReceiptID: String? = nil) async {
+        guard !isQualityPreview else { return }
         guard !responderBusy, settings.enabled else { return }
         let activeRules = responders.filter { $0.enabled && !$0.archived && $0.hasBoundSource && $0.boundAccountFingerprint != nil }
         guard !activeRules.isEmpty else { return }; responderBusy = true

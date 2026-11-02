@@ -198,14 +198,9 @@ struct MailListView: View {
                 Text(model.searchMode ? L10n.t("检索结果") : model.selectedFolder.flatMap { path in model.folders.first { $0.path == path }?.name } ?? L10n.t(model.destination.rawValue)).font(Theme.heading)
                 Spacer()
                 Button(selecting ? L10n.t("结束选择") : L10n.t("选择")) { selecting.toggle(); selectedIDs = [] }.buttonStyle(CompactButtonStyle()).font(Theme.label).disabled(model.batchBusy)
-                Menu { Toggle(L10n.t("只看未读"), isOn: $model.unreadOnly); Button(L10n.t("所有分类")) { model.category = nil }; ForEach(MailCategory.allCases, id: \.self) { category in Button(category.rawValue) { model.category = category } } } label: { Image(systemName: "line.3.horizontal.decrease").frame(width: 32, height: 32).contentShape(Rectangle()) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32).help(L10n.t("筛选邮件"))
-            }.padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 12)
+                Menu { Button(L10n.t("全部已读")) { Task { await model.markAllReadInCurrentList() } }.disabled(model.batchBusy || (page.total == 0 && !model.canMarkWholeFolderRead)).accessibilityIdentifier("mail.mark-all-read"); Divider(); Toggle(L10n.t("只看未读"), isOn: $model.unreadOnly); Button(L10n.t("所有分类")) { model.category = nil }; ForEach(MailCategory.allCases, id: \.self) { category in Button(category.rawValue) { model.category = category } } } label: { Image(systemName: "line.3.horizontal.decrease").frame(width: 32, height: 32).contentShape(Rectangle()) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32).help(L10n.t("筛选邮件"))
+            }.padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
             HStack(spacing: 10) {
-                Button(L10n.t("全部已读")) { Task { await model.markAllReadInCurrentList() } }
-                    .buttonStyle(CompactButtonStyle()).foregroundStyle(Theme.accent2).font(Theme.label)
-                    .disabled(model.batchBusy || (page.total == 0 && !model.canMarkWholeFolderRead))
-                    .help(L10n.t("将当前列表跨页的未读邮件全部标为已读"))
-                    .accessibilityIdentifier("mail.mark-all-read")
                 Spacer(minLength: 0)
                 Menu { ForEach([25, 50, 100], id: \.self) { size in Button(L10n.format("每页 {0} 封", "\(size)")) { model.setMailPageSize(size) } } } label: {
                     Text(page.total == 0 ? "0 / 0" : "\(page.start + 1)–\(page.end) / \(page.total.formatted())").monospacedDigit().font(Theme.small)
@@ -214,7 +209,7 @@ struct MailListView: View {
                     .buttonStyle(ToolbarIconButtonStyle()).disabled(!page.hasPrevious || model.batchBusy).help(L10n.t("上一页")).accessibilityLabel(L10n.t("上一页")).accessibilityIdentifier("mail.pagination.previous")
                 Button { model.turnMailPage(1) } label: { Image(systemName: "chevron.right").frame(width: 32, height: 32) }
                     .buttonStyle(ToolbarIconButtonStyle()).disabled(!page.hasNext || model.batchBusy).help(L10n.t("下一页")).accessibilityLabel(L10n.t("下一页")).accessibilityIdentifier("mail.pagination.next")
-            }.padding(.horizontal, 20).padding(.bottom, 12)
+            }.padding(.horizontal, 14).padding(.bottom, 8)
             if model.searchMode { Text(model.searchStatus).font(Theme.small).foregroundStyle(model.searchFallback ? Theme.error : Theme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 12) }
             if model.searchUpdatesAvailable { Text(L10n.t("索引有更新，按回车刷新结果")).font(Theme.small).foregroundStyle(Theme.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 8) }
             Divider().overlay(Theme.rule)
@@ -227,7 +222,7 @@ struct MailListView: View {
                         ForEach(pageMails) { mail in
                             HStack(spacing: 0) {
                                 if selecting { Button { if selectedIDs.contains(mail.id) { selectedIDs.remove(mail.id) } else { selectedIDs.insert(mail.id) } } label: { Image(systemName: selectedIDs.contains(mail.id) ? "checkmark.square.fill" : "square").foregroundStyle(Theme.ink) }.buttonStyle(IconButtonStyle()).accessibilityLabel(L10n.t("选择") + mail.subject) }
-                                Button { model.select(mail) } label: { MailRow(mail: mail, selected: model.selectedID == mail.id, compact: model.compactLayout, accountName: model.accounts.count > 1 ? model.accounts.first(where: { $0.id == mail.accountID })?.name : nil).equatable() }.buttonStyle(.plain)
+                                Button { model.select(mail) } label: { MailRow(mail: mail, selected: model.selectedID == mail.id, compact: model.compactLayout, accountName: model.accounts.count > 1 ? model.accounts.first(where: { $0.id == mail.accountID })?.name : nil, outbound: model.isOutbound(mail)).equatable() }.buttonStyle(.plain)
                             }.id(mail.id)
                                 .contextMenu { Button(mail.isRead ? L10n.t("标记未读") : L10n.t("标记已读")) { Task { await model.markRead(mail, !mail.isRead) } }; Button(mail.isStarred ? L10n.t("取消星标") : L10n.t("添加星标")) { Task { await model.star(mail) } }; Button(L10n.t("归档")) { Task { await model.move(mail, role: "archive") } }; Button(L10n.t("移到废纸篓")) { Task { await model.move(mail, role: "trash") } } }
                         }
@@ -265,18 +260,28 @@ struct MailRow: View, Equatable {
     var selected: Bool
     var compact: Bool
     var accountName: String?
-    static func == (a: Self, b: Self) -> Bool { a.mail == b.mail && a.selected == b.selected && a.compact == b.compact && a.accountName == b.accountName }
+    var outbound = false
+    static func == (a: Self, b: Self) -> Bool { a.mail == b.mail && a.selected == b.selected && a.compact == b.compact && a.accountName == b.accountName && a.outbound == b.outbound }
+    private var sender: String { outbound && !mail.to.isEmpty ? mail.to.map(\.display).joined(separator: ", ") : mail.from.display }
+    private var date: String { Calendar.current.isDateInToday(mail.date) ? mail.date.formatted(date: .omitted, time: .shortened) : mail.date.formatted(.dateTime.month(.twoDigits).day(.twoDigits)) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack { MailReadState(read: mail.isRead); Text(mail.from.display).font(Theme.body.weight(mail.isRead ? .regular : .semibold)).lineLimit(1); Spacer(); if mail.isStarred { Image(systemName: "star.fill").font(Theme.small).foregroundStyle(Theme.secondary) }; Text(mail.date.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())).font(Theme.small).foregroundStyle(Theme.muted) }
-            Text(mail.subject).font(Theme.body.weight(mail.isRead ? .regular : .semibold)).lineLimit(2)
-            Text(mail.analysis?.summary ?? mail.preview).font(Theme.label).foregroundStyle(Theme.muted).lineLimit(2)
-            HStack(spacing: 12) {
-                if let accountName { Text(accountName).foregroundStyle(Theme.secondary) }
-                if let analysis = mail.analysis { Text(L10n.t(analysis.category.rawValue)); if analysis.needsReply && !mail.actionDone { Text(L10n.t("待回复")).foregroundStyle(Theme.error) } }
-                if !mail.attachments.isEmpty { Label("\(mail.attachments.count)", systemImage: "paperclip") }
-                ForEach(mail.labels.prefix(2), id: \.self) { Text($0) }
-            }.font(Theme.small).foregroundStyle(Theme.muted)
-        }.padding(compact ? 10 : 18).frame(maxWidth: .infinity, alignment: .leading).background(selected ? Theme.selected : mail.isRead ? Theme.clear : Theme.unreadPaper.opacity(0.35)).overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }.contentShape(Rectangle()).overlay(alignment: .leading) { if !mail.isRead { Rectangle().fill(Theme.accent2).frame(width: 3) } }.accessibilityElement(children: .combine).accessibilityValue(mail.isRead ? L10n.t("已读") : L10n.t("未读"))
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(sender).font(Theme.body.weight(mail.isRead ? .medium : .semibold)).lineLimit(1)
+                Spacer(minLength: 4)
+                if mail.isStarred { Image(systemName: "star.fill").font(Theme.small).foregroundStyle(Theme.secondary) }
+                Text(date).font(Theme.small).foregroundStyle(Theme.muted).fixedSize()
+            }
+            Text(mail.subject).font(Theme.body.weight(mail.isRead ? .regular : .semibold)).lineLimit(1)
+            HStack(spacing: 8) {
+                Text(outbound ? mail.preview : mail.analysis?.summary ?? mail.preview).font(Theme.label).foregroundStyle(Theme.secondary).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                if !mail.attachments.isEmpty { Label(String(mail.attachments.count), systemImage: "paperclip").font(Theme.small).foregroundStyle(Theme.muted).fixedSize() }
+            }
+            if let accountName { Text(accountName).font(Theme.small).foregroundStyle(Theme.muted).lineLimit(1) }
+        }.padding(.horizontal, 14).padding(.vertical, compact ? 8 : 10).frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Theme.selected : mail.isRead ? Theme.clear : Theme.unreadPaper)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }
+            .overlay(alignment: .leading) { if !mail.isRead { Rectangle().fill(Theme.accent2).frame(width: 2) } }
+            .contentShape(Rectangle()).accessibilityElement(children: .combine).accessibilityValue(mail.isRead ? L10n.t("已读") : L10n.t("未读"))
     }
 }

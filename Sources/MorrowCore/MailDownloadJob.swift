@@ -12,9 +12,11 @@ public struct MailDownloadJob: Codable, Identifiable, Sendable {
     public var byteCount: Int
     public var inventoryStarted: Date
     public var downloadedAt = Date()
+    public var isNewArrival: Bool?
     public var id: String { "\(accountID):\(folder):\(validity):\(uid)" }
-    public init(accountID: String, folder: String, uid: UInt64, validity: UInt64, read: Bool, starred: Bool, byteCount: Int, inventoryStarted: Date) {
+    public init(accountID: String, folder: String, uid: UInt64, validity: UInt64, read: Bool, starred: Bool, byteCount: Int, inventoryStarted: Date, isNewArrival: Bool = false) {
         self.accountID = accountID; self.folder = folder; self.uid = uid; self.validity = validity; self.read = read; self.starred = starred; self.byteCount = byteCount; self.inventoryStarted = inventoryStarted
+        self.isNewArrival = isNewArrival
     }
     public static let maximumPending = 32
     public static let maximumPendingBytes = 128 * 1024 * 1024

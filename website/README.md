@@ -1,55 +1,36 @@
-# Morrow website
+# Morrow product website
 
-Static zh/en landing page for the macOS desktop app. No analytics, email form, user mailbox access, or private product screenshots. Interactive scenes use fixed fictional content and never execute mail actions.
+A static Chinese/English product page for the macOS mail workspace. The page has no analytics, mailing-list form, mailbox access, or private screenshots. Its interactive examples use fixed fictional mail, contacts and responses; no example executes a mail action.
 
-## Files and assets
+## Presentation
 
-- `index.html`, `styles.css`, `app.js`: site and interaction.
-- `tokens.css`, `base.css`: Hallmark Coral scaffold; the root product design's system-sans voice is retained.
-- `assets/morrow-icon.png`: generated brand icon; square, at least512px.
-- `assets/hero.png`:1536x1024 conceptual brand art. It is not a product screenshot.
-- The page uses derived `hero.webp` (about119KB), `morrow-icon-128.webp` (about4KB), and `favicon.png` (about8KB). Original generated assets are retained for the brand pipeline, not requested by the page.
-- `assets/cotton.svg`, `felt.svg`: faint static paper texture. No photo library is used.
+The site follows the native workbench direction: neutral gray canvas, white content, a restrained blue action color and system sans typography. Semantic colors, typography and spacing live in `tokens.css`; `base.css` contains shared defaults and `styles.css` supplies page composition. Paper textures, artificial window chrome, oversized slogans, decorative shadows and generated app mockups are not used.
 
-The image slots have no private-email fallback. Until the brand files arrive, a plain Morrow wordmark remains visible.
+The masthead uses the existing `assets/morrow-icon-128.webp` and `assets/favicon.png`. They remain unchanged. The existing envelope brand artwork and its originals remain in `assets/` for the brand pipeline, but are not presented as screenshots or current interface evidence. New native UI screenshots should only be added after the rendered build is verified and private data is excluded.
 
-## Download manifest
+## Public release boundary
 
-Publish `/downloads/latest.json` using the checked-in schema. The page accepts a HTTPS URL or a same-origin `/downloads/…` path. With no valid URL, the download stays disabled and visitors can use the actual GitHub releases page. No release asset URL or version is invented.
+`downloads/latest.json` remains the authoritative public download manifest. This UI work does not publish an application, change signing or notarization records, or replace a release artifact. The current manifest points to **v0.11.1**; current native interface improvements are still in development. The page makes this distinction beside the first download action and again in the download section. Features in a public binary are defined by its release notes.
 
-```json
-{
-  "schemaVersion": 1,
-  "version": "YOUR_RELEASE_VERSION",
-  "macOS": {
-    "url": null,
-    "fileName": null,
-    "sizeBytes": null,
-    "sha256": null,
-    "minimumVersion": "26.0",
-    "architecture": "Apple Silicon"
-  },
-  "releaseUrl": "https://github.com/mapix/Morrow/releases"
-}
-```
+The manifest accepts a HTTPS URL or a same-origin `/downloads/…` path, rejects embedded credentials, and displays the actual version, system requirements, size and SHA-256 when provided. An absent or invalid URL keeps downloading disabled. GitHub release and source links remain available; a failed manifest request exposes a retry action. Requests have a five-second timeout and never include mailbox credentials.
 
-## Build and deployment
-
-Use the `website/` directory as Docker build context, not the repository root:
-
-```sh
-docker build -t YOUR_REGISTRY/morrow-website:YOUR_TAG website
-```
-
-The container listens on8080. `deploy/kubernetes.template.yaml` is a placeholder template only; it does not contain a real host, namespace, TLS secret or image. Publish your own image and configure the placeholders before deploying to a cluster.
-
-## Verification
-
-From the repository root, check JavaScript syntax and serve the static site:
+## Local preview
 
 ```sh
 node --check website/app.js
-python3 -m http.server 4173 --directory website
+python3 -m http.server 4178 --directory website
 ```
 
-Open the local preview and check hero visibility at1280×800, touch and keyboard controls at375px, desktop gutters at1920px, both languages, scene/session/response controls, no-JS readability, and null/valid/unavailable download manifest states. Syntax checks do not establish browser behavior; verify interactions in a browser before deployment.
+Use browser-harness for browser inspection and interaction. Verify 1280×800 and 1920px layouts, 375/320px narrow layouts, Chinese/English, keyboard focus and tab arrow navigation, no-JS content, and pending/ready/unavailable download states. Do not click a download during routine UI verification.
+
+Syntax and static DOM checks prove only source consistency. Actual browser captures and interaction results must be recorded separately before publication. This task does not deploy the website.
+
+## Deployment files
+
+`Dockerfile` and `deploy/` retain their existing behavior. Use `website/` as the Docker build context rather than the repository root. Deployment templates are placeholders; no registry, host, namespace, TLS configuration or live deployment is supplied by this UI change.
+
+## Latest local source verification
+
+2026-11-02: an isolated local headless Chrome/CDP instance inspected this page through browser-harness. Widths 320, 375, 1280 and 1920 had no horizontal overflow; the 1920 layout kept the 1180px container. Chinese/English switching, scene click and keyboard navigation, conversation selection, automatic-response example selection, visible keyboard focus, valid public-manifest metadata, unavailable-manifest fallback/retry, and no-JS source content were checked. Resource requests stayed on the local origin; no release download was started and no mail action or deployment was executed.
+
+This confirms the locally served source only. It does not prove a deployed page, a new public app release, or native interface behavior. The existing red brand icon remains unchanged and should be reviewed alongside any future approved brand-asset update.

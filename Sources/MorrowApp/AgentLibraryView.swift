@@ -1,5 +1,4 @@
-// Hallmark Coral, native app screens. Attachments have their own unified workspace.
-// Pre-emit critique: P5 H4 E4 S5 R4 V5. Native layout and keyboard focus await app-level verification.
+// Native indexes for work outputs, notes and recorded activity.
 import SwiftUI
 import MorrowCore
 
@@ -27,10 +26,8 @@ struct AgentLibraryView: View {
     }
     private var attachmentIndex: [AttachmentEntry] {
         var seen = Set<String>()
-        return model.mails.sorted { $0.date > $1.date }.flatMap { mail in
-            mail.attachments.compactMap { attachment in
-                seen.insert(attachment.id).inserted ? AttachmentEntry(attachment: attachment, mail: mail) : nil
-            }
+        return model.attachmentProjection.compactMap { record in
+            seen.insert(record.attachment.id).inserted ? AttachmentEntry(attachment: record.attachment, mail: record.mail) : nil
         }
     }
     private var noteIndex: [MailMessage] {
@@ -105,27 +102,23 @@ struct AgentLibraryView: View {
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                AgentIndexSearch(query: $query, prompt: L10n.t("搜索成果标题、笔记或标签"))
-                if scope == .all || scope == .artifacts {
-                    Menu {
-                        Button(L10n.t("全部产出")) { artifactKind = nil }
-                        ForEach([AgentArtifactKind.draft, .report, .action], id: \.rawValue) { kind in
-                            Button(artifactName(kind)) { artifactKind = kind }
-                        }
-                    } label: {
-                        Label(artifactKind.map(artifactName) ?? L10n.t("全部产出"), systemImage: "line.3.horizontal.decrease")
-                    }.menuStyle(.borderlessButton).frame(minWidth: 100, minHeight: 44)
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { AgentIndexSearch(query: $query, prompt: L10n.t("搜索成果标题、笔记或标签")).frame(minWidth: 180); artifactFilter }
+                VStack(alignment: .leading, spacing: 8) { AgentIndexSearch(query: $query, prompt: L10n.t("搜索成果标题、笔记或标签")); artifactFilter }
             }
-            HStack(spacing: 16) {
-                Picker(L10n.t("资料类型"), selection: $scope) {
-                    ForEach(LibraryScope.allCases.filter { $0 != .attachments }) { item in Text(L10n.t(item.rawValue)).tag(item) }
-                }.pickerStyle(.segmented).frame(maxWidth: 440).frame(minHeight: 44)
-                Spacer(minLength: 0)
+            HStack(spacing: 12) {
+                Picker(L10n.t("资料类型"), selection: $scope) { ForEach(LibraryScope.allCases.filter { $0 != .attachments }) { item in Text(L10n.t(item.rawValue)).tag(item) } }.pickerStyle(.segmented).frame(maxWidth: 440).frame(minHeight: 30)
                 Text(L10n.format("{0} 项", "\(resultCount)")).font(Theme.label).monospacedDigit().foregroundStyle(Theme.muted)
             }
         }.padding(.horizontal, 24).padding(.bottom, 16).overlay(alignment: .bottom) { AgentIndexRule() }
+    }
+    @ViewBuilder private var artifactFilter: some View {
+        if scope == .all || scope == .artifacts {
+            Menu {
+                Button(L10n.t("全部产出")) { artifactKind = nil }
+                ForEach([AgentArtifactKind.draft, .report, .action], id: \.rawValue) { kind in Button(artifactName(kind)) { artifactKind = kind } }
+            } label: { Label(artifactKind.map(artifactName) ?? L10n.t("全部产出"), systemImage: "line.3.horizontal.decrease") }.menuStyle(.borderlessButton).frame(minWidth: 100, minHeight: 30)
+        }
     }
     private var emptyState: some View {
         let filtering = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || artifactKind != nil || scope != .all
@@ -150,7 +143,7 @@ struct AgentLibraryView: View {
                         Spacer(minLength: 12)
                         Text(artifact.createdAt.uiFormatted(date: .abbreviated, time: .omitted)).font(Theme.label).foregroundStyle(Theme.muted)
                     }
-                    if !artifact.content.isEmpty { Text(artifact.content).font(Theme.label).foregroundStyle(Theme.secondary).lineLimit(2) }
+                    if !artifact.content.isEmpty { Text(WorkTextPreview.text(artifact.content, role: .artifact)).font(Theme.label).foregroundStyle(Theme.secondary).lineLimit(2) }
                     HStack(spacing: 16) {
                         Text(artifactName(artifact.kind))
                         Text(runTitle(artifact.runID)).lineLimit(1)
@@ -167,7 +160,7 @@ struct AgentLibraryView: View {
             VStack(alignment: .leading, spacing: 7) {
                 Text(entry.attachment.name).font(Theme.body.weight(.medium)).lineLimit(2)
                 Button { openMail(entry.mail) } label: {
-                    Text(entry.mail.subject.isEmpty ? L10n.t("无主题邮件") : entry.mail.subject).font(Theme.label).foregroundStyle(Theme.secondary).lineLimit(1).frame(minHeight: 44, alignment: .leading)
+                    Text(entry.mail.subject.isEmpty ? L10n.t("无主题邮件") : entry.mail.subject).font(Theme.label).foregroundStyle(Theme.secondary).lineLimit(1).frame(minHeight: 30, alignment: .leading)
                 }.buttonStyle(.plain).help(L10n.t("查看附件的来源邮件"))
                 Text(entry.attachment.size).font(Theme.small).foregroundStyle(Theme.muted).monospacedDigit()
             }.frame(maxWidth: .infinity, alignment: .leading)
@@ -182,9 +175,9 @@ struct AgentLibraryView: View {
                 Button(L10n.t("打开附件")) { Task { await model.attachment(entry.attachment) } }
                 Button(L10n.t("保存附件…")) { Task { await model.attachment(entry.attachment, save: true) } }
                 Button(L10n.t("重新提取文字")) { extractingID = entry.id; Task { await model.previewText(entry.attachment, force: true); extractingID = nil } }.disabled(model.attachmentTextBusy)
-            } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
-                .menuStyle(.borderlessButton).frame(width: 44, height: 44).help(L10n.t("附件操作"))
-        }.padding(.vertical, 16).overlay(alignment: .bottom) { AgentIndexRule() }
+            } label: { Image(systemName: "ellipsis").frame(width: 28, height: 28) }
+                .menuStyle(.borderlessButton).frame(width: 28, height: 28).help(L10n.t("附件操作"))
+        }.padding(.vertical, 12).overlay(alignment: .bottom) { AgentIndexRule() }
     }
     private func noteRow(_ mail: MailMessage) -> some View {
         Button { openMail(mail) } label: {
@@ -192,7 +185,7 @@ struct AgentLibraryView: View {
                 Image(systemName: "note.text").foregroundStyle(Theme.secondary).frame(width: 22).padding(.top, 3).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 7) {
                     Text(mail.subject.isEmpty ? L10n.t("无主题邮件") : mail.subject).font(Theme.body.weight(.medium)).lineLimit(2)
-                    Text(mail.note).font(Theme.label).foregroundStyle(Theme.secondary).lineLimit(3)
+                    Text(mail.note).font(Theme.label).foregroundStyle(Theme.secondary).lineLimit(2)
                     HStack(spacing: 16) {
                         Text(mail.from.display).lineLimit(1)
                         if !mail.labels.isEmpty { Text(mail.labels.joined(separator: "、")).lineLimit(1) }
@@ -210,7 +203,7 @@ struct AgentLibraryView: View {
                         Text(mail.subject.isEmpty ? L10n.t("无主题邮件") : mail.subject).lineLimit(1)
                         Spacer()
                         Text(mail.from.display).foregroundStyle(Theme.muted).lineLimit(1)
-                    }.font(Theme.label).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    }.font(Theme.label).frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                 }.buttonStyle(.plain).help(L10n.t("打开带有这个标签的邮件"))
             }
         } label: {
@@ -219,7 +212,7 @@ struct AgentLibraryView: View {
                 Text(entry.title).font(Theme.body.weight(.medium))
                 Spacer()
                 Text(L10n.format("{0} 封邮件", "\(entry.mails.count)")).font(Theme.label).monospacedDigit().foregroundStyle(Theme.muted)
-            }.frame(minHeight: 44)
+            }.frame(minHeight: 30)
         }.tint(Theme.secondary).padding(.vertical, 8).overlay(alignment: .bottom) { AgentIndexRule() }
     }
     private func matches(_ values: [String]) -> Bool { AgentIndexMatch.matches(query, values: values) }
@@ -277,24 +270,21 @@ struct AgentHistoryView: View {
     }
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                AgentIndexSearch(query: $query, prompt: L10n.t("搜索工作、步骤或记录"))
-                if scope == .runs {
-                    Menu {
-                        Button(L10n.t("全部状态")) { phase = nil }
-                        ForEach(AgentPhase.allCases, id: \.rawValue) { value in Button(value.label) { phase = value } }
-                    } label: { Label(phase?.label ?? L10n.t("全部状态"), systemImage: "line.3.horizontal.decrease") }
-                        .menuStyle(.borderlessButton).frame(minWidth: 110, minHeight: 44)
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { AgentIndexSearch(query: $query, prompt: L10n.t("搜索工作、步骤或记录")).frame(minWidth: 180); phaseFilter }
+                VStack(alignment: .leading, spacing: 8) { AgentIndexSearch(query: $query, prompt: L10n.t("搜索工作、步骤或记录")); phaseFilter }
             }
-            HStack(spacing: 16) {
-                Picker(L10n.t("记录类型"), selection: $scope) {
-                    ForEach(HistoryScope.allCases) { value in Text(L10n.t(value.rawValue)).tag(value) }
-                }.pickerStyle(.segmented).frame(width: 180).frame(minHeight: 44)
-                Spacer()
+            HStack(spacing: 12) {
+                Picker(L10n.t("记录类型"), selection: $scope) { ForEach(HistoryScope.allCases) { value in Text(L10n.t(value.rawValue)).tag(value) } }.pickerStyle(.segmented).frame(width: 180).frame(minHeight: 30)
+                Spacer(minLength: 0)
                 Text(L10n.format("{0} 项", "\(resultCount)")).font(Theme.label).monospacedDigit().foregroundStyle(Theme.muted)
             }
         }.padding(.horizontal, 24).padding(.bottom, 16).overlay(alignment: .bottom) { AgentIndexRule() }
+    }
+    @ViewBuilder private var phaseFilter: some View {
+        if scope == .runs {
+            Menu { Button(L10n.t("全部状态")) { phase = nil }; ForEach(AgentPhase.allCases, id: \.rawValue) { value in Button(value.label) { phase = value } } } label: { Label(phase?.label ?? L10n.t("全部状态"), systemImage: "line.3.horizontal.decrease") }.menuStyle(.borderlessButton).frame(minWidth: 110, minHeight: 30)
+        }
     }
     private var emptyState: some View {
         let filtering = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (scope == .runs && phase != nil)
@@ -306,13 +296,13 @@ struct AgentHistoryView: View {
     private func runRow(_ run: AgentRun) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Button { model.selectRun(run) } label: {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 16) {
-                        Text(run.title).font(Theme.heading).lineLimit(2)
+                        Text(run.title).font(Theme.body.weight(.medium)).lineLimit(2)
                         Spacer(minLength: 12)
                         Text(L10n.t(run.phase.label)).font(Theme.label).foregroundStyle(phaseColor(run.phase))
                     }
-                    Text(run.summary.isEmpty ? run.instruction : run.summary).font(Theme.body).foregroundStyle(Theme.secondary).lineLimit(3)
+                    Text(run.summary.isEmpty ? run.instruction : run.summary).font(Theme.body).foregroundStyle(Theme.secondary).lineLimit(2)
                     HStack(spacing: 16) {
                         Text(run.updatedAt.uiFormatted()).lineLimit(1)
                         Text(L10n.format("{0} 个步骤", "\(run.steps.count)")).monospacedDigit()
@@ -324,7 +314,7 @@ struct AgentHistoryView: View {
             DisclosureGroup(isExpanded: Binding(get: { expanded.contains(run.id) }, set: { value in if value { expanded.insert(run.id) } else { expanded.remove(run.id) } })) {
                 VStack(alignment: .leading, spacing: 0) {
                     if run.steps.isEmpty {
-                        Text(L10n.t("这项工作还没有记录步骤。")).font(Theme.label).foregroundStyle(Theme.muted).padding(.vertical, 16)
+                        Text(L10n.t("这项工作还没有记录步骤。")).font(Theme.label).foregroundStyle(Theme.muted).padding(.vertical, 12)
                     } else {
                         ForEach(run.steps.sorted { $0.date < $1.date }) { step in stepRow(step) }
                     }
@@ -338,7 +328,7 @@ struct AgentHistoryView: View {
                 HStack(spacing: 12) {
                     Text(L10n.t("查看经过")).font(Theme.label)
                     if let step = run.steps.max(by: { $0.date < $1.date }) { Text(step.title).font(Theme.label).foregroundStyle(Theme.muted).lineLimit(1) }
-                }.frame(minHeight: 44)
+                }.frame(minHeight: 30)
             }.tint(Theme.secondary).padding(.bottom, 12)
         }.overlay(alignment: .bottom) { AgentIndexRule() }
     }
@@ -356,7 +346,7 @@ struct AgentHistoryView: View {
                 if !step.sourceMailIDs.isEmpty { Text(L10n.format("{0} 封来源邮件", "\(Set(step.sourceMailIDs).count)")).font(Theme.small).foregroundStyle(Theme.muted).monospacedDigit() }
             }
             sourceLinks(step.sourceMailIDs)
-        }.padding(.vertical, 16).overlay(alignment: .bottom) { AgentIndexRule() }
+        }.padding(.vertical, 12).overlay(alignment: .bottom) { AgentIndexRule() }
     }
     private func eventRow(_ event: PartnerEvent, showRun: Bool) -> some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -369,27 +359,16 @@ struct AgentHistoryView: View {
             HStack(spacing: 16) {
                 Text(eventName(event.kind)).font(Theme.small).foregroundStyle(event.kind == "error" ? Theme.error : Theme.muted)
                 if showRun, let delegationID = event.delegationID, let run = model.agentRuns.first(where: { $0.delegationID == delegationID }) {
-                    Button(L10n.t("查看所属工作")) { model.selectRun(run) }.buttonStyle(.plain).font(Theme.label).frame(minHeight: 44).help(run.title)
+                    Button(L10n.t("查看所属工作")) { model.selectRun(run) }.buttonStyle(.plain).font(Theme.label).frame(minHeight: 30).help(run.title)
                 }
             }
             sourceLinks(event.messageIDs)
-        }.padding(.vertical, 20).overlay(alignment: .bottom) { AgentIndexRule() }
+        }.padding(.vertical, 12).overlay(alignment: .bottom) { AgentIndexRule() }
     }
     private func sourceLinks(_ ids: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(Set(ids)).sorted(), id: \.self) { id in
-                if let mail = model.mails.first(where: { $0.id == id }) {
-                    Button {
-                        model.selectedRunID = nil
-                        model.workspacePage = .mail
-                        model.select(mail)
-                    } label: {
-                        Label(mail.subject.isEmpty ? L10n.t("无主题邮件") : mail.subject, systemImage: "envelope").font(Theme.label).lineLimit(1).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    }.buttonStyle(.plain).foregroundStyle(Theme.secondary).help(L10n.t("打开来源邮件"))
-                }
-            }
-        }
+        MailReferenceList(ids: ids, title: L10n.t("来源邮件"), open: model.revealMail)
     }
+
     private func relatedEvents(_ run: AgentRun) -> [PartnerEvent] {
         guard let delegationID = run.delegationID else { return [] }
         return model.events.filter { $0.delegationID == delegationID }.sorted { $0.date > $1.date }
@@ -430,10 +409,7 @@ private struct AgentIndexHeader: View {
     let title: String
     let detail: String
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(title).font(Theme.title).foregroundStyle(Theme.ink)
-            Text(detail).font(Theme.body).foregroundStyle(Theme.muted)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+        WorkspacePageHeader(title, subtitle: detail).padding(24)
     }
 }
 private struct AgentIndexSearch: View {
@@ -447,10 +423,10 @@ private struct AgentIndexSearch: View {
             TextField("", text: $query, prompt: Text(prompt).foregroundStyle(Theme.muted))
                 .textFieldStyle(.plain).font(Theme.body).foregroundStyle(Theme.ink).focused($focused).accessibilityLabel(prompt)
             if !query.isEmpty {
-                Button { query = "" } label: { Image(systemName: "xmark").font(Theme.label).frame(width: 44, height: 44) }
+                Button { query = "" } label: { Image(systemName: "xmark").font(Theme.label).frame(width: 28, height: 28) }
                     .buttonStyle(.plain).foregroundStyle(Theme.secondary).help(L10n.t("清除搜索")).accessibilityLabel(L10n.t("清除搜索"))
             }
-        }.padding(.leading, 12).padding(.trailing, query.isEmpty ? 12 : 0).frame(minHeight: 44)
+        }.padding(.leading, 12).padding(.trailing, query.isEmpty ? 12 : 0).frame(minHeight: 30)
             .background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius))
             .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.rule, lineWidth: 1))
     }
@@ -472,12 +448,11 @@ private struct AgentIndexRule: View {
     var body: some View { Rectangle().fill(Theme.rule).frame(height: 1).accessibilityHidden(true) }
 }
 private struct AgentIndexRowButtonStyle: ButtonStyle {
-    @ObservedObject private var presentationState = PresentationPreferences.shared
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.padding(.vertical, 18).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .background(configuration.isPressed ? Theme.sidebar : Theme.clear).contentShape(Rectangle())
+        ListRowButtonStyle().makeBody(configuration: configuration).padding(.vertical, 10)
     }
 }
+
 private struct AgentIndexError: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     let detail: String
@@ -490,7 +465,7 @@ private struct AgentIndexError: View {
                 Text(detail).font(Theme.label).foregroundStyle(Theme.secondary).textSelection(.enabled)
             }.frame(maxWidth: .infinity, alignment: .leading)
             Button(L10n.t("关闭"), action: dismiss).buttonStyle(QuietButtonStyle())
-        }.padding(.horizontal, 24).padding(.vertical, 16).background(Theme.sheet).overlay(alignment: .bottom) { AgentIndexRule() }
+        }.padding(.horizontal, 24).padding(.vertical, 12).background(Theme.sheet).overlay(alignment: .bottom) { AgentIndexRule() }
     }
 }
 private struct AgentIndexLoading: View {
@@ -504,7 +479,7 @@ private struct AgentIndexLoading: View {
                     RoundedRectangle(cornerRadius: Theme.radius).fill(Theme.rule).frame(width: index.isMultiple(of: 2) ? 220 : 170, height: 15)
                     RoundedRectangle(cornerRadius: Theme.radius).fill(Theme.rule.opacity(0.6)).frame(maxWidth: .infinity).frame(height: 12)
                     RoundedRectangle(cornerRadius: Theme.radius).fill(Theme.rule.opacity(0.6)).frame(width: 130, height: 10)
-                }.padding(.vertical, 20).overlay(alignment: .bottom) { AgentIndexRule() }.accessibilityHidden(true)
+                }.padding(.vertical, 12).overlay(alignment: .bottom) { AgentIndexRule() }.accessibilityHidden(true)
             }
             Spacer(minLength: 0)
         }.padding(.horizontal, 24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).accessibilityLabel(label)

@@ -13,6 +13,8 @@ struct SidebarChatView: View {
     @State private var voiceBase = ""
     @State private var voiceSessionID = ""
     @State private var historyLimit = 60
+    @State private var followsLatest = true
+    @State private var answeringReplyID: String?
     private var context: WorkspaceContext { model.resolvedChatContext }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,8 +34,8 @@ struct SidebarChatView: View {
                 }.font(Theme.label).foregroundStyle(Theme.secondary).padding(.horizontal, 20).padding(.bottom, 10).help(model.responderStage).accessibilityIdentifier("responder.active")
             }
             ScrollViewReader { proxy in
-                ScrollView { VStack(alignment: .leading, spacing: model.compactLayout ? 22 : 30) {
-                    if model.visibleChat.count > historyLimit { Button(L10n.t("查看更早的消息")) { historyLimit += 40 }.buttonStyle(QuietButtonStyle()) }
+                ScrollView { LazyVStack(alignment: .leading, spacing: model.compactLayout ? 16 : 20) {
+                    if model.visibleChat.count > historyLimit { Button(L10n.t("查看更早的消息")) { let anchor = model.visibleChat.suffix(historyLimit).first?.id; historyLimit += 40; if let anchor { scrollChat(anchor, proxy: proxy, anchor: .top) } }.buttonStyle(QuietButtonStyle()) }
                     if model.visibleChat.isEmpty { VStack(alignment: .leading, spacing: 12) {
                         Text(L10n.t("从这里一起处理。")).font(Theme.heading)
                         Button(L10n.t("总结当前内容")) { MediaTextView.finishFocusedComposition(); model.chatInput = L10n.t("总结当前内容，说明需要我处理的事项并引用依据。"); model.chatFocusNonce += 1 }.buttonStyle(.plain).foregroundStyle(Theme.accent2).font(Theme.body)
@@ -42,11 +44,12 @@ struct SidebarChatView: View {
                     ForEach(Array(model.visibleChat.suffix(historyLimit))) { entry in ChatMessageView(entry: entry).id(entry.id) }
                     ForEach(model.openUIInteractions.filter { $0.chatID == nil && $0.completedAt == nil && ($0.sessionID ?? "legacy") == model.activeSessionID && ($0.runID == nil || $0.runID == context.runID) }) { interaction in NativeOpenUIView(interaction: interaction) }
                     if model.currentSessionBusy { VStack(alignment: .leading, spacing: 8) { if let trace = model.sdkLiveTrace { AgentProgressView(trace: trace, live: true) } else { HStack(spacing: 10) { ProgressView().controlSize(.small); Text(model.mailboxConnectionStatus ?? model.sidebarToolStatus ?? L10n.t("正在处理…")).font(Theme.label).foregroundStyle(Theme.secondary) } }; if !model.sdkStreamingText.isEmpty { Text(model.sdkStreamingText).font(Theme.body).foregroundStyle(Theme.secondary).lineLimit(7).textSelection(.enabled) }; if !model.sidebarEvidenceMailIDs.isEmpty { Text(L10n.format("本轮提供了 {0} 封邮件", "\(model.sidebarEvidenceMailIDs.count)")).font(Theme.small).foregroundStyle(Theme.secondary) } }.id("busy") }
-                }.padding(.horizontal, 20).padding(.vertical, 8) }
+                }.padding(.horizontal, 16).padding(.vertical, 12) }
+                .onScrollGeometryChange(for: Bool.self) { geometry in geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 60 } action: { _, latest in followsLatest = latest }
                 .onAppear { if let id = model.scrollChatID { revealChat(id, proxy: proxy) } else if let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
-                .onChange(of: model.visibleChat.count) { if let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
-                .onChange(of: model.activeSessionID) { historyLimit = 60; if let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
-                .onChange(of: model.currentSessionBusy) { if model.currentSessionBusy { scrollChat("busy", proxy: proxy) } }
+                .onChange(of: model.visibleChat.count) { if followsLatest, let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
+                .onChange(of: model.activeSessionID) { historyLimit = 60; followsLatest = true; answeringReplyID = nil; if let last = model.visibleChat.last { scrollChat(last.id, proxy: proxy) } }
+                .onChange(of: model.currentSessionBusy) { if followsLatest && model.currentSessionBusy { scrollChat("busy", proxy: proxy) } }
                 .onChange(of: model.scrollChatID) { if let id = model.scrollChatID { revealChat(id, proxy: proxy) } }
             }
             composer
@@ -75,20 +78,34 @@ struct SidebarChatView: View {
         }.menuStyle(.borderlessButton).menuIndicator(.hidden).overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 1).fill(Theme.accent2).frame(width: 2, height: 20) }
             .help(context.scopeMode == "hint" ? L10n.t("界面内容仅帮助理解指代，不限制任务或邮件检索。") : L10n.t("这是你明确限定的资料范围，可在菜单中恢复界面提示。")).accessibilityLabel((model.newChatWork ? L10n.t("新委托，") : "") + model.chatScopeLabel(context))
     }
+    private var answeringReply: PartnerChat? { model.visibleChat.first { $0.id == answeringReplyID && $0.sdkResumeKind == "question" && $0.sdkRunID != nil } }
+    private func submit() {
+        if let reply = answeringReply, let run = reply.sdkRunID, let interaction = reply.openUIID { model.beginSidebarChat(intent: .answer(sdkRunID: run, sourceChatID: reply.id, interactionID: interaction)) }
+        else { model.beginSidebarChat() }
+        answeringReplyID = nil
+    }
     private var composer: some View {
         let sessionID = model.activeSessionID
         return VStack(alignment: .leading, spacing: 8) {
-            scopeAnchor
+            if let pending = model.resumableReply(in: model.activeSessionID), pending.sdkResumeKind == "question" {
+                HStack(spacing: 8) {
+                    Text(L10n.t(answeringReplyID == pending.id ? "回答当前问题" : "有一项任务等待回答")).font(Theme.label).foregroundStyle(Theme.secondary)
+                    Spacer()
+                    Button(L10n.t(answeringReplyID == pending.id ? "作为新要求发送" : "回答这项问题")) { answeringReplyID = answeringReplyID == pending.id ? nil : pending.id }.buttonStyle(.plain).font(Theme.label)
+                }
+            }
+            if let reply = answeringReply { Label(reply.context?.label ?? L10n.t("原任务资料范围"), systemImage: "lock").font(Theme.context).foregroundStyle(Theme.secondary).lineLimit(1) }
+            else { scopeAnchor }
             if !model.chatMaterials.isEmpty { ScrollView(.horizontal) { HStack(spacing: 12) { ForEach(model.chatMaterials) { material in HStack(spacing: 6) { ChatMaterialPreview(material: material, compact: true); Text(material.name).font(Theme.label).lineLimit(1); Button { model.chatMaterials.removeAll { $0.id == material.id } } label: { Image(systemName: "xmark").font(Theme.small) }.buttonStyle(.plain).frame(width: 24, height: 28).help(L10n.t("移除文件：") + material.name).accessibilityLabel(L10n.t("移除文件：") + material.name) }.frame(maxWidth: 210) } } }.frame(height: 48) }
             ChatInputObservation(input: model.chatInputState) { input in
               VStack(alignment: .leading, spacing: 4) {
-                RichChatInput(text: Binding(get: { model.chatEditorInput(in: sessionID) }, set: { model.setChatEditorInput($0, in: sessionID) }), pasteMedia: model.pasteChatMaterials, submit: { if sessionID == model.activeSessionID && !voice.preparing && !voice.recording && !voice.finalizing { model.beginSidebarChat() } }, focusTrigger: model.chatFocusNonce, sessionID: sessionID, currentText: { model.chatEditorInput(in: sessionID) }, placeholder: model.newChatWork ? L10n.t("把这件事交给我…") : L10n.t("说说下一步，或带上文件…")).id(sessionID).frame(height: model.compactLayout ? 64 : 80).disabled(voice.preparing || voice.recording || voice.finalizing)
+                RichChatInput(text: Binding(get: { model.chatEditorInput(in: sessionID) }, set: { model.setChatEditorInput($0, in: sessionID) }), pasteMedia: model.pasteChatMaterials, submit: { if sessionID == model.activeSessionID && !voice.preparing && !voice.recording && !voice.finalizing { submit() } }, focusTrigger: model.chatFocusNonce, sessionID: sessionID, currentText: { model.chatEditorInput(in: sessionID) }, placeholder: answeringReply != nil ? L10n.t("填写这项问题的回答…") : L10n.t("输入新的要求，或带上文件…")).id(sessionID).frame(height: model.compactLayout ? 52 : 64).disabled(voice.preparing || voice.recording || voice.finalizing)
                     .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in let targetID = model.activeSessionID; for provider in providers { _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in await model.addChatFile(url, sessionID: targetID) } } } }; return true }
                 HStack(spacing: 12) {
                     Menu { Button(L10n.t("添加文件…")) { model.pickChatFiles() }; Button(L10n.t("截取Morrow窗口")) { model.captureWorkspace() }; Button(L10n.t("粘贴截图或文件")) { model.pasteChatMaterials() } } label: { Image(systemName: "plus").frame(width: 32, height: 32).contentShape(Rectangle()) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32).help(L10n.t("添加文件或截图")).accessibilityLabel(L10n.t("添加文件或截图"))
                     Button { if voice.recording { voice.stop() } else { MediaTextView.finishFocusedComposition(); voiceBase = model.chatInput; voiceSessionID = model.activeSessionID; Task { await voice.start() } } } label: { Image(systemName: voice.recording ? "stop.circle.fill" : "mic").foregroundStyle(voice.recording ? Theme.accent2 : Theme.secondary) }.buttonStyle(ToolbarIconButtonStyle()).frame(width: 32, height: 32).disabled(voice.preparing || voice.finalizing).help(voice.recording ? L10n.t("结束语音输入") : L10n.t("语音输入")).accessibilityLabel(voice.recording ? L10n.t("结束语音输入") : L10n.t("语音输入"))
                     Spacer()
-                    Button { if model.currentSessionBusy, let task = model.sidebarTask { task.cancel() } else { MediaTextView.finishFocusedComposition(); voice.stop(); model.beginSidebarChat() } } label: { Image(systemName: model.currentSessionBusy ? "stop.fill" : "arrow.up") }.buttonStyle(ChatSendButtonStyle()).disabled(voice.recording || voice.preparing || voice.finalizing || (!model.currentSessionBusy && (model.sidebarTask != nil || model.partnerBusy || model.materialBusy || (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatMaterials.isEmpty)))).help(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送（⌘Enter / Ctrl+Enter）")).accessibilityLabel(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送"))
+                    Button { if model.currentSessionBusy, let task = model.sidebarTask { task.cancel() } else { MediaTextView.finishFocusedComposition(); voice.stop(); submit() } } label: { Image(systemName: model.currentSessionBusy ? "stop.fill" : "arrow.up") }.buttonStyle(ChatSendButtonStyle()).disabled(voice.recording || voice.preparing || voice.finalizing || (!model.currentSessionBusy && (model.sidebarTask != nil || model.partnerBusy || model.materialBusy || (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatMaterials.isEmpty)))).help(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送（⌘Enter / Ctrl+Enter）")).accessibilityLabel(model.currentSessionBusy ? L10n.t("停止处理") : L10n.t("发送"))
                 }.padding(.horizontal, 8).padding(.bottom, 8)
               }.onChange(of: input) { model.scheduleSessionDraft() }
             }.background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.fieldEdge))
@@ -109,8 +126,15 @@ private struct ChatMessageView: View {
     @State private var showingDetails = false
     @State private var showingBudget = false
     private var sources: [MailMessage] { entry.messageIDs.compactMap(model.mailByID) }
+    private var currentContinuation: Bool { guard let run = entry.sdkRunID else { return true }; return model.chatHistory(in: entry.sessionID ?? "legacy").last(where: { $0.role == "partner" && $0.sdkRunID == run })?.id == entry.id }
+    private var originalRequest: String { let history = model.chatHistory(in: entry.sessionID ?? "legacy"); guard let index = history.firstIndex(where: { $0.id == entry.id }) else { return entry.text }; return history.prefix(index).last(where: { $0.role == "user" })?.text ?? entry.text }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(L10n.t(entry.role == "user" ? "你" : "Morrow")).font(Theme.label.weight(.medium)).foregroundStyle(Theme.secondary)
+                Spacer()
+                Text(entry.date.uiFormatted(date: .omitted, time: .shortened)).font(Theme.small).foregroundStyle(Theme.muted)
+            }
             if entry.role == "user" {
                 HStack(alignment: .top, spacing: 8) {
                     Spacer(minLength: 24)
@@ -119,7 +143,7 @@ private struct ChatMessageView: View {
                         .popover(isPresented: $showingDetails) { VStack(alignment: .leading, spacing: 8) { Text(entry.date.uiFormatted()).font(Theme.label); if let context = entry.context { Text(L10n.t(context.scopeMode == "hint" ? "界面提示：" : "提交范围：") + context.label).font(Theme.body) } }.padding(18).frame(maxWidth: 300) }
                 }
             } else {
-                if let id = entry.openUIID, let page = model.openUIInteractions.first(where: { $0.id == id && ($0.sessionID ?? "legacy") == (entry.sessionID ?? "legacy") }) { NativeOpenUIView(interaction: page) }
+                if let id = entry.openUIID, let page = model.openUIInteractions.first(where: { $0.id == id && ($0.sessionID ?? "legacy") == (entry.sessionID ?? "legacy") && ($0.chatID == nil || $0.chatID == entry.id) }) { NativeOpenUIView(interaction: page) }
                 if !entry.text.isEmpty {
                     WorkMarkdownContent(text: entry.text).help(L10n.t("回复于 ") + entry.date.uiFormatted()).accessibilityHint(Text(L10n.t("回复于 ") + entry.date.uiFormatted()))
                         .contextMenu { Button(L10n.t("复制回复")) { ChatReplyClipboard.copy(entry.text) }; Button(L10n.t("复制 Markdown")) { ChatReplyClipboard.copy(entry.text, markdown: true) } }
@@ -127,18 +151,28 @@ private struct ChatMessageView: View {
                 }
                 if let trace = entry.executionTrace { AgentProgressView(trace: trace) }
                 if let ids = entry.artifactIDs { ForEach(ids, id: \.self) { id in if let artifact = model.agentArtifacts.first(where: { $0.id == id && $0.isBrief }) { Button { model.openBrief(artifact) } label: { HStack { Image(systemName: "doc.text"); VStack(alignment: .leading, spacing: 6) { Text(artifact.title).font(Theme.body.weight(.medium)).lineLimit(2); Text(L10n.t("查看这份简报")).font(Theme.label).foregroundStyle(Theme.secondary) }; Spacer(); Image(systemName: "arrow.up.right") }.padding(12) }.buttonStyle(ListRowButtonStyle()).accessibilityIdentifier("chat.open-brief") } } }
-                if let continuation = entry.continuationPrompt ?? (entry.text.contains("Model turn budget reached") ? "继续刚才的任务，使用已保存的资料和进度。" : nil) {
+                if currentContinuation, let continuation = entry.continuationPrompt ?? (entry.text.contains("Model turn budget reached") ? "继续刚才的任务，使用已保存的资料和进度。" : nil) {
                     HStack(spacing: 10) {
-                        Button(L10n.t("继续这项任务")) { if let session = entry.sessionID { model.switchChatSession(session) }; model.chatInput = continuation; model.beginSidebarChat() }.buttonStyle(CompactButtonStyle()).disabled(model.partnerBusy).accessibilityIdentifier("agent.continue")
+                        Button(L10n.t(entry.sdkRunID == nil ? "重新提出" : entry.sdkResumeKind == "question" ? "查看问题" : "继续这项任务")) { if entry.sdkRunID == nil { model.chatInput = originalRequest; model.chatFocusNonce += 1 } else if entry.sdkResumeKind == "question" { model.scrollChatID = entry.id } else { model.continueAgentReply(entry) } }.buttonStyle(CompactButtonStyle()).disabled(model.partnerBusy).accessibilityIdentifier("agent.continue")
                         Button(L10n.t("调整运行预算")) { showingBudget = true }.buttonStyle(CompactButtonStyle()).accessibilityIdentifier("agent.adjust-budget")
                     }
                 }
-                if let ids = entry.draftIDs { ForEach(ids, id: \.self) { id in if let draft = model.drafts.first(where: { $0.id == id }) { Button { model.openDraft(draft) } label: { HStack { Image(systemName: "doc.text"); VStack(alignment: .leading) { Text(draft.subject.isEmpty ? L10n.t("无主题草稿") : draft.subject); Text(L10n.t("已保存到草稿箱 · 点击编辑与预览")).font(Theme.label).foregroundStyle(Theme.secondary) }; Spacer(); Image(systemName: "arrow.up.right") }.padding(12).background(Theme.sidebar, in: RoundedRectangle(cornerRadius: Theme.radius)) }.buttonStyle(.plain).accessibilityIdentifier("chat.open-draft") } } }
+                if let ids = entry.draftIDs { ForEach(ids, id: \.self) { id in if let draft = model.drafts.first(where: { $0.id == id }) {
+                    let state = DraftPresentationState(draft.state)
+                    Button { model.openDraft(draft) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: state.symbol).foregroundStyle(Theme.secondary)
+                            VStack(alignment: .leading, spacing: 3) { Text(draft.subject.isEmpty ? L10n.t("无主题草稿") : draft.subject).font(Theme.body.weight(.medium)).lineLimit(2); Text(state.linkLabel).font(Theme.label).foregroundStyle(Theme.secondary) }
+                            Spacer(minLength: 4); Image(systemName: "chevron.right").font(Theme.small).foregroundStyle(Theme.muted)
+                        }.padding(.vertical, 8)
+                    }.buttonStyle(.plain).accessibilityIdentifier("chat.open-draft")
+                } } }
+
             }
             if let materials = entry.materials { ForEach(materials) { material in ChatMaterialPreview(material: material) } }
             if let media = entry.workspaceMedia { ForEach(media) { file in AgentMediaPreview(file: file) } }
             if let jobs = entry.workspaceVideoJobs { ForEach(jobs) { job in AgentVideoJobPreview(job: job, chatID: entry.id) } }
-            if !sources.isEmpty { DisclosureGroup(L10n.format("依据邮件（{0}）", "\(sources.count)")) { ForEach(sources) { mail in Button { model.revealMail(mail) } label: { Label(mail.subject, systemImage: "envelope").font(Theme.label).lineLimit(2).padding(.vertical, 4) }.buttonStyle(ReferenceRowButtonStyle()) } }.font(Theme.label).foregroundStyle(Theme.secondary) }
+            if !sources.isEmpty { DisclosureGroup(L10n.format("依据邮件（{0}）", "\(sources.count)")) { MailReferenceList(ids: entry.messageIDs, open: model.revealMail) }.font(Theme.label).foregroundStyle(Theme.secondary) }
             if let ids = entry.memoryIDs, !ids.isEmpty { Button(L10n.format("记忆依据（{0}）", "\(ids.count)")) { model.revealMemories(ids) }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.accent2) }
         }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .contain).accessibilityLabel(entry.role == "user" ? L10n.t("你的要求") : L10n.t("伙伴回复"))
             .sheet(isPresented: $showingBudget) { AgentBudgetSettingsSheet().environmentObject(model) }

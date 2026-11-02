@@ -1,49 +1,34 @@
-# Smail Agentic Native system
+# Morrow native correspondence workbench
 
-Hallmark v2.0.0. Coral selected by the user, superseding Vantage and Atelier. SwiftUI and AppKit desktop application. The native window title bar and the app's top navigation bar are hidden.
+The November 2, 2026 commercial-quality redesign supersedes the old Coral/Furrow design. This is a macOS application, not a marketing page.
 
-## Main object
+## Product and hierarchy
 
-The foreground object is an ongoing piece of work: an editable reply, a source-backed report, or a structured choice that lets the partner continue. One broad work document is visible on entry. Other work is recalled through a compact switcher. Original emails, execution details and earlier versions open on demand.
+Mail, recipients, delivery state, saved work and original evidence define the interface. The workspace, mail folders and conversations are separate navigation groups. A readable main surface is paired with a resizable optional assistant pane. Narrow windows show either the mail index or selected reader instead of clipping two panes.
 
-## Visual system
+Every screen uses a compact page header, a functional toolbar, one main object and explicit empty/loading/error states. Work home presents current matters, decisions and saved output, not a personality slogan. Reports keep document typography; indices use short aligned rows.
 
-Warm pale gray ground, cotton sheet surfaces, dark warm ink, and restrained coral for focus, links and selected navigation. All colors and fonts are declared in `Sources/SmailApp/Theme.swift`; `tokens.css` and `base.css` record the Hallmark reference. System sans typography preserves Chinese and macOS readability. No Atelier serif face remains.
+## Shared system
 
-Controls use an 8pt radius, dark primary buttons, immediate coral focus and faint shadows falling right. Text fields have a distinct muted border instead of separator color. The desktop translation keeps the theme's warm paper, pressed controls and restrained voice. It does not reproduce the website's paper animation or textures as decoration in the work surface.
+`Sources/MorrowApp/Theme.swift` is the single native color/type source. `InteractionStyles.swift` defines pointer, press, focus, hover, selected and disabled states. `WorkspaceChrome.swift` supplies page and section headers.
 
-## Navigation
+- Neutral canvas #F4F5F7, white content, sidebar #ECEFF3.
+- Ink #212A35, secondary #4F5A68, muted #667180, boundaries #DDE1E7.
+- One action blue #2B61AF, independent success #327356 and failure #BB3C3C.
+- Interface system sans; titles22pt, sections15pt, controls13pt, reading15pt, metadata11–12pt. Monospace is reserved for code and real identifiers.
+- Space4/8/12/16/24/32; page edge24pt; control height28–32pt; control radius5pt, resource radius6pt.
+- Content stays flat. Containers encode grouping; no nested ornamental cards, paper texture, decorative status dots or button shadows.
 
-A 210pt left sidebar has four primary entries: work, mail, contacts and attachments, followed by accounts and chat sessions. A management menu holds history, work outputs, responders, memory and sync status. Settings is a separate visible control at the bottom. Icons have accessibility names and tooltips. The main document has a capped readable width; larger windows grow the margins. Native traffic lights and the macOS menu remain system controls.
+Appearance choices are system/light/dark. Legacy Coral and Forest IDs migrate to the new light style without changing stored mail, task identities or input.
 
-The app has no permanent task list. A resizable right Chat pane is now persistent by explicit user request; its context follows the primary native view and selection. Existing mail reading, folders, search, contacts, calendar and composer remain available through Mail and settings.
+## Behavioral quality
 
-## Work interaction
+A sent/queued/unverified delivery cannot appear editable. Current output links show actual state while historical message text retains its original timestamped facts. New chat requests, explicit task continuation and answers to a particular question have separate identities and permission boundaries.
 
-Natural delegation becomes an editable agreement with purpose, completion condition, scope, plan and authority. Acceptance starts the work. Current mail identities and future filters define the scope. New mail continues the same matter; reports keep their identity and revisions, and earlier replies stay folded. A report revision does not finish an ongoing responsibility.
+New Inbox notifications do not wait for AI analysis and do not fire for history backfills, Sent, Trash or duplicate copies. Automatic mail analysis remains local and bounded. SMTP acceptance commits before cache copies; failed copy creation never triggers another SMTP submission.
 
-Replies are editable where they are presented. Decisions create persistent receipts. Source lists are folded under “依据邮件”; history is folded under “原邮件与工作记录”. Sent replies show their actual delivery or explicit simulation state.
+Original email layout, original PDF/image attachments and source links remain available. Preview is local; remote-only attachments are fetched after an explicit preview/save action. Critical files saved as materials or draft attachments survive temporary workspace cleanup.
 
-## OpenUI and responders
+## Evidence and closure
 
-A native profile of OpenUI Lang 1.0 renders model-produced forms, tables, choices and actions in SwiftUI. Rendering has no side effects. Form edits persist with revisions; user-triggered actions pass a typed ActionEvent to allowed host operations. Completed setup forms are folded and cannot run again. Query, Mutation and arbitrary remote execution are unsupported.
-
-Responders combine account, sender, subject and body conditions. They can prepare drafts or automatically reply to new matching mail. Existing mail is marked seen when a rule is created. Preview does not send. Pause and resume update both the rule and its associated work. Responses have persistent canonical receipts to prevent duplicates.
-
-## Data and verification
-
-Demo mail uses example.com. Simulated delivery writes only a local Sent copy. Original messages remain available. Actual native captures and test logs are recorded in `docs/agentic/CONTINUOUS-WORK-QA.md`. CSS lint is a reference check; it does not prove the native window or browser render tier passed.
-
-
-## Unified partner pane and new primary views
-
-Contacts and attachments have dedicated rail entries. Contacts use a compact index plus a source-backed profile and chronological mail history. Attachments use one filterable index with explicit selection and original-mail links. Both synchronize a typed context snapshot with the right Chat pane.
-
-The right pane holds conversation and OpenUI. Its coral scope anchor sits directly above the input, showing the actual current or fixed object. The session switcher stays at the top. Message provenance and references expand on demand; routine role labels, timestamps and permanent explanations are absent. A bounded material strip and native rich input provide file, screenshot and microphone actions. Sent instructions retain their submitted scope even when the user changes the left view. The input is singular; the old work-document bottom composer is removed.
-
-Native email composition and attachment text preview remain in the primary area so the right pane can cooperate. Host receipts reflect actual saves and actions; LLM prose never substitutes for a completed write. Editing a draft fixes its host identity and preserves concurrent user changes as separate suggestions.
-
-
-## Sessions and managed memory
-
-User revisions add a 210pt left navigation sidebar with mailboxes and chat Sessions, plus a right session switcher. Session input, materials and pinned context persist independently. The contact correction editor is removed; conversation is the single input surface. The memory workspace manages scope, provenance, versions, validity and user controls. Read/unread has explicit labels and functional row treatment. Density switches preserve reading contrast. Model edits stage before applying to background requests.
+`docs/public/UI-QUALITY-PLAN.md` is the full surface/performance checklist. Native page renders, real interactions and benchmarks are separate evidence. A green narrow test run or static design critique does not complete the goal. Private account data, screenshots and measurements remain under evidence/private; public demonstrations use synthetic mail.

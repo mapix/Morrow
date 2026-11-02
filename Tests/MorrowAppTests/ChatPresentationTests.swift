@@ -4,6 +4,13 @@ import MorrowCore
 @testable import MorrowApp
 
 final class ChatPresentationTests: XCTestCase {
+    func testLongMarkdownPreviewIsExplicitAndCopyRetainsTheTail() {
+        let text = String(repeating: "Long evidence paragraph.\n\n", count: 6000) + "FINAL_EVIDENCE_MARKER"
+        let document = WorkMarkdownDocument(text)
+        XCTAssertTrue(document.isTruncated)
+        XCTAssertTrue(document.fullSource.hasSuffix("FINAL_EVIDENCE_MARKER"))
+        XCTAssertTrue(document.plainText.hasSuffix("FINAL_EVIDENCE_MARKER"))
+    }
     func testMarkdownParsesSeparateBlocksNestedListsCodeAndTables() {
         let source = "## 结论\n第一行\n第二行\n\n- 一项\n  - 子项\n\n```swift\nlet value = \"\\n\"\n```\n\n| 来源 | 数量 |\n| --- | ---: |\n| 邮件 | 12 |"
         let blocks = WorkMarkdownDocument(source).blocks

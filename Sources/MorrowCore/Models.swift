@@ -320,6 +320,8 @@ public struct PartnerEvent: Codable, Identifiable, Sendable {
 }
 
 public struct PartnerChat: Codable, Identifiable, Sendable {
+    public var sdkRunID: String?
+    public var sdkResumeKind: String?
     public var workspaceVideoJobs: [AgentWorkspaceVideoJob]?
     public var workspaceMedia: [AgentWorkspaceMedia]?
     public var artifactIDs: [String]?

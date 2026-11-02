@@ -174,7 +174,10 @@ private struct OpenUIControlStyle: ButtonStyle {
     var focused: Bool
     var hovered: Bool
     @Environment(\.isEnabled) private var enabled
-    func makeBody(configuration: Configuration) -> some View { configuration.label.font(Theme.body.weight(primary ? .medium : .regular)).foregroundStyle(primary ? Theme.paper : Theme.ink).padding(.horizontal, 14).frame(minHeight: 48).background(primary ? Theme.ink.opacity(configuration.isPressed ? 0.85 : 1) : Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : primary ? Theme.clear : Theme.rule, lineWidth: focused ? 1.5 : 1)).shadow(color: Theme.shadow.opacity(hovered ? 0.10 : 0.06), radius: 2, x: 2, y: 2).opacity(enabled ? 1 : 0.5) }
+    func makeBody(configuration: Configuration) -> some View {
+        InteractiveControlBody(label: configuration.label, pressed: configuration.isPressed, kind: primary ? .primary : .quiet)
+            .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius).stroke(focused ? Theme.focus : Theme.clear, lineWidth: 1.5))
+    }
 }
 
 private struct OpenUIActionButton: View {

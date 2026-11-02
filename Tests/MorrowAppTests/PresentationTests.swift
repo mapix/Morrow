@@ -4,12 +4,12 @@ import SwiftUI
 @testable import MorrowApp
 
 final class PresentationTests: XCTestCase {
-    @MainActor func testPresentationChoicesPersistWithCoralAsDefault() throws {
+    @MainActor func testPresentationChoicesPersistAndLegacyThemesMigrateWithoutChangingLanguage() throws {
         let suite = "MorrowPresentationTests." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let first = PresentationPreferences(defaults: defaults)
-        XCTAssertEqual(first.theme, .coral)
+        XCTAssertEqual(first.theme, .system)
         XCTAssertEqual(first.language, .system)
         first.theme = .dark; first.language = .japanese
         let reopened = PresentationPreferences(defaults: defaults)
@@ -17,7 +17,11 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(reopened.language, .japanese)
         XCTAssertEqual(reopened.replyLanguageName, "Japanese")
         defaults.set("unknown-theme", forKey: PresentationPreferences.themeKey)
-        XCTAssertEqual(PresentationPreferences(defaults: defaults).theme, .coral)
+        XCTAssertEqual(PresentationPreferences(defaults: defaults).theme, .system)
+        defaults.set("coral", forKey: PresentationPreferences.themeKey)
+        XCTAssertEqual(PresentationPreferences(defaults: defaults).theme, .slate)
+        XCTAssertEqual(defaults.string(forKey: PresentationPreferences.themeKey), "slate")
+        XCTAssertEqual(PresentationPreferences(defaults: defaults).language, .japanese)
     }
 
     func testLocalizedTemplatePreservesUntrustedUserTextVerbatim() {

@@ -30,6 +30,7 @@ extension AppModel {
         return accepted
     }
     func scheduleMailDownloadProcessing(retry: Bool = false) {
+        guard !isQualityPreview else { return }
         guard mailDownloadProcessingTask == nil, retry || mailProcessingFailure == nil else { return }
         if retry { mailProcessingFailure = nil }
         mailDownloadProcessingTask = Task(priority: .utility) { [weak self] in
@@ -66,6 +67,13 @@ extension AppModel {
                     let write = ProcessInfo.processInfo.systemUptime
                     if let saved = try await self.store.commitDownloadedMail(mail, job: job) {
                         self.mailProcessingProgress.completed += 1; incoming.append(saved)
+                        if job.isNewArrival == true {
+                            // Fresh inbox mail jumps the historical processing
+                            // queue and publishes before notification clicks.
+                            await self.reload(incoming: incoming); incoming.removeAll(keepingCapacity: true)
+                            await self.notifyNewArrival(saved, isNewArrival: true)
+                            self.process(); lastPublished = Date()
+                        }
                     }
                     self.mailProcessingProgress.storeSeconds = ProcessInfo.processInfo.systemUptime - write
                     MailReaderMetrics.record("sync_processed_store", since: write)

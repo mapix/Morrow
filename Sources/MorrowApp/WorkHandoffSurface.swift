@@ -5,79 +5,149 @@ struct WorkHandoffSurface: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @EnvironmentObject var model: AppModel
     @State private var instruction = ""
-    @State private var handoffID: String?
     @State private var formingNewWork = false
+    @State private var submitting = false
+    @State private var formError: String?
     @FocusState private var focused: Bool
-    private var handoffs: [AgentRun] {
-        model.agentRuns.sorted {
-            if ($0.phase == .waitingUser) != ($1.phase == .waitingUser) { return $0.phase == .waitingUser }; return $0.updatedAt > $1.updatedAt
-        }
-    }
-    private var foreground: AgentRun? { handoffs.first { $0.id == handoffID } ?? handoffs.first }
-    private var displayedRun: AgentRun? { model.selectedRun ?? foreground }
-    private var newIntent: Bool { formingNewWork || displayedRun == nil }
-    var body: some View {
-        VStack(spacing: 0) {
-            if let run = model.selectedRun { WorkDocumentView(run: run) }
-            else if let run = foreground { WorkDocumentView(run: run, isHandoff: true) }
-            else { EmptyRegion(icon: "doc.text", title: L10n.t("把一件事交给我"), detail: L10n.t("告诉我目的，或从一封邮件与附件开始。我会把准备好的成果带回来。"), action: model.accounts.isEmpty ? L10n.t("打开演示场景") : nil, perform: { Task { await model.loadDemo(); await model.installAgentDemoScenarios() } }) }
 
+    private var runs: [AgentRun] { model.agentRuns.sorted { $0.updatedAt > $1.updatedAt } }
+    private var attention: [AgentRun] { runs.filter { $0.phase == .waitingUser || $0.phase == .failed } }
+    private var ongoing: [AgentRun] { runs.filter { ![.completed, .paused, .waitingUser, .failed].contains($0.phase) } }
+    private var recent: [AgentArtifact] { model.agentArtifacts.sorted { $0.createdAt > $1.createdAt } }
+    private var busy: Bool { submitting || model.partnerBusy || model.delegationBusy }
+
+    var body: some View {
+        Group {
+            if let run = model.selectedRun { WorkDocumentView(run: run) }
+            else {
+                VStack(spacing: 0) {
+                    header
+                    Divider().overlay(Theme.rule)
+                    if !model.ready {
+                        ProgressView(L10n.t("正在打开工作区…")).font(Theme.label).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 24) {
+                                if runs.isEmpty && recent.isEmpty { emptyState }
+                                if !attention.isEmpty { runSection("需要你处理", runs: attention) }
+                                if !ongoing.isEmpty { runSection("进行中的工作", runs: ongoing) }
+                                if !recent.isEmpty { resultsSection }
+                                if attention.isEmpty && ongoing.isEmpty && !runs.isEmpty {
+                                    HStack(spacing: 12) {
+                                        Label(L10n.t("当前没有待处理的工作"), systemImage: "checkmark.circle").font(Theme.label).foregroundStyle(Theme.secondary)
+                                        Spacer()
+                                        Button(L10n.t("查看工作记录")) { model.openWorkspace(.history) }.buttonStyle(CompactButtonStyle())
+                                    }
+                                }
+                            }.padding(24).frame(maxWidth: 980, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    if formingNewWork { instructionSurface }
+                }
+            }
         }.background(Theme.paper)
-            .onAppear { if handoffID == nil { handoffID = handoffs.first?.id }; model.visibleRunID = displayedRun?.id }
-            .onChange(of: displayedRun?.id) { model.visibleRunID = displayedRun?.id }
-            .onChange(of: model.agentRuns.map(\.id)) { if handoffID == nil { handoffID = handoffs.first?.id } }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MorrowFocusMission"))) { _ in formingNewWork = true; focused = true }
+            .onAppear { model.visibleRunID = model.selectedRun?.id }
+            .onChange(of: model.selectedRunID) { model.visibleRunID = model.selectedRun?.id }
     }
-    private var introduction: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(model.agentArtifacts.isEmpty ? L10n.t("你交代目的，我带回成果。") : L10n.t("这些已经准备好了。")).font(Theme.title)
-            Text(summary).font(Theme.reader).foregroundStyle(Theme.secondary).lineSpacing(5)
-            if model.isDemo { Text(L10n.t("所有邮件与投递均为演示场景。")).font(Theme.label).foregroundStyle(Theme.muted) }
+    private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) { title; Spacer(minLength: 12); headerActions }
+            VStack(alignment: .leading, spacing: 12) { title; headerActions }
+        }.padding(24)
+    }
+    private var title: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L10n.t("工作")).font(Theme.title)
+            Text(L10n.format("{0}项待处理，{1}项正在进行", String(attention.count), String(ongoing.count))).font(Theme.label).foregroundStyle(Theme.secondary)
         }
     }
-    private var summary: String {
-        let decisions = model.pendingDecisions.count; let ready = model.agentArtifacts.count
-        if ready > 0 { return L10n.format("我已准备{0}份成果，{1}项需要你判断。你可以直接采用、修改，或告诉我继续往哪个方向做。", "\(ready)", "\(decisions)") }
-        return L10n.t("跟进客户、核对条款、准备回复或整理材料，都可以交给我。过程和依据随时可查。")
+    private var headerActions: some View {
+        HStack(spacing: 8) {
+            Button(L10n.t("工作记录")) { model.openWorkspace(.history) }.buttonStyle(CompactButtonStyle())
+            Button { formingNewWork = true; focused = true } label: { Label(L10n.t("新建工作"), systemImage: "plus") }.buttonStyle(PrimaryButtonStyle()).disabled(busy).accessibilityIdentifier("work.create")
+        }.fixedSize(horizontal: true, vertical: false)
+    }
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(L10n.t("还没有工作")).font(Theme.heading)
+            Text(L10n.t("从一封邮件开始，或新建一项跟进、整理或回复工作。")).font(Theme.body).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { emptyActions }
+                VStack(alignment: .leading, spacing: 8) { emptyActions }
+            }
+        }.padding(.vertical, 16).frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("work.empty")
+    }
+    @ViewBuilder private var emptyActions: some View {
+        Button(L10n.t("打开邮件")) { model.openWorkspace(.mail) }.buttonStyle(CompactButtonStyle())
+        if model.accounts.isEmpty { Button(L10n.t("连接邮箱")) { model.showAccount = true }.buttonStyle(CompactButtonStyle()) }
+        if model.isDemo || model.accounts.isEmpty { Button(L10n.t("打开演示场景")) { Task { await model.loadDemo(); await model.installAgentDemoScenarios() } }.buttonStyle(CompactButtonStyle()) }
+    }
+    private func runSection(_ title: String, runs: [AgentRun]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack { Text(L10n.t(title)).font(Theme.heading); Text(String(runs.count)).font(Theme.label).foregroundStyle(Theme.muted); Spacer() }
+            ForEach(runs.prefix(8)) { run in
+                Button { model.selectRun(run) } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Text(run.title).font(Theme.body.weight(.medium)).lineLimit(2)
+                            Spacer(minLength: 8)
+                            Text(L10n.t(run.phase.label)).font(Theme.label).foregroundStyle(run.phase == .failed ? Theme.error : run.phase == .waitingUser ? Theme.accent2 : Theme.secondary)
+                        }
+                        if !run.summary.isEmpty { Text(run.summary).font(Theme.label).foregroundStyle(Theme.secondary).lineLimit(2) }
+                        Text(run.updatedAt.uiFormatted(date: .abbreviated, time: .shortened)).font(Theme.small).foregroundStyle(Theme.muted)
+                    }.padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(ListRowButtonStyle()).accessibilityIdentifier("work.open")
+                Divider().overlay(Theme.rule)
+            }
+            if runs.count > 8 { Button(L10n.t("查看全部工作")) { model.openWorkspace(.history) }.buttonStyle(CompactButtonStyle()) }
+        }
+    }
+    private var resultsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack { Text(L10n.t("最近的成果")).font(Theme.heading); Spacer(); Button(L10n.t("查看全部成果")) { model.openWorkspace(.library) }.buttonStyle(CompactButtonStyle()) }
+            ForEach(recent.prefix(4)) { artifact in
+                Button {
+                    if artifact.isBrief { model.openBrief(artifact) }
+                    else if let run = model.agentRuns.first(where: { $0.id == artifact.runID }) { model.selectRun(run) }
+                    else { model.openWorkspace(.library) }
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: artifact.kind == .draft ? "doc.text" : "doc.text.magnifyingglass").foregroundStyle(Theme.secondary).frame(width: 20)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(artifact.title).font(Theme.body.weight(.medium)).lineLimit(2)
+                            Text(artifact.createdAt.uiFormatted(date: .abbreviated, time: .shortened)).font(Theme.small).foregroundStyle(Theme.muted)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right").font(Theme.small).foregroundStyle(Theme.muted)
+                    }.padding(.vertical, 12)
+                }.buttonStyle(ListRowButtonStyle())
+                Divider().overlay(Theme.rule)
+            }
+        }
     }
     private var instructionSurface: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Rectangle().fill(Theme.rule).frame(height: 1)
-            HStack { Text(newIntent ? L10n.t("交给我一件新工作") : L10n.t("在这份工作里继续")).font(Theme.label).foregroundStyle(Theme.muted); Spacer(); if formingNewWork && displayedRun != nil { Button(L10n.t("回到这份工作")) { formingNewWork = false }.buttonStyle(.plain).font(Theme.label) }; if model.partnerBusy { ProgressView().controlSize(.small); Text(L10n.t("正在处理")).font(Theme.label).foregroundStyle(Theme.muted) } }
-            HStack(alignment: .bottom, spacing: 14) {
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: $instruction).font(Theme.reader).scrollContentBackground(.hidden).focused($focused).padding(8).frame(height: 62).accessibilityLabel(L10n.t("继续工作或形成新委托"))
-                    if instruction.isEmpty { Text(newIntent ? L10n.t("例如：把这项续约推进到客户确认；先比较合同，再备好回复。") : L10n.t("改写这段、解释依据，或继续下一步。")).font(Theme.body).foregroundStyle(Theme.muted).padding(14).allowsHitTesting(false).accessibilityHidden(true) }
-                }.background(Theme.sheet).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.fieldEdge, lineWidth: 1))
-                Button(newIntent ? L10n.t("形成委托") : L10n.t("继续")) { let text = instruction; let creating = newIntent; let currentID = displayedRun?.id; Task { if creating { await model.proposeWork(text) } else { model.selectedRunID = currentID; await model.workspaceCommand(text) }; if model.error == nil && instruction == text { instruction = ""; formingNewWork = false } } }.buttonStyle(PrimaryButtonStyle()).disabled(instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.partnerBusy || model.delegationBusy).keyboardShortcut(.return, modifiers: .command)
+        VStack(alignment: .leading, spacing: 12) {
+            Divider().overlay(Theme.rule)
+            HStack { Text(L10n.t("新建工作")).font(Theme.heading); Spacer(); Button(L10n.t("取消")) { formingNewWork = false; formError = nil }.buttonStyle(CompactButtonStyle()).disabled(submitting) }
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $instruction).font(Theme.reader).scrollContentBackground(.hidden).focused($focused).padding(8).frame(height: 80).accessibilityLabel(L10n.t("工作要求"))
+                if instruction.isEmpty { Text(L10n.t("说明需要完成的事，例如核对合同条款，或跟进客户回复。")).font(Theme.body).foregroundStyle(Theme.muted).padding(12).allowsHitTesting(false).accessibilityHidden(true) }
+            }.background(Theme.sheet).overlay(RoundedRectangle(cornerRadius: Theme.controlRadius).stroke(focused ? Theme.focus : Theme.fieldEdge, lineWidth: 1))
+            if let formError { Text(formError).font(Theme.label).foregroundStyle(Theme.error).textSelection(.enabled) }
+            HStack {
+                Button { model.importFiles() } label: { Label(L10n.t("带上资料"), systemImage: "paperclip") }.buttonStyle(CompactButtonStyle()).disabled(submitting)
+                Spacer()
+                Button(submitting ? L10n.t("正在准备工作…") : L10n.t("形成委托")) { submit() }.buttonStyle(PrimaryButtonStyle()).disabled(instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy).keyboardShortcut(.return, modifiers: .command).accessibilityIdentifier("work.submit")
             }
-            HStack { Button { model.importFiles() } label: { Label(L10n.t("带上资料"), systemImage: "paperclip") }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.secondary); Spacer(); Text(L10n.t("邮件、附件和已有上下文一起工作")).font(Theme.small).foregroundStyle(Theme.muted) }
-        }.padding(.horizontal, 32).padding(.bottom, 18).frame(maxWidth: 1180).frame(maxWidth: .infinity)
+        }.padding(.horizontal, 24).padding(.bottom, 24)
     }
-}
-
-private struct HandoffCard: View {
-    @ObservedObject private var presentationState = PresentationPreferences.shared
-    @EnvironmentObject var model: AppModel
-    let run: AgentRun
-    private var artifact: AgentArtifact? { model.agentArtifacts.filter { $0.runID == run.id }.max { $0.createdAt < $1.createdAt } }
-    private var decision: AgentDecision? { model.pendingDecisions.first { $0.runID == run.id } }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .firstTextBaseline) { Text(run.title).font(Theme.heading); Spacer(); if run.phase == .completed && run.id.hasPrefix("sdk-chat:") && artifact?.isBrief == true { Text(L10n.t("已保存")).font(Theme.label).foregroundStyle(Theme.secondary) } else { AgentPhaseLabel(phase: run.phase) } }
-            Text(agentMessage).font(Theme.reader).foregroundStyle(Theme.secondary).lineSpacing(5)
-            if let artifact {
-                VStack(alignment: .leading, spacing: 12) { Text(artifact.title).font(Theme.body.weight(.medium)); Text(preview(artifact.content)).font(Theme.reader).foregroundStyle(Theme.secondary).lineSpacing(5).lineLimit(6).textSelection(.enabled) }.padding(.vertical, 16).overlay(alignment: .top) { Rectangle().fill(Theme.rule).frame(height: 1) }.overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }
-            }
-            if let decision { HStack(alignment: .top, spacing: 12) { Image(systemName: "hand.raised").foregroundStyle(Theme.accent2).accessibilityHidden(true); VStack(alignment: .leading, spacing: 8) { Text(decision.title).font(Theme.body.weight(.medium)); Text(decision.detail).font(Theme.body).foregroundStyle(Theme.muted) } } }
-            HStack(spacing: 16) { Button(decision == nil ? L10n.t("打开共同工作稿") : L10n.t("查看并决定")) { model.selectRun(run) }.buttonStyle(QuietButtonStyle()); if run.phase == .waitingReply { Text(L10n.t("有后续邮件时，我会接着推进。")).font(Theme.label).foregroundStyle(Theme.muted) }; Spacer(); Button(L10n.format("{0}封依据", "\(run.sourceMailIDs.count)")) { model.selectRun(run) }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.muted) }
-        }.padding(26).frame(maxWidth: .infinity, alignment: .leading).background(Theme.sheet)
+    private func submit() {
+        let text = instruction; submitting = true; formError = nil; model.error = nil
+        Task {
+            await model.proposeWork(text)
+            submitting = false
+            if let error = model.error { formError = error; model.error = nil }
+            else if instruction == text { instruction = ""; formingNewWork = false }
+        }
     }
-    private var agentMessage: String {
-        if run.phase == .waitingUser { return L10n.t("我把这一步需要的内容准备好了。还需要你确认下面的选择；决定之后，我会继续这件事。") }
-        if run.phase == .waitingReply { return run.summary }
-        if run.phase == .failed { return L10n.t("这一步遇到了问题：") + run.summary }
-        return L10n.t("这项工作已有成果，相关邮件和附件都保留为依据。你可以打开内容继续编辑或追问。")
-    }
-    private func preview(_ content: String) -> String { content.replacingOccurrences(of: #"(?m)^#{1,6}\s*"#, with: "", options: .regularExpression).replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "").trimmingCharacters(in: .whitespacesAndNewlines) }
 }

@@ -1,9 +1,52 @@
 import Foundation
 import MorrowCore
 
-enum ChatTaskContext { @TaskLocal static var sessionID: String? }
+enum ChatRunIntent: Sendable, Equatable {
+    case newRequest
+    case resume(sdkRunID: String, sourceChatID: String)
+    case answer(sdkRunID: String, sourceChatID: String, interactionID: String)
+    var sdkRunID: String? {
+        switch self { case .newRequest: return nil; case .resume(let id, _), .answer(let id, _, _): return id }
+    }
+    var sourceChatID: String? {
+        switch self { case .newRequest: return nil; case .resume(_, let id), .answer(_, let id, _): return id }
+    }
+}
+enum ChatTaskContext {
+    @TaskLocal static var sessionID: String?
+    @TaskLocal static var runIntent: ChatRunIntent = .newRequest
+}
 
 extension AppModel {
+    func resumableReply(in sessionID: String) -> PartnerChat? {
+        var seen = Set<String>()
+        return chatHistory(in: sessionID).reversed().first { entry in
+            guard entry.role == "partner", let run = entry.sdkRunID, seen.insert(run).inserted else { return false }
+            return entry.continuationPrompt != nil
+        }
+    }
+    func continueAgentReply(_ entry: PartnerChat) {
+        guard let session = entry.sessionID, let run = entry.sdkRunID,
+              chatSessions.contains(where: { $0.id == session && !$0.archived }),
+              chatHistory(in: session).last(where: { $0.role == "partner" && $0.sdkRunID == run })?.id == entry.id,
+              entry.sdkResumeKind != "question" else { error = "这条记录不能直接恢复，请回答问题或重新提出要求。"; return }
+        switchChatSession(session)
+        beginSidebarChat(intent: .resume(sdkRunID: run, sourceChatID: entry.id), instructionOverride: entry.continuationPrompt ?? "继续这项任务，复用已保存的资料。")
+    }
+    func answerAgentInteraction(interactionID: String, response: String) async throws {
+        guard !partnerBusy, sidebarTask == nil, !materialBusy,
+              let page = openUIInteractions.first(where: { $0.id == interactionID && $0.completedAt == nil }),
+              let source = chat.first(where: { $0.openUIID == interactionID && $0.id == page.chatID }),
+              let run = source.sdkRunID, source.sdkResumeKind == "question", let session = source.sessionID, page.sessionID == session,
+              chatSessions.contains(where: { $0.id == session && !$0.archived }) else { throw OpenUIError.message("这项问题暂时不能提交。请等待当前处理完成，或重新提出要求。") }
+        guard let waiting = try await store.object(OpenUIJSON.self, kind: "agent-sdk-waiting", id: run),
+              waiting.object["sessionID"]?.text == session, waiting.object["sourceChatID"]?.text == source.id,
+              waiting.object["interactionID"]?.text == interactionID, waiting.object["resumeKind"]?.text == "question",
+              !partnerBusy, sidebarTask == nil, openUIInteractions.contains(where: { $0.id == interactionID && $0.completedAt == nil }),
+              chatHistory(in: session).last(where: { $0.role == "partner" && $0.sdkRunID == run })?.id == source.id else { throw OpenUIError.message("这份问题已经结束或发生变化，请重新查看当前任务。") }
+        switchChatSession(session)
+        beginSidebarChat(intent: .answer(sdkRunID: run, sourceChatID: source.id, interactionID: interactionID), instructionOverride: response)
+    }
     func openSessionSource(_ id: String, chatID: String) async {
         guard var session = chatSessions.first(where: { $0.id == id }) else { error = "来源会话已不存在。"; return }
         guard chat.contains(where: { $0.id == chatID && ($0.sessionID ?? "legacy") == id }) else { error = "来源消息已不存在。"; return }
@@ -151,6 +194,14 @@ extension AppModel {
         if archived {
             if id == executingSessionID { let task = sidebarTask; task?.cancel(); await task?.value }
             do { try await sessionWorkspaces.archive(id) } catch { self.error = error.localizedDescription }
+            do {
+                let checkpoints = try AgentCheckpointStore(root: store.root)
+                let runs = Set(chatHistory(in: id).compactMap(\.sdkRunID)).union([id])
+                for run in runs {
+                    _ = try await checkpoints.handle(method: "checkpoint.delete", params: .object(["threadId": .string(run)]), sessionID: run)
+                    try await store.remove(kind: "agent-sdk-waiting", id: run)
+                }
+            } catch { self.error = error.localizedDescription }
         } else { await sessionWorkspaces.restore(id) }
         if id == activeSessionID && archived {
             if let other = chatSessions.first(where: { !$0.archived }) { switchChatSession(other.id) } else { _ = await createChatSession() }

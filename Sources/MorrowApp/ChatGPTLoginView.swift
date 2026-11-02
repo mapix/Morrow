@@ -3,6 +3,7 @@ import MorrowCore
 
 struct ChatGPTLoginView: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
+    @EnvironmentObject var model: AppModel
     @Binding var draft: AgentSettings
     @StateObject private var login = ChatGPTLoginModel()
     private var selectedProfile: ChatGPTProfile? { login.profiles.first { $0.id == draft.chatGPTAccountID } }
@@ -40,8 +41,8 @@ struct ChatGPTLoginView: View {
             if let status = login.status { Text(status).font(Theme.label).foregroundStyle(Theme.secondary).textSelection(.enabled) }
             Text(L10n.t("登录凭据只保存在这台设备的钥匙串。保存模型设置后应用。")).font(Theme.small).foregroundStyle(Theme.secondary)
         }
-        .task { await login.load() }
-        .task(id: draft.chatGPTAccountID) { if let id = draft.chatGPTAccountID { await login.refreshCatalog(profileID: id) } }
+        .task { if !model.isQualityPreview { await login.load() } }
+        .task(id: draft.chatGPTAccountID) { if !model.isQualityPreview, let id = draft.chatGPTAccountID { await login.refreshCatalog(profileID: id) } }
         .onChange(of: login.newlyConnected) { if let profile = login.newlyConnected { draft.chatGPTAccountID = profile.id; draft.chatGPTModel = nil } }
         .sheet(item: $login.welcomeProfile) { profile in
             VStack(alignment: .leading, spacing: 20) {

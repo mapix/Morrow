@@ -7,6 +7,7 @@ struct ReaderView: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     @EnvironmentObject var model: AppModel
     var mail: MailMessage
+    var onClose: (() -> Void)?
     @State private var plainText = false
     @State private var remoteImages = false
     @State private var showingDetails = false
@@ -20,8 +21,10 @@ struct ReaderView: View {
     @State private var failure: String?
     @State private var related: [RelatedMail] = []
     @State private var relatedLimit = 50
-    init(mail: MailMessage) {
+    @State private var attachmentSelection: String?
+    init(mail: MailMessage, onClose: (() -> Void)? = nil) {
         self.mail = mail
+        self.onClose = onClose
         _remoteImages = State(initialValue: MailReadingPreferences.loadsExternalImages())
     }
     private struct RelatedMail: Identifiable { var id: String; var sender: String; var date: Date }
@@ -35,81 +38,83 @@ struct ReaderView: View {
         VStack(spacing: 0) {
             toolbar
             Divider().overlay(Theme.rule)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top) {
-                    Text(mail.subject).font(Theme.readerTitle).lineLimit(2).textSelection(.enabled).help(mail.subject)
-                    Spacer(minLength: 8)
-                    Button { showingDetails.toggle() } label: { Image(systemName: "info.circle").font(Theme.actionIcon) }.buttonStyle(.plain).foregroundStyle(Theme.muted).help(L10n.t("邮件详情"))
-                        .popover(isPresented: $showingDetails) { details.frame(width: 480, height: 520) }
-                }
-                HStack(spacing: 10) {
-                    Text(mail.from.display).font(Theme.body.weight(.medium)).lineLimit(1)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(mail.subject).font(Theme.heading).lineLimit(3).textSelection(.enabled).help(mail.subject)
                     Spacer(minLength: 4)
-                    Text(mail.date.uiFormatted(date: .abbreviated, time: .shortened)).font(Theme.small).foregroundStyle(Theme.muted)
+                    Button { showingDetails.toggle() } label: { Image(systemName: "info.circle") }.buttonStyle(IconButtonStyle()).help(L10n.t("邮件详情"))
+                        .popover(isPresented: $showingDetails) { details.frame(width: 440, height: 480) }
                 }
-                HStack(spacing: 10) {
-                    MailReadState(read: mail.isRead)
-                    if !mail.attachments.isEmpty { Button { showingDetails = true } label: { Label("\(mail.attachments.count)", systemImage: "paperclip") }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.muted) }
-                    Spacer()
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(mail.from.display).font(Theme.body.weight(.medium)).lineLimit(1)
+                    if !mail.from.name.isEmpty { Text(mail.from.email).font(Theme.small).foregroundStyle(Theme.secondary).lineLimit(1).textSelection(.enabled) }
+                    Spacer(minLength: 4)
+                    Text(mail.date.uiFormatted(date: .abbreviated, time: .shortened)).font(Theme.small).foregroundStyle(Theme.secondary)
+                }
+                HStack(spacing: 8) {
+                    Text(L10n.t("收件人：") + mail.to.map(\.display).joined(separator: ", ")).font(Theme.small).foregroundStyle(Theme.secondary).lineLimit(1).help(mail.to.map { $0.display + " <" + $0.email + ">" }.joined(separator: ", "))
+                    Spacer(minLength: 4)
+                    if isSent { Text(L10n.t("已发送")).font(Theme.small).foregroundStyle(Theme.secondary) }
+                    else { MailReadState(read: mail.isRead) }
                     if bodySource?.html.isEmpty == false {
-                        Picker(L10n.t("正文显示方式"), selection: $plainText) {
-                            Text(L10n.t("原始排版")).tag(false)
-                            Text(L10n.t("纯文本")).tag(true)
-                        }.pickerStyle(.segmented).labelsHidden().frame(width: 170)
+                        Picker(L10n.t("正文显示方式"), selection: $plainText) { Text(L10n.t("原始排版")).tag(false); Text(L10n.t("纯文本")).tag(true) }.pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
                     }
                 }
-            }.padding(.horizontal, 20).padding(.vertical, 16)
-            if let action = mail.analysis?.action, mail.actionable && !mail.actionDone {
+            }.padding(.horizontal, 16).padding(.vertical, 12)
+            if !isSent, let action = mail.analysis?.action, mail.actionable && !mail.actionDone {
                 HStack(spacing: 8) {
                     Image(systemName: "checklist").foregroundStyle(Theme.accent2).accessibilityHidden(true)
                     Text(action).font(Theme.label).lineLimit(2)
                     Spacer(minLength: 8)
                     Button(L10n.t("判断依据")) { showingDetails = true }.buttonStyle(.link).font(Theme.label)
-                }.padding(.horizontal, 20).padding(.vertical, 10).background(Theme.paper)
+                }.padding(.horizontal, 16).padding(.vertical, 8).background(Theme.paper)
             }
             Divider().overlay(Theme.rule)
             ZStack {
-                SecureHTMLView(document: document, failure: $failure).frame(maxWidth: .infinity, maxHeight: .infinity).opacity(document == nil ? 0 : 1).accessibilityHidden(document == nil)
+                SecureHTMLView(document: document, failure: $failure, allowsNavigation: !model.isQualityPreview).frame(maxWidth: .infinity, maxHeight: .infinity).opacity(document == nil ? 0 : 1).accessibilityHidden(document == nil)
                 if loading && document == nil { ProgressView(L10n.t("正在准备正文…")).font(Theme.label) }
                 if failure != nil {
                     VStack(spacing: 12) {
-                        Text(L10n.t("正文暂时无法显示，请切换纯文本重试。")).font(Theme.label)
-                        Button(L10n.t("显示纯文本")) { plainText = true; failure = nil; document = nil; bodySource = nil; bodyRetry += 1 }.buttonStyle(QuietButtonStyle())
+                        Text(L10n.t(bodySource == nil ? "正文暂不可用，可重试或同步邮箱" : "原始排版暂不可用，可切换纯文本")).font(Theme.label)
+                        HStack(spacing: 8) {
+                            Button(L10n.t("重试")) { failure = nil; document = nil; bodySource = nil; bodyRetry += 1 }.buttonStyle(QuietButtonStyle())
+                            if bodySource != nil { Button(L10n.t("显示纯文本")) { plainText = true; failure = nil; document = nil }.buttonStyle(QuietButtonStyle()) }
+                            else { Button(L10n.t("同步邮箱")) { Task { await model.sync(accountID: mail.accountID, userInitiated: true) } }.buttonStyle(QuietButtonStyle()) }
+                        }
                     }.padding(24).background(Theme.sheet)
                 }
             }
             if !(bodySource?.attachments ?? mail.attachments).isEmpty {
                 Divider().overlay(Theme.rule)
-                ReaderAttachmentsView(attachments: bodySource?.attachments ?? mail.attachments).id(mail.id)
+                ReaderAttachmentsView(attachments: bodySource?.attachments ?? mail.attachments, selection: $attachmentSelection).id(mail.id)
             }
-            HStack(spacing: 8) {
-                Image(systemName: remoteImages ? "photo" : "shield.lefthalf.filled").accessibilityHidden(true)
-                Text(remoteImages ? L10n.t("外部图片已启用，脚本仍被阻止。") : L10n.t("外部图片和脚本已阻止。链接需点击后打开。")).lineLimit(1)
-                Spacer(minLength: 4)
-                if document?.hasRemoteImages == true && !plainText {
-                    Button(remoteImages ? L10n.t("阻止外部图片") : L10n.t("加载外部图片")) { remoteImages.toggle() }
-                        .buttonStyle(.link).help(L10n.t("加载外部图片可能通知发件人此邮件已打开。"))
-                }
-            }.font(Theme.small).foregroundStyle(Theme.muted).padding(.horizontal, 20).padding(.vertical, 8)
+            if document?.hasRemoteImages == true && !plainText && !model.isQualityPreview {
+                HStack(spacing: 8) {
+                    Image(systemName: "photo").accessibilityHidden(true)
+                    Text(L10n.t(remoteImages ? "外部图片已加载" : "外部图片未加载"))
+                    Spacer()
+                    Button(L10n.t(remoteImages ? "阻止外部图片" : "加载外部图片")) { remoteImages.toggle() }.buttonStyle(.plain).help(L10n.t("加载外部图片可能通知发件人此邮件已打开。"))
+                }.font(Theme.small).foregroundStyle(Theme.secondary).padding(.horizontal, 16).padding(.vertical, 6)
+            }
             Divider().overlay(Theme.rule)
-            HStack(spacing: 18) {
+            HStack(spacing: 8) {
                 Button { Task { await model.compose(replyTo: mail) } } label: { Label(L10n.t("回复"), systemImage: "arrowshape.turn.up.left") }.buttonStyle(CompactButtonStyle())
-                Menu(L10n.t("更多")) {
+                Menu(L10n.t("回复方式")) {
                     Button(L10n.t("回复全部")) { Task { await model.compose(replyTo: mail, replyAll: true) } }
                     Button(L10n.t("转发")) { Task { await model.compose(replyTo: mail, forward: true) } }
                 }.menuStyle(.borderlessButton).font(Theme.label).fixedSize()
                 Spacer(minLength: 0)
                 Button { model.prepareWorkChat(for: mail) } label: { Label(L10n.t("委托"), systemImage: "bubble.left") }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.accent2)
-            }.padding(.horizontal, 20).padding(.vertical, 14)
+            }.padding(.horizontal, 16).padding(.vertical, 8)
         }.background(Theme.sheet)
         .onAppear { note = mail.note }
         .onChange(of: mail.id) {
             bodySelection.cancel(); bodySource = nil; document = nil; related = []
-            plainText = false; remoteImages = MailReadingPreferences.loadsExternalImages()
-            loading = true; failure = nil; note = mail.note; showingDetails = false
+            plainText = false; remoteImages = !model.isQualityPreview && MailReadingPreferences.loadsExternalImages()
+            loading = true; failure = nil; note = mail.note; showingDetails = false; attachmentSelection = nil
         }
         .onChange(of: mail.note) { if !showingDetails { note = mail.note } }
-        .onChange(of: presentationState.loadExternalImagesByDefault) { remoteImages = presentationState.loadExternalImagesByDefault }
+        .onChange(of: presentationState.loadExternalImagesByDefault) { remoteImages = !model.isQualityPreview && presentationState.loadExternalImagesByDefault }
         .task(id: bodyRequest) {
             let bodyStarted = ProcessInfo.processInfo.systemUptime
             let request = bodyRequest, ticket = bodySelection.begin(bodyRequest)
@@ -129,7 +134,7 @@ struct ReaderView: View {
             guard let source = bodySource else { return }
             let preparationStarted = ProcessInfo.processInfo.systemUptime
             let input = ReaderDocumentInput(mailID: source.id, body: plainText || source.html.isEmpty ? source.text : source.html,
-                usesHTML: !plainText && !source.html.isEmpty, allowsRemoteImages: remoteImages,
+                usesHTML: !plainText && !source.html.isEmpty, allowsRemoteImages: remoteImages && !model.isQualityPreview,
                 themeCSS: Theme.htmlTokens, emptyMessage: L10n.t("此邮件没有可显示的纯文本正文。"), blockedImageLabel: L10n.t("外部图片已阻止"), attachments: source.attachments)
             loading = true
             do {
@@ -143,9 +148,10 @@ struct ReaderView: View {
         .onDisappear { bodySelection.cancel(); bodySource = nil; document = nil }
 
     }
+    private var isSent: Bool { model.folders.contains { $0.accountID == mail.accountID && $0.path == mail.folder && $0.role == "sent" } || mail.id.hasPrefix("sent:") }
     private var toolbar: some View {
         HStack(spacing: 6) {
-            Button { model.selectedID = nil } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle()).help(L10n.t("关闭阅读"))
+            Button { if let onClose { onClose() } else { model.selectedID = nil } } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle()).help(L10n.t("关闭阅读"))
             Spacer()
             Button { Task { await model.star(mail) } } label: { Image(systemName: mail.isStarred ? "star.fill" : "star") }.buttonStyle(IconButtonStyle()).help(L10n.t("星标邮件"))
             Menu {
@@ -153,15 +159,15 @@ struct ReaderView: View {
                 Button(L10n.t("明天")) { Task { await model.snooze(mail, hours: 24) } }
                 Button(L10n.t("下周")) { Task { await model.snooze(mail, hours: 168) } }
                 Button(L10n.t("取消稍后处理")) { Task { await model.snooze(mail, hours: 0) } }
-            } label: { Image(systemName: "clock").frame(width: 44, height: 44) }.menuStyle(.borderlessButton).frame(width: 44, height: 44).help(L10n.t("稍后处理"))
+            } label: { Image(systemName: "clock").frame(width: 28, height: 28) }.menuStyle(.borderlessButton).frame(width: 28, height: 28).help(L10n.t("稍后处理"))
             Button { Task { await model.move(mail, role: "archive") } } label: { Image(systemName: "archivebox") }.buttonStyle(IconButtonStyle()).help(L10n.t("归档"))
             Button { Task { await model.move(mail, role: "trash") } } label: { Image(systemName: "trash") }.buttonStyle(IconButtonStyle()).help(L10n.t("移到废纸篓"))
             Menu {
                 Button(mail.isRead ? L10n.t("标记未读") : L10n.t("标记已读")) { Task { await model.markRead(mail, !mail.isRead) } }
                 Button(L10n.t("导出原始邮件…")) { Task { await model.export(mail) } }
                 Menu(L10n.t("移动到")) { ForEach(model.folders.filter { $0.accountID == mail.accountID }) { folder in Button(folder.name) { Task { await model.move(mail, folder: folder) } } } }
-            } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.menuStyle(.borderlessButton).frame(width: 44, height: 44).help(L10n.t("更多邮件操作"))
-        }.padding(.horizontal, 20).frame(height: 52)
+            } label: { Image(systemName: "ellipsis").frame(width: 28, height: 28) }.menuStyle(.borderlessButton).frame(width: 28, height: 28).help(L10n.t("更多邮件操作"))
+        }.padding(.horizontal, 12).frame(height: 36)
     }
     private var details: some View {
         ScrollView {
@@ -171,7 +177,7 @@ struct ReaderView: View {
                 Text(mail.from.display + " <" + mail.from.email + ">").font(Theme.label).textSelection(.enabled)
                 Text(L10n.t("收件人：") + mail.to.map(\.display).joined(separator: ", ")).font(Theme.label).textSelection(.enabled)
                 if !mail.cc.isEmpty { Text(L10n.t("抄送：") + mail.cc.map(\.display).joined(separator: ", ")).font(Theme.label) }
-                if let analysis = mail.analysis {
+                if !isSent, let analysis = mail.analysis {
                     Divider()
                     HStack { Text(L10n.t("伙伴读到了这些")).font(Theme.body.weight(.medium)); Spacer(); Button { Task { await model.reanalyze(mail) } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).disabled(model.partnerBusy).help(L10n.t("重新分析")) }
                     Text(analysis.summary).font(Theme.reader).textSelection(.enabled)
@@ -195,7 +201,7 @@ struct ReaderView: View {
                     ForEach(mail.attachments) { attachment in
                         HStack(spacing: 10) {
                             Image(systemName: "paperclip").foregroundStyle(Theme.muted).accessibilityHidden(true)
-                            Button(attachment.name) { Task { await model.attachment(attachment) } }.buttonStyle(.link).lineLimit(1)
+                            Button(attachment.name) { showingDetails = false; if ReaderAttachmentsView.supportsPreview(attachment) { attachmentSelection = attachment.id } else { Task { await model.attachment(attachment) } } }.buttonStyle(.link).lineLimit(1)
                             Spacer(); Text(attachment.size).font(Theme.small).foregroundStyle(Theme.muted)
                             Menu {
                                 Button(L10n.t("查看提取文字")) { Task { await model.previewText(attachment) } }
@@ -230,6 +236,7 @@ struct ReaderView: View {
 struct SecureHTMLView: NSViewRepresentable {
     let document: ReaderDocument?
     @Binding var failure: String?
+    var allowsNavigation = true
     func makeCoordinator() -> Coordinator { Coordinator(failure: $failure) }
     func makeNSView(context: Context) -> WKWebView {
         let viewStarted = ProcessInfo.processInfo.systemUptime
@@ -255,6 +262,7 @@ struct SecureHTMLView: NSViewRepresentable {
     func updateNSView(_ view: WKWebView, context: Context) {
         guard !context.coordinator.disposed else { return }
         context.coordinator.failure = $failure
+        context.coordinator.allowsNavigation = allowsNavigation
         context.coordinator.pending = document
         if document == nil { view.stopLoading(); context.coordinator.loaded = ""; context.coordinator.assets.releaseAssets() }
         context.coordinator.loadPending()
@@ -268,6 +276,7 @@ struct SecureHTMLView: NSViewRepresentable {
         weak var view: WKWebView?
         var loaded = ""
         var disposed = false
+        var allowsNavigation = true
         var policyTask: Task<Void, Never>?
         private var navigationStarted = ProcessInfo.processInfo.systemUptime
         var ready = false
@@ -292,7 +301,7 @@ struct SecureHTMLView: NSViewRepresentable {
         }
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             let scheme = navigationAction.request.url?.scheme?.lowercased() ?? ""
-            if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url, ["https", "http", "mailto"].contains(scheme) { NSWorkspace.shared.open(url); decisionHandler(.cancel) }
+            if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url, ["https", "http", "mailto"].contains(scheme) { if allowsNavigation { NSWorkspace.shared.open(url) }; decisionHandler(.cancel) }
             else if scheme == "about" || scheme == "data" { decisionHandler(.allow) }
             else { decisionHandler(.cancel) }
         }

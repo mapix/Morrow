@@ -7,7 +7,7 @@ struct OpenUIChartView: View {
     let data: OpenUIChartData
     @State private var showData = false
     @State private var selected: String?
-    private let palette: [Color] = [Theme.accent2, .teal, .indigo, .orange, .brown, .mint]
+    private var palette: [Color] { Theme.chartPalette }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack { Text(data.title).font(Theme.heading); Spacer(); Button(showData ? L10n.t("图表") : L10n.t("数据表")) { showData.toggle() }.buttonStyle(.link).font(Theme.label) }
@@ -24,8 +24,8 @@ struct OpenUIChartView: View {
                 Chart(data.points) { point in BarMark(x: .value("数值", point.value), y: .value("类别", point.label)).foregroundStyle(Theme.accent2).cornerRadius(3) }
                     .frame(height: CGFloat(min(400, max(180, data.points.count * 30))))
             }
-            if let selected, let point = data.points.first(where: { $0.label == selected }) { Text(point.label + " · " + point.value.formatted()).font(Theme.label).foregroundStyle(Theme.secondary) }
-        }.padding(16).background(Theme.paper, in: RoundedRectangle(cornerRadius: Theme.radius)).overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.rule)).accessibilityIdentifier("openui.chart")
+            if let selected, let point = data.points.first(where: { $0.label == selected }) { Text(point.label + ": " + point.value.formatted()).font(Theme.label).foregroundStyle(Theme.secondary) }
+        }.padding(.vertical, 12).accessibilityIdentifier("openui.chart")
     }
 }
 struct OpenUIStepsView: View {

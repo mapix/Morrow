@@ -47,20 +47,20 @@ struct InteractiveControlBody<Label: View>: View {
     @Environment(\.isFocused) private var focused
     @Environment(\.compactInteraction) private var compact
     private var height: CGFloat {
-        switch kind { case .primary: return compact ? 34 : 42; case .quiet: return compact ? 30 : 36; case .compact: return compact ? 30 : 34; case .icon: return 32; case .disclosure: return compact ? 30 : 34 }
+        switch kind { case .primary: return compact ? 30 : 32; case .quiet: return 30; case .compact: return compact ? 28 : 30; case .icon: return 28; case .disclosure: return 28 }
     }
     private var filled: Bool { kind == .primary }
     private var outlined: Bool { [.quiet, .compact].contains(kind) }
     var body: some View {
         label
             .font(kind == .primary ? Theme.body.weight(.medium) : kind == .quiet ? Theme.body : Theme.label.weight(.medium))
-            .foregroundStyle(filled ? Theme.sheet : Theme.ink)
-            .padding(.horizontal, kind == .icon ? 0 : kind == .disclosure ? 7 : 12)
-            .frame(minWidth: kind == .icon ? 32 : nil, minHeight: height)
-            .background(filled ? Theme.ink.opacity(pressed ? 0.80 : hovering ? 0.92 : 1) : pressed ? Theme.selected : hovering ? Theme.selected.opacity(0.55) : outlined ? Theme.sheet : Theme.clear, in: RoundedRectangle(cornerRadius: Theme.controlRadius))
-            .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius).stroke(focused ? Theme.focus : outlined ? Theme.rule : Theme.clear, lineWidth: focused ? 1.5 : 1))
+            .foregroundStyle(filled ? Theme.onAccent : Theme.ink)
+            .padding(.horizontal, kind == .icon ? 0 : kind == .disclosure ? 4 : 10)
+            .frame(minWidth: kind == .icon ? 28 : nil, minHeight: height)
+            .background(filled ? Theme.accent2.opacity(pressed ? 0.80 : hovering ? 0.92 : 1) : pressed ? Theme.selected : hovering ? Theme.hover : outlined ? Theme.sheet : Theme.clear, in: RoundedRectangle(cornerRadius: Theme.controlRadius))
+            .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius).stroke(focused ? Theme.focus : outlined ? Theme.fieldEdge : Theme.clear, lineWidth: focused ? 1.5 : 1))
             .contentShape(Rectangle()).opacity(enabled ? 1 : 0.45)
-            .onHover { hovering = $0 }
+            .onHover { hovering = enabled && $0 }
     }
 }
 
@@ -84,8 +84,8 @@ private struct ReferenceRowBody<Label: View>: View {
     @State private var hovered = false
     @Environment(\.isFocused) private var focused
     var body: some View {
-        label.frame(maxWidth: .infinity, minHeight: 32, alignment: .leading).padding(.horizontal, 7)
-            .foregroundStyle(accent ? Theme.accent2 : Theme.ink).background(pressed || hovered ? Theme.selected.opacity(0.55) : Theme.clear, in: RoundedRectangle(cornerRadius: Theme.radius))
+        label.frame(maxWidth: .infinity, minHeight: 28, alignment: .leading).padding(.horizontal, 6)
+            .foregroundStyle(accent ? Theme.accent2 : Theme.ink).background(pressed ? Theme.selected : hovered ? Theme.hover : Theme.clear, in: RoundedRectangle(cornerRadius: Theme.radius))
             .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.clear, lineWidth: 1.5)).contentShape(Rectangle()).onHover { hovered = $0 }
     }
 }

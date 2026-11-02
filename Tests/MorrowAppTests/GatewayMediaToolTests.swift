@@ -84,12 +84,17 @@ private final class AppMediaHTTPFixture: URLProtocol {
         XCTAssertEqual(result.object["sent"], .bool(false))
         let preview = AgentWorkspaceMedia(id: "image", name: "image.png", path: "media/image.png", mimeType: "image/png", bytes: png.count, lease: lease)
         try await model.saveWorkspaceMedia(preview)
+        try await model.saveWorkspaceMedia(preview)
+        let beforeArchive = try await model.store.load(ChatMaterial.self, kind: "chat-material")
+        XCTAssertEqual(beforeArchive.count, 1, "Saving the same output again must not create duplicate assets")
         await model.archiveChatSession(context.sessionID)
         XCTAssertFalse(FileManager.default.fileExists(atPath: lease.directory.path))
         let stored = try await model.store.object(ComposeDraft.self, kind: "draft", id: draft.id)
         XCTAssertEqual(stored?.attachments.first?.data, png); XCTAssertEqual(stored?.state, "draft")
         let materials = try await model.store.load(ChatMaterial.self, kind: "chat-material")
         XCTAssertEqual(try model.chatMaterialData(XCTUnwrap(materials.first)), png)
+        let retained = try await model.workspaceMediaData(preview, maximumBytes: 32 * 1024 * 1024)
+        XCTAssertEqual(retained, png, "Archived chats can still read deliberately retained material")
     }
     func testConcurrentDraftChangesAndArchiveCancelArePreserved() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer { try? FileManager.default.removeItem(at: root) }

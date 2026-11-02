@@ -4,6 +4,7 @@ import MorrowCore
 @MainActor final class SDKChatContext {
     let sessionID: String
     let instruction: String
+    let executionID: String
     let ui: WorkspaceContext?
     let runID: String?
     let allowedIDs: Set<String>?
@@ -29,8 +30,8 @@ import MorrowCore
     var workspaceLease: AgentWorkspaceLease?
     var generatedMedia: [AgentWorkspaceMedia] = []
     var mediaJobs: [AgentWorkspaceVideoJob] = []
-    init(sessionID: String, instruction: String, ui: WorkspaceContext?, runID: String?, allowedIDs: Set<String>?, agreement: WorkAgreement?) {
-        self.sessionID = sessionID; self.instruction = instruction; self.ui = ui; self.runID = runID; self.allowedIDs = allowedIDs; self.agreement = agreement
+    init(sessionID: String, instruction: String, ui: WorkspaceContext?, runID: String?, allowedIDs: Set<String>?, agreement: WorkAgreement?, executionID: String? = nil) {
+        self.sessionID = sessionID; self.executionID = executionID ?? sessionID; self.instruction = instruction; self.ui = ui; self.runID = runID; self.allowedIDs = allowedIDs; self.agreement = agreement
     }
     var readOnly: Bool {
         ["只查询", "仅查询", "只读", "不要修改", "不修改邮件", "only search", "read-only", "do not modify"].contains { instruction.localizedCaseInsensitiveContains($0) }
@@ -42,18 +43,21 @@ extension AppModel {
         guard !partnerBusy, !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         partnerBusy = true; sdkStreamingText = ""; sdkLiveTrace = AgentExecutionTrace()
         defer { partnerBusy = false; sidebarToolStatus = nil; sdkStreamingText = ""; sdkLiveTrace = nil }
-        var human = PartnerChat(role: "user", text: instruction); human.context = uiContext; human.materials = materials
+        let intent = ChatTaskContext.runIntent, session = taskSessionID
+        let executionID = intent.sdkRunID ?? "sdk-run:" + UUID().uuidString
+        var human = PartnerChat(role: "user", text: instruction); human.context = uiContext; human.materials = materials; human.sdkRunID = executionID
         var runningContext: SDKChatContext?
         do {
             try await recordChat(human)
-            let session = taskSessionID, work = runID.flatMap { id in agentRuns.first { $0.id == id } }
-            let waiting = try await store.object(OpenUIJSON.self, kind: "agent-sdk-waiting", id: session)
+            let waiting = try await validatedSDKResume(intent, sessionID: session)
+            let workID = waiting?.object["workRunID"]?.text ?? runID
+            let work = workID.flatMap { id in agentRuns.first { $0.id == id } }
             let originalInstruction = waiting?.object["instruction"]?.text ?? instruction
             let capturedUI = waiting?.object["ui"].flatMap { try? JSONDecoder().decode(WorkspaceContext.self, from: JSONEncoder().encode($0)) } ?? uiContext
             let explicit = capturedUI?.enforcesMailScope == true
             let submitted = capturedUI.map(submittedMailIDs) ?? []
             let allowed: Set<String>? = explicit || work?.agreement != nil ? Set(primaryMails.filter { (work?.agreement?.contains($0) ?? true) && (!explicit || submitted.contains($0.id)) }.map(\.id)) : nil
-            let context = SDKChatContext(sessionID: session, instruction: originalInstruction + (waiting == nil ? "" : "\n用户本轮回答：" + instruction), ui: capturedUI, runID: runID, allowedIDs: allowed, agreement: work?.agreement)
+            let context = SDKChatContext(sessionID: session, instruction: originalInstruction + (waiting == nil ? "" : "\n用户本轮回答：" + instruction), ui: capturedUI, runID: workID, allowedIDs: allowed, agreement: work?.agreement, executionID: executionID)
             runningContext = context
             context.sourceChatID = human.id
             if case .array(let savedSources) = waiting?.object["sources"] { context.evidenceIDs = Set(savedSources.map(\.text).filter { mailByID($0) != nil && (allowed?.contains($0) ?? true) }) }
@@ -68,7 +72,7 @@ extension AppModel {
             context.workspaceLease = try await sessionWorkspaces.open(session, scope: scope)
             if let composer { context.draftSnapshots[composer.id] = composer }
             let checkpoints = try AgentCheckpointStore(root: store.root), runtime = try AgentSDKRuntime()
-            let selected = try await initialChatEvidence(uiContext)
+            let selected = try await initialChatEvidence(capturedUI)
             context.initialEvidenceIDs.formUnion(selected.map(\.id))
             let contactSnapshot: OpenUIJSON
             if capturedUI?.enforcesMailScope == true && capturedUI?.page == "materials" { contactSnapshot = .null }
@@ -83,7 +87,7 @@ extension AppModel {
                 }
                 contactSnapshot = .object(["rows": .array(compact), "total": inventory["total"] ?? .number(0), "nextOffset": inventory["nextOffset"] ?? .null, "coverage": inventory["coverage"] ?? .null])
             }
-            let hints = uiContext.map { String(decoding: (try? JSONEncoder().encode(chatContextForModel($0))) ?? Data(), as: UTF8.self) } ?? "null"
+            let hints = capturedUI.map { String(decoding: (try? JSONEncoder().encode(chatContextForModel($0))) ?? Data(), as: UTF8.self) } ?? "null"
             let evidence = selected.prefix(4).map { "ID:\($0.id)\n主题:\($0.subject)\n资料片段:\(String($0.text.prefix(1600)))" }.joined(separator: "\n\n")
             let uploads = try await materialEvidence(materials)
             let recalled = await memoryPrompt(instruction, context: uiContext)
@@ -108,8 +112,9 @@ extension AppModel {
             let directory = String(decoding: try JSONEncoder().encode(contactSnapshot), as: UTF8.self)
             var task = "用户本轮要求：\(instruction)\n当前时间：\(Date().ISO8601Format())\n本机时区：\(TimeZone.current.identifier)\n<workspace-hint>\(hints)</workspace-hint>\n<contact-directory-data>\(directory)</contact-directory-data>\n<selected-mail-data>\(evidence)</selected-mail-data>\n<user-material-data>\(String(uploads.prefix(24000)))</user-material-data>\n联系人简表已直接带入，仅显示按直接往来排序的前20项；更多联系人可用list_contacts分页，或在run_code通过contacts表整体分析。这里只带入有限正文片段，完整上传资料请用list_materials/read_material分页读取。需要更多功能时，用find_tools按目的查找并加载工具。"
             if let work { task += "\n已接受的工作：\(work.instruction)\n约定：\(work.agreement?.scope ?? "")；\(work.agreement?.doneWhen ?? "")" }
-            let history = Array(taskChatHistory.dropLast().suffix(8)).filter { ["user", "partner"].contains($0.role) }.map { OpenUIJSON.object(["role": .string($0.role), "text": .string(String($0.text.prefix(3000)))]) }
-            var requestFields: [String: OpenUIJSON] = ["type": .string("start"), "sessionID": .string(session), "instruction": .string(task), "systemPrompt": .string(system), "history": .array(history), "tools": .array(SDKMailTools.descriptions), "contextWindow": .number(16384)]
+            let previousMessages = taskChatHistory.dropLast().filter { ["user", "partner"].contains($0.role) && (waiting == nil ? !explicit : $0.sdkRunID == executionID) }
+            let history = Array(previousMessages.suffix(8)).map { OpenUIJSON.object(["role": .string($0.role), "text": .string(String($0.text.prefix(3000)))]) }
+            var requestFields: [String: OpenUIJSON] = ["type": .string("start"), "sessionID": .string(executionID), "instruction": .string(task), "systemPrompt": .string(system), "history": .array(history), "tools": .array(SDKMailTools.descriptions), "contextWindow": .number(16384)]
             let budget = (settings.runBudget ?? AgentRunBudget()).bounded
             requestFields["budget"] = .object(["modelTurns": .number(Double(budget.modelTurns)), "toolCalls": .number(Double(budget.toolCalls))])
             if work == nil {
@@ -122,30 +127,37 @@ extension AppModel {
             sidebarToolStatus = L10n.t("正在决定下一步…")
             let result = try await runtime.run(request, maximumSeconds: budget.seconds, handle: { [weak self] method, params, delta in
                 guard let self else { throw CancellationError() }
-                if method.hasPrefix("checkpoint.") || method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: session) }
+                if method.hasPrefix("checkpoint.") || method.hasPrefix("state.") { return try await checkpoints.handle(method: method, params: params, sessionID: executionID) }
                 if method == "model" { return try await self.agentToolModel.respond(params, settings: modelSettings, images: images, delta: delta).json() }
                 if method == "tool" { return try await self.performSDKTool(params, context: context) }
                 throw MailError.message("未知 Agent 原生请求。")
             }, event: { [weak self] event in await self?.receiveSDKEvent(event, context: context) })
-            if result.paused == true {
-                var value: [String: OpenUIJSON] = ["instruction": .string(originalInstruction), "sources": .array(context.evidenceIDs.map(OpenUIJSON.string))]
-                value["materialIDs"] = .array(context.materials.map { .string($0.id) })
-                if let capturedUI { value["ui"] = try JSONDecoder().decode(OpenUIJSON.self, from: JSONEncoder().encode(capturedUI)) }
-                try await store.save(OpenUIJSON.object(value), kind: "agent-sdk-waiting", id: session)
-            } else { try await store.remove(kind: "agent-sdk-waiting", id: session) }
             var reply = PartnerChat(role: "partner", text: result.text, messageIDs: context.citedIDs.isEmpty ? Array(context.evidenceIDs.prefix(60)) : context.citedIDs)
+            reply.sdkRunID = executionID
+            reply.context = capturedUI
+            let needsResume = result.paused == true || result.answerLimited == true
+            reply.sdkResumeKind = needsResume ? (context.awaitingInput ? "question" : "continuation") : nil
+            if needsResume {
+                var value: [String: OpenUIJSON] = ["instruction": .string(originalInstruction), "sessionID": .string(session), "sdkRunID": .string(executionID), "sourceChatID": .string(reply.id), "resumeKind": .string(reply.sdkResumeKind!), "sources": .array(context.evidenceIDs.map(OpenUIJSON.string)), "materialIDs": .array(context.materials.map { .string($0.id) })]
+                if let workID { value["workRunID"] = .string(workID) }
+                if let id = context.presentation?.id { value["interactionID"] = .string(id) }
+                if let capturedUI { value["ui"] = try JSONDecoder().decode(OpenUIJSON.self, from: JSONEncoder().encode(capturedUI)) }
+                try await store.save(OpenUIJSON.object(value), kind: "agent-sdk-waiting", id: executionID)
+            } else { try await store.remove(kind: "agent-sdk-waiting", id: executionID) }
             var seenSources = Set<String>()
             reply.messageIDs = reply.messageIDs.map(resolvedMovedMailID).filter { seenSources.insert($0).inserted }
             reply.sessionID = session; reply.draftIDs = context.draftIDs
             reply.artifactIDs = context.artifactIDs
             reply.workspaceMedia = context.generatedMedia.isEmpty ? nil : context.generatedMedia
             reply.workspaceVideoJobs = context.mediaJobs.isEmpty ? nil : context.mediaJobs
-            if result.paused == true, result.pauseReason != nil { reply.continuationPrompt = "继续刚才的任务，使用已保存的进度与资料。出现问题先说明并询问我。" }
+            if needsResume { reply.continuationPrompt = context.awaitingInput ? "回答这项任务提出的问题。" : "继续刚才的任务，使用已保存的进度与资料。出现问题先说明并询问我。" }
             if result.answerLimited == true { reply.continuationPrompt = "在刚才结果基础上继续核验尚未覆盖的部分，复用已有资料，明确说明新增证据。" }
             context.trace.finish(status: result.pauseReason == "runtime_error" ? "failed" : result.paused == true ? "paused" : "completed"); reply.executionTrace = context.trace
             if context.presentation == nil, ChatStatisticsPresentation.requested(instruction), let statistics = context.statistics { context.presentation = OpenUIInteraction(source: statistics.chartSource, runID: runID) }
-            if var page = context.presentation { page.sessionID = session; page.chatID = reply.id; reply.openUIID = page.id; context.presentation = page }
-            try await recordChat(reply, presentation: context.presentation)
+            var newPresentation: OpenUIInteraction?
+            if var page = context.presentation, page.chatID == nil { page.sessionID = session; page.chatID = reply.id; reply.openUIID = page.id; context.presentation = page; newPresentation = page }
+            try await recordChat(reply, presentation: newPresentation)
+            if !needsResume { _ = try? await checkpoints.handle(method: "checkpoint.delete", params: .object(["threadId": .string(executionID)]), sessionID: executionID) }
             if let id = context.draftIDs.first, let draft = drafts.first(where: { $0.id == id }) { followPreparedDraft(draft, submittedContext: uiContext, sessionID: session) }
             await reload()
         } catch {
@@ -153,16 +165,38 @@ extension AppModel {
             var reply = PartnerChat(role: "partner", text: text)
             if let context = runningContext {
                 context.trace.finish(status: Task.isCancelled ? "paused" : "failed"); reply.executionTrace = context.trace; reply.messageIDs = Array(context.evidenceIDs.prefix(60)); reply.artifactIDs = context.artifactIDs
-                reply.sessionID = context.sessionID; reply.workspaceMedia = context.generatedMedia.isEmpty ? nil : context.generatedMedia
+                reply.sessionID = context.sessionID; reply.sdkRunID = context.executionID; reply.sdkResumeKind = "continuation"; reply.workspaceMedia = context.generatedMedia.isEmpty ? nil : context.generatedMedia
+                reply.context = context.ui
                 reply.workspaceVideoJobs = context.mediaJobs.isEmpty ? nil : context.mediaJobs
-                var waiting: [String: OpenUIJSON] = ["instruction": .string(context.instruction), "sources": .array(context.evidenceIDs.map(OpenUIJSON.string))]
+                var waiting: [String: OpenUIJSON] = ["instruction": .string(context.instruction), "sessionID": .string(context.sessionID), "sdkRunID": .string(context.executionID), "sourceChatID": .string(reply.id), "resumeKind": .string("continuation"), "sources": .array(context.evidenceIDs.map(OpenUIJSON.string))]
                 waiting["materialIDs"] = .array(context.materials.map { .string($0.id) })
                 if let ui = context.ui, let encoded = try? JSONEncoder().encode(ui), let value = try? JSONDecoder().decode(OpenUIJSON.self, from: encoded) { waiting["ui"] = value }
-                try? await store.save(OpenUIJSON.object(waiting), kind: "agent-sdk-waiting", id: context.sessionID)
+                try? await store.save(OpenUIJSON.object(waiting), kind: "agent-sdk-waiting", id: context.executionID)
             }
             if !Task.isCancelled { reply.continuationPrompt = "继续刚才的任务，使用已保存的进度与资料。出现问题先说明并询问我。" }
             try? await recordChat(reply)
         }
+    }
+    private func validatedSDKResume(_ intent: ChatRunIntent, sessionID: String) async throws -> OpenUIJSON? {
+        guard let run = intent.sdkRunID, let sourceID = intent.sourceChatID else { return nil }
+        guard run.hasPrefix("sdk-run:"), run.utf8.count <= 128,
+              chatSessions.contains(where: { $0.id == sessionID && !$0.archived }),
+              let source = chat.first(where: { $0.id == sourceID && $0.sessionID == sessionID && $0.sdkRunID == run }),
+              taskChatHistory.last(where: { $0.role == "partner" && $0.sdkRunID == run })?.id == sourceID,
+              let waiting = try await store.object(OpenUIJSON.self, kind: "agent-sdk-waiting", id: run),
+              waiting.object["sessionID"]?.text == sessionID, waiting.object["sdkRunID"]?.text == run,
+              waiting.object["sourceChatID"]?.text == sourceID else { throw MailError.message("这条任务记录已结束或不能恢复，请重新提出要求。") }
+        switch intent {
+        case .newRequest: return nil
+        case .resume:
+            guard waiting.object["resumeKind"]?.text != "question" else { throw MailError.message("请先回答这项任务提出的问题。") }
+        case .answer(_, _, let interactionID):
+            guard waiting.object["resumeKind"]?.text == "question", waiting.object["interactionID"]?.text == interactionID,
+                  source.openUIID == interactionID,
+                  openUIInteractions.contains(where: { $0.id == interactionID && $0.chatID == sourceID && $0.sessionID == sessionID && $0.completedAt == nil }) else { throw MailError.message("这份回答不属于当前待处理的问题。") }
+            if var page = openUIInteractions.first(where: { $0.id == interactionID }) { page.completedAt = Date(); page.receipt = "回答已提交，正在继续这项任务。"; await saveOpenUIInteraction(page) }
+        }
+        return waiting
     }
     private func receiveSDKEvent(_ event: OpenUIJSON, context: SDKChatContext) {
         let value = event.object
@@ -186,7 +220,9 @@ extension AppModel {
         if context.awaitingInput && mediaTools.contains(name) && name != "list_media_models" { throw MailError.message("正在等待用户输入，未执行媒体操作。") }
         if context.ui?.enforcesMailScope == true && context.ui?.page == "materials", !["list_materials", "read_material", "render_ui", "run_code", "save_report", "list_memories"].contains(name) && !mediaTools.contains(name) { throw MailError.message("本轮明确只使用带入资料，未读取邮箱。") }
         if (context.readOnly || context.awaitingInput) && !readTools.contains(name) && !mediaTools.subtracting(["attach_workspace_file"]).contains(name) { throw MailError.message("本轮仅查询或正在等待用户输入，未执行修改。") }
-        let callID = fields["callId"]?.text ?? UUID().uuidString, receiptID = MailStore.hash(context.sessionID + ":" + callID)
+        let providerCallID = fields["callId"]?.text ?? UUID().uuidString
+        let callID = context.executionID == context.sessionID ? providerCallID : context.executionID + ":" + providerCallID
+        let receiptID = MailStore.hash(context.sessionID + ":" + callID)
         if (!readTools.contains(name) || name == "render_ui"), !["generate_image", "generate_video"].contains(name), let receipt = try await store.object(OpenUIJSON.self, kind: "agent-sdk-receipt", id: receiptID) {
             if name == "analyze_video", receipt.object["workspaceGeneration"]?.text != context.workspaceLease?.generation { throw MailError.message("视频理解回执属于旧工作区，本轮未重新调用收费模型。") }
             if name == "render_ui", let id = receipt.object["interactionID"]?.text { context.presentation = try await store.object(OpenUIInteraction.self, kind: "openui-interaction", id: id) }
@@ -343,9 +379,9 @@ extension AppModel {
                 guard let artifact = briefArtifacts.first(where: { $0.id == id }), briefSessionID(artifact) == context.sessionID, context.allowedIDs.map({ allowed in artifact.sourceMailIDs.allSatisfy(allowed.contains) }) ?? true else { throw MailError.message("只能修改本会话且在授权资料范围内的简报。") }
                 existing = artifact
             } else { existing = nil }
-            let reportRunID = existing?.runID ?? context.runID ?? "sdk-chat:" + context.sessionID
+            let reportRunID = existing?.runID ?? context.runID ?? "sdk-chat:" + context.executionID
             if context.runID == nil, !agentRuns.contains(where: { $0.id == reportRunID }) {
-                var run = AgentRun(title: title, instruction: context.instruction, phase: .paused, summary: "简报已保存，任务进度请查看原对话。", sourceMailIDs: Array(context.evidenceIDs)); run.id = reportRunID; await saveRun(run)
+                var run = AgentRun(title: title, instruction: context.instruction, phase: .paused, summary: "简报已保存，任务进度请查看原对话。", sourceMailIDs: Array(context.evidenceIDs)); run.id = reportRunID; run.sessionID = context.sessionID; await saveRun(run)
             }
             var artifact = existing ?? AgentArtifact(runID: reportRunID, title: title, kind: .report, content: content)
             if let old = existing { var revision = ArtifactRevision(content: old.content, sourceMailIDs: old.sourceMailIDs, createdAt: old.updatedAt ?? old.createdAt); revision.briefDocument = old.briefDocument; artifact.revisions = (old.revisions ?? []) + [revision] }

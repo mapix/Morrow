@@ -1,24 +1,259 @@
 (() => {
   'use strict';
   const translations = {
-    zh: {
-      skip: '跳到内容', navigation: '主导航', home: 'Morrow 首页', navStory: '看它如何接下工作', source: '查看源码',
-      heroTitle: '邮件里的事，<br>交给 Morrow。', heroLead: '它读懂来信，串起往来，把下一步带回你面前。', getMac: '获取 macOS 版', tryStory: '试试这件事', heroAlt: 'Morrow 的折叠信件品牌图形', requirements: '运行条件', platformNative: 'Swift 原生，留在你的桌面工作流里。', platformSource: '为 Mac 打造，源码开放。',
-      storyTitle: '从一封来信，<br>到一件办好的事。', storyLead: '你给目的，Morrow 带着依据准备下一步。', storyTabs: '交互演示阶段', sceneRead: '读懂来信', scenePrepare: '准备回复', sceneFollow: '继续跟进', sampleSubject: '周五前，核对交付材料', from: '来自', sampleSender: '林佳，示例项目组', attachment: '附件', sampleFile: '交付清单.pdf', sampleBody: '请核对材料清单。缺少的内容，请在周五前告诉我。', readResultTitle: '先把该做的事找出来。', readResult: '需要核对附件，再回复缺项。Morrow 将这封邮件和相关往来放在同一范围。', readSettled: '依据随手可查', delegateTitle: '“替我核对，准备一封回复。”', delegateResult: '委托包含目的、范围和完成条件。你可以修改工作约定，再让它继续。', draftTitle: '给林佳的回复草稿', draftBody: '我会先核对清单与已收到的材料，再把缺项整理给你。尚未确认的内容会单独标出。', draftSettled: '可编辑，待你决定', followSubject: '林佳补充了新版清单', followBody: 'Morrow 将新来信归入这件工作，更新缺项说明，并保留上一版依据。', followSettled: '同一件事，继续推进', followResultTitle: '你不用重新讲一遍。', followResult: '持续委托保留工作状态。邮件变化后，新的分析和回复建议会回到原来的工作里。', simulation: '交互演示使用虚构邮件与固定示例，不会读取邮箱或发送邮件。',
-      peopleTitle: '往来按人串起，<br>资料不再散落。', peopleLead: '历史邮件构建联系人档案；附件有自己的统一入口。', profileName: '联系人 Profile', profileText: '名字、往来、参与项目和可核验的线索，连接到原邮件。', attachmentName: '一个附件视图', attachmentText: '按文件类型与来源查找，预览、保存，再交给 Morrow 分析。', searchName: '用意思查邮件', searchText: '本机向量索引支持语义查询，也可以选择关键词检索。', relationPerson: '林佳', relationProject: '示例项目：交付材料', relationMail: '往来邮件', relationAttachment: '相关附件', relationEvidence: '线索依据',
-      chatTitle: '一个伙伴，<br>不止一段对话。', chatLead: 'Chat 跟随你正在看的邮件、联系人、附件或草稿。', sessionTabs: '示例对话', sessionDelivery: '交付材料', sessionBilling: '账单整理', sessionPlanning: '周计划', deliveryDescription: '这段对话保留它的输入、文件和范围。切换到别的工作，再回来继续。', billingDescription: '把账单核对留在自己的会话里。已有的材料和输入，切换后仍然保留。', planningDescription: '另开一段对话整理周计划。固定范围，或让 Chat 跟随左侧的内容。', richInput: '带上你手里的内容', richInputText: '文件、截图、图片和语音，都进入同一个输入框。', structuredInput: '需要选择时，给你结构化交互', structuredInputText: '用表单、选项和表格完善约定，接着在原生界面里工作。',
-      authorityTitle: '记得住，<br>也由你决定。', authorityLead: '让偏好延续，把自动响应的边界说清楚。', memoryName: '能管理的长期记忆', memoryText: '查看来源、范围与历史版本。确认、修改、停用或忘记，都有入口。', memoryExampleName: '示例偏好', memoryExampleText: '回复保持简短中文', memoryExampleScope: '作用范围', memoryExampleGlobal: '由你设置', responderName: '按条件响应新邮件', responderText: '设定邮箱、发件人和内容条件。先试跑，再选择准备草稿或自动回复。', responseChoices: '响应方式演示', draftOption: '只准备草稿', autoOption: '自动响应', draftNotice: '示例选择：准备后由你审阅。', autoNotice: '示例选择：在应用内明确设置条件与权限。此页面不会发送邮件。', privacyLocal: '向量索引留在本机。', privacyModel: '邮件内容交给你选择的模型服务。', privacyCloud: 'iCloud 同步可选，默认关闭。',
-      downloadTitle: '把下一步，<br>留给 Morrow。', downloadLead: '从你自己的邮箱开始，慢慢建立共同的工作方式。', downloadMac: '下载 macOS 版', downloadPending: '下载清单尚未发布。可前往 GitHub 查看版本。', downloadUnavailable: '暂时无法读取下载清单。请在 GitHub 查看版本，或稍后重试。', downloadReady: 'macOS 下载已准备。', releases: '查看 GitHub 版本', verifyDownload: '验证下载文件', feedback: '反馈问题', footerDescription: '原生 AI 邮件伙伴。<br>网站示例全部虚构。', title: 'Morrow：把邮件里的事，交给伙伴', description: 'Morrow 是原生 AI 邮件伙伴：读取来信、串起联系人、管理附件与记忆，并按你的委托准备下一步。'
-    },
-    en: {
-      skip: 'Skip to content', navigation: 'Main navigation', home: 'Morrow home', navStory: 'See a task unfold', source: 'View source', heroTitle: 'Delegate what<br>comes after email.', heroLead: 'A native partner that reads, remembers, and prepares your next move.', getMac: 'Get Morrow for macOS', tryStory: 'Try this task', heroAlt: 'Morrow folded correspondence brand artwork', requirements: 'System requirements', platformNative: 'Native Swift, within your desktop workflow.', platformSource: 'Built for Mac. Open source.',
-      storyTitle: 'From an email<br>to work in motion.', storyLead: 'You set the goal. Morrow brings the next move, with evidence.', storyTabs: 'Interactive demonstration stages', sceneRead: 'Understand', scenePrepare: 'Prepare a reply', sceneFollow: 'Keep following', sampleSubject: 'Check delivery materials by Friday', from: 'From', sampleSender: 'Lin, fictional project team', attachment: 'Attachment', sampleFile: 'Delivery checklist.pdf', sampleBody: 'Please review the materials. Let me know what is missing by Friday.', readResultTitle: 'Find what needs doing first.', readResult: 'Review the attachment, then reply with the gaps. This email and related correspondence share one scope.', readSettled: 'Evidence within reach', delegateTitle: '“Check this and prepare a reply.”', delegateResult: 'A delegation holds a goal, scope, and completion condition. Edit the agreement before continuing.', draftTitle: 'A reply draft for Lin', draftBody: 'I will compare the checklist with the materials received, then summarize the gaps. Unconfirmed items will be marked separately.', draftSettled: 'Editable, for your decision', followSubject: 'Lin adds a revised checklist', followBody: 'Morrow connects the new email to this task, updates the gaps, and retains the previous evidence.', followSettled: 'The same task continues', followResultTitle: 'No need to explain it again.', followResult: 'Ongoing delegations retain their state. New analysis and reply suggestions return to the original work.', simulation: 'This interactive demonstration uses fictional emails and fixed examples. It does not read or send mail.',
-      peopleTitle: 'Correspondence connects.<br>Materials stay in reach.', peopleLead: 'Mail history builds contact profiles. Attachments have one place of their own.', profileName: 'Contact profiles', profileText: 'Names, correspondence, projects, and verifiable clues connect to their source emails.', attachmentName: 'One attachment view', attachmentText: 'Find files by type and source. Preview, save, and ask Morrow to analyze them.', searchName: 'Search by meaning', searchText: 'Local vector indexing supports semantic queries. Keyword search remains available.', relationPerson: 'Lin', relationProject: 'Fictional project: delivery materials', relationMail: 'Correspondence', relationAttachment: 'Related files', relationEvidence: 'Source evidence',
-      chatTitle: 'One partner.<br>More than one conversation.', chatLead: 'Chat follows the email, contact, attachment, or draft you are viewing.', sessionTabs: 'Example conversations', sessionDelivery: 'Delivery', sessionBilling: 'Invoices', sessionPlanning: 'Weekly plan', deliveryDescription: 'This conversation keeps its input, files, and scope. Switch to other work and return to continue.', billingDescription: 'Keep invoice checks in their own conversation. Its materials and input remain when you switch.', planningDescription: 'Open another conversation for the weekly plan. Pin a scope or let Chat follow your current view.', richInput: 'Bring what you have', richInputText: 'Files, screenshots, images, and voice share one input.', structuredInput: 'Make choices through structured interaction', structuredInputText: 'Forms, options, and tables help refine the agreement, then continue in the native app.',
-      authorityTitle: 'It remembers.<br>You decide the boundaries.', authorityLead: 'Carry your preferences forward. Define how new mail gets a response.', memoryName: 'Memory you can manage', memoryText: 'Inspect sources, scope, and versions. Confirm, edit, pause, or forget.', memoryExampleName: 'Example preference', memoryExampleText: 'Keep replies brief', memoryExampleScope: 'Scope', memoryExampleGlobal: 'Defined by you', responderName: 'Respond to matching mail', responderText: 'Set the mailbox, sender, and content conditions. Preview before choosing drafts or automatic replies.', responseChoices: 'Example response mode', draftOption: 'Prepare drafts', autoOption: 'Respond automatically', draftNotice: 'Example choice: prepare a draft for your review.', autoNotice: 'Example choice: explicitly configure conditions and authority in the app. This page does not send mail.', privacyLocal: 'Vector indexing stays on your device.', privacyModel: 'Mail goes to the model service you select.', privacyCloud: 'Optional iCloud sync starts off.',
-      downloadTitle: 'Leave the next move<br>with Morrow.', downloadLead: 'Start with your own mailbox and build a shared way of working.', downloadMac: 'Download for macOS', downloadPending: 'The download manifest is not published yet. View releases on GitHub.', downloadUnavailable: 'The download manifest is unavailable. Check GitHub releases or try again later.', downloadReady: 'The macOS download is ready.', releases: 'View GitHub releases', verifyDownload: 'Verify the download', feedback: 'Report an issue', footerDescription: 'Native AI mail partner.<br>All website examples are fictional.', title: 'Morrow: delegate what comes after email', description: 'Morrow is a native AI mail partner that reads incoming mail, connects contacts, manages attachments and memory, and prepares your next move.'
-    }
-  };
+  "zh": {
+    "skip": "跳到内容",
+    "navigation": "主导航",
+    "home": "Morrow 首页",
+    "navStory": "工作示例",
+    "source": "源码",
+    "heroTitle": "邮件、资料与后续工作。",
+    "heroLead": "Morrow 是为 Mac 打造的邮件工作台。检索往来、查看附件、准备回复，并按明确范围使用 AI 辅助工作。",
+    "getMac": "查看 macOS 下载",
+    "tryStory": "查看工作示例",
+    "heroAlt": "Morrow 的折叠信件品牌图形",
+    "requirements": "运行条件",
+    "platformNative": "为 Mac 打造的原生应用。",
+    "platformSource": "查看项目与公开版本。",
+    "storyTitle": "从来信到回复",
+    "storyLead": "用一组固定示例说明如何核对资料、准备草稿和继续跟进。",
+    "storyTabs": "虚构工作示例阶段",
+    "sceneRead": "核对来信",
+    "scenePrepare": "准备草稿",
+    "sceneFollow": "持续跟进",
+    "sampleSubject": "周五前，核对交付材料",
+    "from": "来自",
+    "sampleSender": "林佳，示例项目组",
+    "attachment": "附件",
+    "sampleFile": "交付清单.pdf",
+    "sampleBody": "请核对材料清单。缺少的内容，请在周五前告诉我。",
+    "readResultTitle": "待办与来源",
+    "readResult": "核对附件清单，标出缺项，再准备回复。原邮件与相关往来保留为核验依据。",
+    "readSettled": "保留原邮件引用",
+    "delegateTitle": "明确工作约定",
+    "delegateResult": "指定目的、资料范围和完成条件。修改约定后再继续。",
+    "draftTitle": "给林佳的回复草稿",
+    "draftBody": "我会先核对清单与已收到的材料，再把缺项整理给你。尚未确认的内容会单独标出。",
+    "draftSettled": "草稿尚未发送",
+    "followSubject": "林佳补充了新版清单",
+    "followBody": "Morrow 将新来信归入这件工作，更新缺项说明，并保留上一版依据。",
+    "followSettled": "同一件事，继续推进",
+    "followResultTitle": "保留原来的工作记录",
+    "followResult": "持续委托保留状态、原始依据与历史版本。新邮件到达后可继续更新结果。",
+    "simulation": "交互演示使用虚构邮件与固定示例，不会读取邮箱或发送邮件。",
+    "peopleTitle": "联系人与原始资料",
+    "peopleLead": "从往来记录查看联系人，在统一入口查找和预览附件。",
+    "profileName": "联系人档案",
+    "profileText": "查看历史往来与可核验线索，跳转原邮件确认。",
+    "attachmentName": "附件管理",
+    "attachmentText": "按文件类型与来源查找，预览、保存，再交给 Morrow 分析。",
+    "searchName": "邮件检索",
+    "searchText": "本机向量索引支持语义查询，也可以选择关键词检索。",
+    "relationPerson": "林佳",
+    "relationProject": "示例项目：交付材料",
+    "relationMail": "往来邮件",
+    "relationAttachment": "相关附件",
+    "relationEvidence": "线索依据",
+    "chatTitle": "按工作保留对话",
+    "chatLead": "分别处理不同工作，输入、资料和上下文随会话保留。",
+    "sessionTabs": "示例对话",
+    "sessionDelivery": "交付材料",
+    "sessionBilling": "账单整理",
+    "sessionPlanning": "周计划",
+    "deliveryDescription": "这段对话保留它的输入、文件和范围。切换到别的工作，再回来继续。",
+    "billingDescription": "把账单核对留在自己的会话里。已有的材料和输入，切换后仍然保留。",
+    "planningDescription": "另开一段对话整理周计划。固定范围，或让 Chat 跟随左侧的内容。",
+    "richInput": "文件与输入",
+    "richInputText": "支持文字、文件、截图、图片与语音输入。",
+    "structuredInput": "结构化选择",
+    "structuredInputText": "在表单、选项和表格中补充要求，再继续原生工作。",
+    "authorityTitle": "记忆与自动响应",
+    "authorityLead": "查看已保存的内容，并明确自动处理邮件的条件与权限。",
+    "memoryName": "长期记忆",
+    "memoryText": "查看来源、范围与历史版本。确认、修改、停用或忘记，都有入口。",
+    "memoryExampleName": "示例偏好",
+    "memoryExampleText": "回复保持简短中文",
+    "memoryExampleScope": "作用范围",
+    "memoryExampleGlobal": "由你设置",
+    "responderName": "自动响应规则",
+    "responderText": "限定邮箱、文件夹、发件人和内容条件。先试跑，自动发送需要显式授权。",
+    "responseChoices": "响应方式演示",
+    "draftOption": "只准备草稿",
+    "autoOption": "自动响应",
+    "draftNotice": "示例选择：准备后由你审阅。",
+    "autoNotice": "示例选择：在应用内明确设置条件与权限。此页面不会发送邮件。",
+    "privacyLocal": "向量索引留在本机。",
+    "privacyModel": "邮件内容交给你选择的模型服务。",
+    "privacyCloud": "iCloud 同步可选，默认关闭。",
+    "downloadTitle": "下载公开版本",
+    "downloadLead": "检查系统要求、公开版本说明与文件校验信息。",
+    "downloadMac": "下载 macOS 公开版",
+    "downloadPending": "下载清单尚未发布。可前往 GitHub 查看版本。",
+    "downloadUnavailable": "暂时无法读取下载清单。请在 GitHub 查看版本，或稍后重试。",
+    "downloadReady": "公开版本下载信息已读取。",
+    "releases": "查看 GitHub 版本",
+    "verifyDownload": "验证下载文件",
+    "feedback": "反馈问题",
+    "footerDescription": "Mac 邮件工作台。<br>网站交互均使用固定虚构示例。",
+    "title": "Morrow：Mac 邮件工作台",
+    "description": "Morrow 是为 Mac 打造的邮件工作台，提供邮件检索、联系人与附件管理，以及可配置的 AI 辅助工作。",
+    "navFeatures": "功能",
+    "navDownload": "下载",
+    "releaseBoundary": "界面更新仍在开发中。公开下载版本与功能以发布说明为准。",
+    "factsTitle": "为桌面邮件工作设计",
+    "factsPlatform": "运行平台",
+    "factsMail": "邮件协议",
+    "factsPOP": "兼容 POP3 接收",
+    "factsModels": "模型选择",
+    "factsModelsText": "本机模型或自选服务",
+    "factsSource": "项目源码",
+    "viewRepository": "查看 GitHub 仓库",
+    "featuresTitle": "邮件工作中的常用能力",
+    "featuresLead": "邮件和原始资料是主体，辅助功能按你的选择使用。",
+    "mailFeatureTitle": "邮件与回复",
+    "mailFeatureText": "连接邮箱、查找邮件、阅读原文，编辑与预览回复草稿。",
+    "mailFeatureSearch": "语义、关键词与条件检索",
+    "mailFeatureFolders": "收件、草稿与已发送记录",
+    "mailFeatureReply": "回复、转发与附件",
+    "materialFeatureTitle": "联系人与资料",
+    "materialFeatureText": "从往来记录找到联系人和附件，结论保留原邮件依据。",
+    "materialFeatureContacts": "联系人往来与可核验线索",
+    "materialFeatureAttachments": "附件类型、来源与原件预览",
+    "materialFeatureNotes": "简报、笔记与标签",
+    "workFeatureTitle": "可配置的 AI 辅助",
+    "workFeatureText": "为整理、回复与持续跟进指定范围，查看执行过程与结果。",
+    "workFeatureSessions": "独立对话与工作上下文",
+    "workFeatureMemory": "有来源与范围的长期记忆",
+    "workFeatureRules": "有边界的自动响应规则",
+    "retryDownload": "重新读取下载信息"
+  },
+  "en": {
+    "skip": "Skip to content",
+    "navigation": "Main navigation",
+    "home": "Morrow home",
+    "navStory": "Examples",
+    "source": "Source",
+    "heroTitle": "Email, materials, and the work that follows.",
+    "heroLead": "Morrow is an email workspace for Mac. Search correspondence, inspect attachments, prepare replies, and use AI assistance within a defined scope.",
+    "getMac": "View macOS downloads",
+    "tryStory": "Explore the examples",
+    "heroAlt": "Morrow folded correspondence brand artwork",
+    "requirements": "System requirements",
+    "platformNative": "A native application built for Mac.",
+    "platformSource": "Explore the project and public releases.",
+    "storyTitle": "From incoming mail to a reply",
+    "storyLead": "A fixed example shows how to check materials, prepare a draft, and continue the task.",
+    "storyTabs": "Fictional work example stages",
+    "sceneRead": "Check the email",
+    "scenePrepare": "Prepare a draft",
+    "sceneFollow": "Continue follow-up",
+    "sampleSubject": "Check delivery materials by Friday",
+    "from": "From",
+    "sampleSender": "Lin, fictional project team",
+    "attachment": "Attachment",
+    "sampleFile": "Delivery checklist.pdf",
+    "sampleBody": "Please review the materials. Let me know what is missing by Friday.",
+    "readResultTitle": "Task and source evidence",
+    "readResult": "Compare the attachment list, identify gaps, and prepare a reply. Original mail and related correspondence remain available for verification.",
+    "readSettled": "Original email citations retained",
+    "delegateTitle": "Define the work agreement",
+    "delegateResult": "Specify the goal, available materials, and completion criteria before continuing.",
+    "draftTitle": "A reply draft for Lin",
+    "draftBody": "I will compare the checklist with the materials received, then summarize the gaps. Unconfirmed items will be marked separately.",
+    "draftSettled": "This draft has not been sent",
+    "followSubject": "Lin adds a revised checklist",
+    "followBody": "Morrow connects the new email to this task, updates the gaps, and retains the previous evidence.",
+    "followSettled": "The same task continues",
+    "followResultTitle": "Keep the original work record",
+    "followResult": "Ongoing delegations retain state, source evidence, and revisions. New mail can update the same work.",
+    "simulation": "This interactive demonstration uses fictional emails and fixed examples. It does not read or send mail.",
+    "peopleTitle": "Contacts and original materials",
+    "peopleLead": "Inspect people through correspondence and find attachments in one place.",
+    "profileName": "Contact profiles",
+    "profileText": "Inspect correspondence and verifiable clues, then open the original email.",
+    "attachmentName": "Attachment management",
+    "attachmentText": "Find files by type and source. Preview, save, and ask Morrow to analyze them.",
+    "searchName": "Mail search",
+    "searchText": "Local vector indexing supports semantic queries. Keyword search remains available.",
+    "relationPerson": "Lin",
+    "relationProject": "Fictional project: delivery materials",
+    "relationMail": "Correspondence",
+    "relationAttachment": "Related files",
+    "relationEvidence": "Source evidence",
+    "chatTitle": "Separate conversations for separate work",
+    "chatLead": "Inputs, materials, and context remain with each conversation.",
+    "sessionTabs": "Example conversations",
+    "sessionDelivery": "Delivery",
+    "sessionBilling": "Invoices",
+    "sessionPlanning": "Weekly plan",
+    "deliveryDescription": "This conversation keeps its input, files, and scope. Switch to other work and return to continue.",
+    "billingDescription": "Keep invoice checks in their own conversation. Its materials and input remain when you switch.",
+    "planningDescription": "Open another conversation for the weekly plan. Pin a scope or let Chat follow your current view.",
+    "richInput": "Files and input",
+    "richInputText": "Text, files, screenshots, images, and voice input are supported.",
+    "structuredInput": "Structured choices",
+    "structuredInputText": "Refine requirements through forms, options, and tables, then continue in the native app.",
+    "authorityTitle": "Memory and automatic responses",
+    "authorityLead": "Inspect saved information and define the conditions and authority for mail processing.",
+    "memoryName": "Long-term memory",
+    "memoryText": "Inspect sources, scope, and versions. Confirm, edit, pause, or forget.",
+    "memoryExampleName": "Example preference",
+    "memoryExampleText": "Keep replies brief",
+    "memoryExampleScope": "Scope",
+    "memoryExampleGlobal": "Defined by you",
+    "responderName": "Automatic response rules",
+    "responderText": "Set the mailbox, folder, sender, and content conditions. Test first; automatic sending requires explicit authority.",
+    "responseChoices": "Example response mode",
+    "draftOption": "Prepare drafts",
+    "autoOption": "Respond automatically",
+    "draftNotice": "Example choice: prepare a draft for your review.",
+    "autoNotice": "Example choice: explicitly configure conditions and authority in the app. This page does not send mail.",
+    "privacyLocal": "Vector indexing stays on your device.",
+    "privacyModel": "Mail goes to the model service you select.",
+    "privacyCloud": "Optional iCloud sync starts off.",
+    "downloadTitle": "Download a public release",
+    "downloadLead": "Check system requirements, release notes, and file verification details.",
+    "downloadMac": "Download the macOS public release",
+    "downloadPending": "The download manifest is not published yet. View releases on GitHub.",
+    "downloadUnavailable": "The download manifest is unavailable. Check GitHub releases or try again later.",
+    "downloadReady": "Public release download information is available.",
+    "releases": "View GitHub releases",
+    "verifyDownload": "Verify the download",
+    "feedback": "Report an issue",
+    "footerDescription": "An email workspace for Mac.<br>Website interactions use fixed fictional examples.",
+    "title": "Morrow: an email workspace for Mac",
+    "description": "Morrow is an email workspace for Mac with mail search, contact and attachment management, and configurable AI assistance.",
+    "navFeatures": "Features",
+    "navDownload": "Download",
+    "releaseBoundary": "Interface updates are in development. Public download versions and features are defined by their release notes.",
+    "factsTitle": "Designed for desktop email",
+    "factsPlatform": "Platform",
+    "factsMail": "Mail protocols",
+    "factsPOP": "POP3 receiving supported",
+    "factsModels": "Models",
+    "factsModelsText": "Local models or a service you choose",
+    "factsSource": "Source code",
+    "viewRepository": "View the GitHub repository",
+    "featuresTitle": "The essentials of email work",
+    "featuresLead": "Email and original materials stay central. Choose the assistance you need.",
+    "mailFeatureTitle": "Email and replies",
+    "mailFeatureText": "Connect accounts, search mail, read original messages, and edit or preview reply drafts.",
+    "mailFeatureSearch": "Semantic, keyword, and condition search",
+    "mailFeatureFolders": "Inbox, drafts, and sent records",
+    "mailFeatureReply": "Replies, forwarding, and attachments",
+    "materialFeatureTitle": "Contacts and materials",
+    "materialFeatureText": "Find people and files through correspondence. Conclusions retain their original email sources.",
+    "materialFeatureContacts": "Correspondence and verifiable contact clues",
+    "materialFeatureAttachments": "Attachment types, sources, and original previews",
+    "materialFeatureNotes": "Reports, notes, and labels",
+    "workFeatureTitle": "Configurable AI assistance",
+    "workFeatureText": "Define a scope for organization, replies, and follow-up. Inspect the process and results.",
+    "workFeatureSessions": "Separate conversations and work context",
+    "workFeatureMemory": "Memory with sources and scope",
+    "workFeatureRules": "Bounded automatic response rules",
+    "retryDownload": "Reload download information"
+  }
+};
   let language = 'zh';
   let selectedSession = 'delivery';
   let responseMode = 'draft';
@@ -30,7 +265,7 @@
     if (typeof value !== 'string' || value.length > 2048) return null;
     try {
       const url = new URL(value, location.href);
-      if (url.protocol === 'https:' || (value.startsWith('/') && url.origin === location.origin)) return url.href;
+      if (!url.username && !url.password && (url.protocol === 'https:' || (value.startsWith('/') && url.origin === location.origin))) return url.href;
     } catch (_) { /* Invalid manifests leave the fallback link available. */ }
     return null;
   };
@@ -45,8 +280,9 @@
     const mac = downloadManifest?.macOS;
     const url = safeURL(mac?.url);
     button.disabled = !url;
-    document.querySelector('.hero-actions .button-primary').href = url || '#download';
-    button.removeAttribute('aria-busy');
+    document.querySelector('.hero-actions .button-primary').href = '#download';
+    document.getElementById('download-retry').hidden = downloadState !== 'unavailable';
+    button.setAttribute('aria-busy', String(downloadState === 'pending'));
     status.textContent = text(url ? 'downloadReady' : downloadState === 'unavailable' ? 'downloadUnavailable' : 'downloadPending');
     const version = typeof downloadManifest?.version === 'string' ? downloadManifest.version.slice(0, 60) : '';
     const size = Number(mac?.sizeBytes);
@@ -113,8 +349,22 @@
   let preferred;
   try { preferred = new URLSearchParams(location.search).get('lang') || localStorage.getItem('morrow-language'); } catch (_) { /* Defaults remain readable. */ }
   setLanguage(preferred || (navigator.language.startsWith('zh') ? 'zh' : 'en'));
-  fetch('/downloads/latest.json', {cache: 'no-store', credentials: 'omit'})
-    .then(response => { if (!response.ok) throw new Error('manifest unavailable'); return response.json(); })
-    .then(manifest => { if (manifest?.schemaVersion !== 1 || typeof manifest.macOS !== 'object') throw new Error('manifest invalid'); downloadManifest = manifest; downloadState = 'ready'; updateDownload(); })
-    .catch(() => { downloadState = 'unavailable'; updateDownload(); });
+  async function readDownloadManifest() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    downloadState = 'pending'; downloadManifest = null;
+    document.getElementById('download-action').setAttribute('aria-busy', 'true');
+    document.getElementById('download-retry').disabled = true;
+    updateDownload();
+    try {
+      const response = await fetch('/downloads/latest.json', {cache: 'no-store', credentials: 'omit', signal: controller.signal});
+      if (!response.ok) throw new Error('manifest unavailable');
+      const manifest = await response.json();
+      if (manifest?.schemaVersion !== 1 || !manifest.macOS || typeof manifest.macOS !== 'object') throw new Error('manifest invalid');
+      downloadManifest = manifest; downloadState = 'ready';
+    } catch (_) { downloadState = 'unavailable'; }
+    finally { clearTimeout(timer); document.getElementById('download-retry').disabled = false; updateDownload(); }
+  }
+  document.getElementById('download-retry').addEventListener('click', readDownloadManifest);
+  readDownloadManifest();
 })();

@@ -123,29 +123,29 @@ struct DraftsView: View {
     @State private var query = ""
     @State private var accountID = ""
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack { Text(L10n.t(outbox ? "发件箱" : "草稿箱")).font(Theme.title); Spacer(); Button(L10n.t("写邮件")) { Task { await model.compose() } }.buttonStyle(PrimaryButtonStyle()) }
             Text(L10n.t(outbox ? "待发送、发送中和需要核对投递结果的邮件。成功投递后可在已发送查看。" : "自己写的和伙伴生成的未发送草稿保存在这里。")).foregroundStyle(Theme.muted)
             HStack { TextField(L10n.t("搜索主题、收件人或正文"), text: $query).textFieldStyle(PaperFieldStyle()); Picker(L10n.t("发件邮箱"), selection: $accountID) { Text(L10n.t("全部邮箱")).tag(""); ForEach(model.accounts) { Text($0.email).tag($0.id) } }.frame(maxWidth: 220) }
             let drafts = (outbox ? model.outboxDrafts : model.editableDrafts).filter { (accountID.isEmpty || $0.accountID == accountID) && (query.isEmpty || ($0.subject + $0.to + $0.body).localizedCaseInsensitiveContains(query)) }.sorted { $0.updatedAt > $1.updatedAt }
             if drafts.isEmpty { EmptyRegion(icon: outbox ? "tray.and.arrow.up" : "doc", title: L10n.t(outbox ? "发件箱为空" : "还没有草稿"), detail: L10n.t(outbox ? "没有等待投递的邮件。已成功投递的邮件在已发送中。" : "自己写一封，或让伙伴根据原邮件准备回复。"), action: L10n.t("写邮件"), perform: { Task { await model.compose() } }) }
             else {
-                ScrollView { VStack(spacing: 0) { ForEach(drafts) { d in
+                ScrollView { LazyVStack(spacing: 0) { ForEach(drafts) { d in
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack { Text(d.subject.isEmpty ? L10n.t("无主题草稿") : d.subject).font(Theme.heading); Spacer(); Text(state(d)).font(Theme.label).foregroundStyle(d.state == "uncertain" ? Theme.error : Theme.muted) }
+                        HStack { Text(d.subject.isEmpty ? L10n.t("无主题草稿") : d.subject).font(Theme.body.weight(.medium)).lineLimit(2).help(d.subject); Spacer(); Text(state(d)).font(Theme.label).foregroundStyle(d.state == "uncertain" ? Theme.error : Theme.muted) }
                         Text(d.to.isEmpty ? L10n.t("待填写收件人") : d.to).font(Theme.label).foregroundStyle(Theme.muted)
                         Text(model.accounts.first(where: { $0.id == d.accountID })?.email ?? L10n.t("尚未选择发件邮箱")).font(Theme.label).foregroundStyle(Theme.muted)
-                        Text(d.body).lineLimit(3).foregroundStyle(Theme.muted)
+                        Text(d.body).font(Theme.label).lineLimit(2).foregroundStyle(Theme.muted)
                         if let error = d.error { Text(error).font(Theme.label).foregroundStyle(Theme.error) }
                         HStack {
                             if d.state == "queued" { Button(L10n.t("撤回到草稿")) { Task { await model.cancelSend(d) } }.buttonStyle(.link) }
                             else if d.state == "uncertain" { Button(L10n.t("查看原稿")) { model.openDraft(d) }.buttonStyle(.link); Button(L10n.t("查看已发送")) { model.dismissInlineTools(); model.navigate(.sent) }.buttonStyle(.link) }
                             else if d.state != "sending" { Button(L10n.t("编辑与预览")) { model.openDraft(d) }.buttonStyle(.link); Button(L10n.t("删除草稿")) { Task { await model.discardDraft(d) } }.buttonStyle(.link) }
                         }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 24).overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 16).overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }
                 } } }
             }
-        }.padding(32).background(Theme.paper)
+        }.padding(24).background(Theme.paper)
     }
     private func state(_ d: ComposeDraft) -> String { switch d.state { case "queued": return L10n.t("将在 ") + (d.scheduledAt?.uiFormatted(date: .abbreviated, time: .shortened) ?? L10n.t("稍后")) + L10n.t(" 发送"); case "sending": return L10n.t("发送中"); case "uncertain": return L10n.t("需要核对发送结果"); default: return L10n.t("草稿") } }
 }

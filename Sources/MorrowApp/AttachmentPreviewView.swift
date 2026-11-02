@@ -94,6 +94,9 @@ struct AttachmentPreviewView: View {
     @State private var imageZoom: CGFloat = 1
     @State private var pdfZoom = 0
     @State private var pdfFit = 0
+    @State private var pdfPage = 1
+    @State private var pdfStep = 0
+    @State private var resolved: MailAttachment?
     private var displayName: String { attachment.name.isEmpty ? AttachmentPreviewWords.text("未命名附件", "Unnamed attachment", "名前のない添付ファイル") : attachment.name }
     var body: some View {
         VStack(spacing: 0) {
@@ -107,7 +110,15 @@ struct AttachmentPreviewView: View {
                 Button { zoom(1) } label: { Image(systemName: "plus.magnifyingglass") }.buttonStyle(IconButtonStyle()).help(AttachmentPreviewWords.text("放大", "Zoom in", "拡大")).disabled(content == nil)
                 Button(AttachmentPreviewWords.text("适合窗口", "Fit", "ウィンドウに合わせる")) { imageZoom = 1; pdfFit += 1 }.buttonStyle(QuietButtonStyle()).disabled(content == nil)
                 Button { dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle()).help(L10n.t("关闭"))
-            }.padding(20)
+            }.padding(16)
+            if case .pdf(let document) = content {
+                HStack(spacing: 8) {
+                    Button { pdfStep -= 1 } label: { Image(systemName: "chevron.left") }.buttonStyle(IconButtonStyle()).disabled(pdfPage <= 1).help(L10n.t("上一页"))
+                    Text("\(pdfPage) / \(document.pageCount)").font(Theme.label.monospacedDigit()).foregroundStyle(Theme.secondary)
+                    Button { pdfStep += 1 } label: { Image(systemName: "chevron.right") }.buttonStyle(IconButtonStyle()).disabled(pdfPage >= document.pageCount).help(L10n.t("下一页"))
+                    Spacer()
+                }.padding(.horizontal, 16).padding(.bottom, 8)
+            }
             Divider().overlay(Theme.rule)
             ZStack {
                 Theme.sheet
@@ -115,32 +126,33 @@ struct AttachmentPreviewView: View {
                 else if let failure { Text(failure).font(Theme.body).foregroundStyle(Theme.secondary).multilineTextAlignment(.center).padding(32) }
                 else if let content {
                     switch content {
-                    case .pdf(let document): NativeAttachmentPDFView(document: document, zoomCommand: pdfZoom, fitCommand: pdfFit).accessibilityIdentifier("attachment.preview.pdf")
+                    case .pdf(let document): NativeAttachmentPDFView(document: document, zoomCommand: pdfZoom, fitCommand: pdfFit, pageCommand: pdfStep, onPageChanged: { pdfPage = $0 }).accessibilityIdentifier("attachment.preview.pdf")
                     case .image(let image, _, _): AttachmentImageCanvas(image: image, zoom: imageZoom).accessibilityIdentifier("attachment.preview.image")
                     }
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider().overlay(Theme.rule)
             HStack {
-                Button(L10n.t("查看提取文字")) { dismiss(); Task { await model.previewText(attachment) } }.buttonStyle(QuietButtonStyle())
+                Button(L10n.t("查看提取文字")) { dismiss(); Task { await model.previewText(resolved ?? attachment) } }.buttonStyle(QuietButtonStyle())
                 if let onAnalyze { Button(L10n.t("让伙伴分析")) { dismiss(); onAnalyze() }.buttonStyle(QuietButtonStyle()) }
                 Spacer()
-                Button(L10n.t("保存附件…")) { Task { await model.attachment(attachment, save: true) } }.buttonStyle(CompactButtonStyle())
-            }.padding(20)
-        }.frame(minWidth: 700, idealWidth: 960, minHeight: 560, idealHeight: 760).background(Theme.paper)
+                Button(L10n.t("保存附件…")) { Task { await model.attachment(resolved ?? attachment, save: true) } }.buttonStyle(CompactButtonStyle())
+            }.padding(16)
+        }.frame(minWidth: 640, idealWidth: 880, minHeight: 520, idealHeight: 680).background(Theme.paper)
             .accessibilityIdentifier("attachment.preview")
             .task(id: attachment.id + ":" + (attachment.contentRevision ?? "")) {
                 loading = true; failure = nil; content = nil; imageZoom = 1
                 do {
-                    let result = try await AttachmentPreviewLoader.load(attachment)
-                    guard !Task.isCancelled else { return }; content = result; loading = false
+                    let source = try await model.resolvePreviewAttachment(attachment)
+                    let result = try await AttachmentPreviewLoader.load(source)
+                    guard !Task.isCancelled else { return }; resolved = source; content = result; loading = false
                 } catch { if !Task.isCancelled { failure = error.localizedDescription; loading = false } }
-            }.onDisappear { content = nil }
+            }.onDisappear { content = nil; resolved = nil }
     }
     private var details: String {
         switch content {
-        case .pdf(let document): return "PDF · " + AttachmentPreviewWords.text("\(document.pageCount) 页", "\(document.pageCount) pages", "\(document.pageCount) ページ") + " · " + attachment.size
-        case .image(_, let width, let height): return "\(width) × \(height) · " + attachment.size
+        case .pdf(let document): return "PDF  " + AttachmentPreviewWords.text("\(document.pageCount) 页", "\(document.pageCount) pages", "\(document.pageCount) ページ") + "  " + attachment.size
+        case .image(_, let width, let height): return "\(width) × \(height)  " + attachment.size
         case nil: return attachment.size
         }
     }
@@ -154,24 +166,54 @@ struct NativeAttachmentPDFView: NSViewRepresentable {
     let document: PDFDocument
     let zoomCommand: Int
     let fitCommand: Int
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    var pageCommand = 0
+    var onPageChanged: ((Int) -> Void)? = nil
+    func makeCoordinator() -> Coordinator { Coordinator(onPageChanged: onPageChanged) }
     func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
+        let view = FittingAttachmentPDFView()
         view.displayMode = .singlePageContinuous; view.displayDirection = .vertical
         view.displaysPageBreaks = true; view.backgroundColor = NSColor(Theme.sheet)
-        view.minScaleFactor = 0.1; view.maxScaleFactor = 8; view.document = document; view.autoScales = true
+        view.minScaleFactor = 0.1; view.maxScaleFactor = 8; view.document = document
+        context.coordinator.observer = NotificationCenter.default.addObserver(forName: .PDFViewPageChanged, object: view, queue: .main) { [weak view, weak coordinator = context.coordinator] _ in
+            guard let view, let document = view.document, let page = view.currentPage else { return }
+            let index = document.index(for: page) + 1
+            guard coordinator?.reportedPage != index else { return }; coordinator?.reportedPage = index
+            DispatchQueue.main.async { [weak coordinator] in coordinator?.onPageChanged?(index) }
+        }
         return view
     }
     func updateNSView(_ view: PDFView, context: Context) {
-        if view.document !== document { view.document = document; view.autoScales = true }
-        if context.coordinator.fit != fitCommand { view.autoScales = true; context.coordinator.fit = fitCommand }
+        context.coordinator.onPageChanged = onPageChanged
+        if view.document !== document { view.document = document; (view as? FittingAttachmentPDFView)?.fitsWidth = true }
+        if context.coordinator.fit != fitCommand { (view as? FittingAttachmentPDFView)?.fitsWidth = true; view.needsLayout = true; context.coordinator.fit = fitCommand }
         if context.coordinator.zoom != zoomCommand {
+            (view as? FittingAttachmentPDFView)?.fitsWidth = false
             if zoomCommand > context.coordinator.zoom { view.zoomIn(nil) } else { view.zoomOut(nil) }
             context.coordinator.zoom = zoomCommand
         }
+        if context.coordinator.page != pageCommand { if pageCommand > context.coordinator.page { view.goToNextPage(nil) } else { view.goToPreviousPage(nil) }; context.coordinator.page = pageCommand }
     }
     static func dismantleNSView(_ view: PDFView, coordinator: Coordinator) { view.document = nil }
-    final class Coordinator { var zoom = 0; var fit = 0 }
+    final class Coordinator {
+        var zoom = 0; var fit = 0; var page = 0
+        var observer: NSObjectProtocol?
+        var reportedPage: Int?
+        var onPageChanged: ((Int) -> Void)?
+        init(onPageChanged: ((Int) -> Void)?) { self.onPageChanged = onPageChanged }
+        deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+    }
+}
+
+private final class FittingAttachmentPDFView: PDFView {
+    var fitsWidth = true
+    override func layout() {
+        super.layout()
+        guard fitsWidth, bounds.width > 24, let page = currentPage ?? document?.page(at: 0) else { return }
+        let width = page.bounds(for: .cropBox).width
+        guard width > 0 else { return }
+        let scale = min(maxScaleFactor, max(minScaleFactor, (bounds.width - 24) / width))
+        if abs(scaleFactor - scale) > 0.001 { autoScales = false; scaleFactor = scale }
+    }
 }
 
 struct AttachmentImageCanvas: View {

@@ -12,8 +12,8 @@ struct MailAnalysisSettingsView: View {
             Label("Ollama", systemImage: "desktopcomputer").font(Theme.body.weight(.medium))
             Text(L10n.t("自动摘要、分类、事项提取和联系人资料使用此模型。已完成且有效的分析会继续复用。")).font(Theme.label).foregroundStyle(Theme.secondary)
             Text(L10n.t("每封邮件仅提供正文前1000字符和附件名称。")).font(Theme.label).foregroundStyle(Theme.secondary)
-            TextField(L10n.t("Ollama服务地址"), text: $draft.ollamaURL).textFieldStyle(PaperFieldStyle()).accessibilityIdentifier("settings.mail-analysis.url")
-            TextField(L10n.t("模型名称"), text: $draft.model).textFieldStyle(PaperFieldStyle()).accessibilityIdentifier("settings.mail-analysis.model")
+            LabeledContent(L10n.t("Ollama服务地址")) { TextField("http://127.0.0.1:11434", text: $draft.ollamaURL).textFieldStyle(PaperFieldStyle()).accessibilityIdentifier("settings.mail-analysis.url") }
+            LabeledContent(L10n.t("模型名称")) { TextField("", text: $draft.model).textFieldStyle(PaperFieldStyle()).accessibilityIdentifier("settings.mail-analysis.model") }
             HStack {
                 Button(L10n.t("读取模型列表")) { run { catalog = try await model.ai.availableModels(endpoint: draft.ollamaURL); status = L10n.t("已读取当前服务的模型列表。") } }.buttonStyle(CompactButtonStyle())
                 Button(L10n.t("测试模型连接")) { run { let configuration = try draft.validated(); var settings = configuration.applying(to: model.settings); settings.enabled = true; let result = try await model.ai.complete(system: "Reply with Connected.", prompt: "Local connection test, no mail data.", settings: settings, maxTokens: 32); status = L10n.t("连接成功：") + result.source } }.buttonStyle(CompactButtonStyle()).accessibilityIdentifier("settings.mail-analysis.test")

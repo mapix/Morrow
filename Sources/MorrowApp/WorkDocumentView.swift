@@ -1,4 +1,4 @@
-// Hallmark v2.0.0: Coral native work document. The prepared content is the working surface.
+// Native work document. Prepared content, decisions and original sources remain connected.
 import SwiftUI
 import MorrowCore
 
@@ -21,7 +21,7 @@ struct WorkDocumentView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: 24) {
                 heading
                 ForEach(model.openUIInteractions.filter { $0.runID == run.id }) { interaction in
                     if interaction.completedAt == nil { NativeOpenUIView(interaction: interaction) }
@@ -55,9 +55,9 @@ struct WorkDocumentView: View {
                 history
             }
             .frame(maxWidth: 900, alignment: .leading)
-            .padding(.horizontal, 36)
+            .padding(.horizontal, 24)
             .padding(.top, 20)
-            .padding(.bottom, 40)
+            .padding(.bottom, 24)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .font(Theme.body)
@@ -82,11 +82,7 @@ struct WorkDocumentView: View {
                 if !isHandoff {
                     Button { model.selectedRunID = nil } label: { Label(L10n.t("工作首页"), systemImage: "chevron.left") }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.secondary)
                 }
-                if model.agentRuns.count > 1 { Menu(L10n.t("切换工作")) {
-                    ForEach(model.agentRuns.sorted { $0.updatedAt > $1.updatedAt }) { other in
-                        Button(other.title + "（" + other.phase.label + "）") { model.selectRun(other) }
-                    }
-                }.menuStyle(.borderlessButton).fixedSize().font(Theme.label) }
+                if model.agentRuns.count > 1 { Button(L10n.t("切换工作")) { model.openWorkspace(.history) }.buttonStyle(CompactButtonStyle()) }
                 Spacer()
                 if !agreementPending && (currentRun.delegationID != nil || currentRun.responderID != nil) && currentRun.phase != .completed {
                     Menu {
@@ -128,7 +124,7 @@ struct WorkDocumentView: View {
             if !currentRun.instruction.isEmpty {
                 Text(currentRun.instruction)
                     .font(Theme.reader)
-                    .lineSpacing(6)
+                    .lineSpacing(4)
                     .textSelection(.enabled)
             }
             WorkSourceLinks(ids: currentRun.sourceMailIDs, open: openSource)
@@ -234,7 +230,7 @@ struct WorkDocumentView: View {
         }
     }
 
-    private func openSource(_ mail: MailMessage) { model.selectedID = mail.id; sourceMail = mail }
+    private func openSource(_ mail: MailMessage) { sourceMail = mail }
     private func stepLabel(_ state: AgentStepState) -> String {
         switch state {
         case .pending: return L10n.t("尚未开始")
@@ -299,11 +295,10 @@ private struct WorkInlineDraft: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .firstTextBaseline, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(initial.state == "sent" ? L10n.t("已投递的回复") : L10n.t("回复草稿")).font(Theme.heading)
-                Spacer(minLength: 0)
                 if let account = model.accounts.first(where: { $0.id == draft.accountID }) {
-                    Text(L10n.t("发件人：") + account.email).font(Theme.label).foregroundStyle(Theme.secondary).textSelection(.enabled)
+                    Text(L10n.t("发件人：") + account.email).font(Theme.label).foregroundStyle(Theme.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
             }
             if editable {
@@ -322,7 +317,7 @@ private struct WorkInlineDraft: View {
             if editable {
                 WorkDocumentEditor(title: L10n.t("回复正文"), text: editBinding(\.body, clearsHTML: true), height: editorHeight, showsTitle: false).disabled(saving)
             } else {
-                Text(draft.body).font(Theme.reader).lineSpacing(7).textSelection(.enabled)
+                Text(draft.body).font(Theme.reader).lineSpacing(4).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
             }
             if !draft.attachments.isEmpty {
@@ -464,16 +459,13 @@ private struct WorkInlineAgreement: View {
             WorkDocumentField(title: L10n.t("何时算完成"), text: $agreement.doneWhen)
             WorkDocumentField(title: L10n.t("可使用的资料和范围"), text: $agreement.scope)
             if let scope = saved.resolvedScope {
+                let scopeMails = model.primaryMails.filter { saved.contains($0) }
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(L10n.format("实际范围：{0}封当前邮件", "\(model.primaryMails.filter { saved.contains($0) }.count)")).font(Theme.label).foregroundStyle(Theme.secondary)
+                    Text(L10n.format("实际范围：{0}封当前邮件", "\(scopeMails.count)")).font(Theme.label).foregroundStyle(Theme.secondary)
                     if !scope.subjectTerms.isEmpty { Text(L10n.t("后续主题包含任一项：") + scope.subjectTerms.joined(separator: "、")).font(Theme.label).foregroundStyle(Theme.secondary) }
                     if !scope.senderEmails.isEmpty { Text(L10n.t("同时来自：") + scope.senderEmails.joined(separator: "、")).font(Theme.label).foregroundStyle(Theme.secondary) }
                     if scope.subjectTerms.isEmpty && scope.senderEmails.isEmpty { Text(L10n.t("只使用选定邮件，后续新邮件不自动加入。")).font(Theme.label).foregroundStyle(Theme.secondary) }
-                    DisclosureGroup(L10n.t("当前会使用的邮件")) {
-                        ForEach(model.primaryMails.filter { saved.contains($0) }) { mail in
-                            Text(mail.subject + "（" + mail.from.email + "）").font(Theme.label).foregroundStyle(Theme.secondary).textSelection(.enabled).padding(.vertical, 4)
-                        }
-                    }.font(Theme.label)
+                    MailReferenceList(ids: scopeMails.map(\.id), title: L10n.t("当前会使用的邮件"), open: model.revealMail)
                 }
             }
             DisclosureGroup(isExpanded: $planExpanded) {
@@ -629,19 +621,33 @@ private struct WorkSourceReader: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     var body: some View {
-        ReaderView(mail: model.selected ?? mail)
-            .id((model.selected ?? mail).id)
-            .frame(width: 760, height: 760)
-            .onAppear { model.selectedID = mail.id }
-            .onChange(of: model.selectedID) { if model.selectedID == nil { dismiss() } }
-            .onDisappear { model.selectedID = nil }
+        ReaderView(mail: model.mailByID(mail.id) ?? mail, onClose: { dismiss() })
+            .frame(minWidth: 400, idealWidth: 720, minHeight: 480, idealHeight: 680)
     }
 }
 
 struct WorkMarkdownContent: View {
     @ObservedObject private var presentationState = PresentationPreferences.shared
     let text: String
-    var body: some View { WorkMarkdownBlocks(blocks: WorkMarkdownDocument(text).blocks).accessibilityIdentifier("morrow.markdown") }
+    @State private var document: WorkMarkdownDocument?
+    @State private var showingSource = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let document {
+                WorkMarkdownBlocks(blocks: document.blocks)
+                if document.isTruncated {
+                    HStack(spacing: 12) { Text(L10n.t("内容较长，当前为部分预览。")).font(Theme.label).foregroundStyle(Theme.secondary); Button(L10n.t("查看完整原文")) { showingSource = true }.buttonStyle(CompactButtonStyle()) }
+                }
+            } else { ProgressView().controlSize(.small) }
+        }.accessibilityIdentifier("morrow.markdown")
+            .task(id: text) {
+                let source = text; document = nil
+                let worker = Task.detached(priority: .userInitiated) { WorkMarkdownDocument(source) }
+                let parsed = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                guard !Task.isCancelled else { return }; document = parsed
+            }
+            .sheet(isPresented: $showingSource) { MarkdownOriginalSourceView(source: text) }
+    }
 }
 private struct WorkMarkdownBlocks: View {
     let blocks: [WorkMarkdownBlock]
@@ -652,7 +658,7 @@ private struct WorkMarkdownBlocks: View {
     }
     private func render(_ block: WorkMarkdownBlock) -> AnyView {
         switch block {
-        case .paragraph(let text): return AnyView(Text(text).font(Theme.reader).lineSpacing(5).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading))
+        case .paragraph(let text): return AnyView(Text(text).font(Theme.reader).lineSpacing(4).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading))
         case .heading(let level, let text): return AnyView(Text(text).font(level <= 2 ? Theme.heading : Theme.body.weight(.semibold)).textSelection(.enabled).padding(.top, 4).frame(maxWidth: .infinity, alignment: .leading))
         case .listItem(let marker, let checked, let children):
             return AnyView(HStack(alignment: .top, spacing: 10) { Text(checked.map { $0 ? "☑" : "☐" } ?? marker).font(Theme.reader).foregroundStyle(Theme.secondary).frame(minWidth: 18, alignment: .trailing); WorkMarkdownBlocks(blocks: children) })
@@ -699,7 +705,7 @@ private struct WorkDocumentField: View {
             Text(title).font(Theme.label).foregroundStyle(Theme.secondary)
             TextField("", text: $text, axis: .vertical)
                 .textFieldStyle(.plain).font(Theme.body).lineLimit(1...4).focused($focused)
-                .padding(.horizontal, 12).padding(.vertical, 10).frame(minHeight: 44)
+                .padding(.horizontal, 8).padding(.vertical, 6).frame(minHeight: 32)
                 .background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius))
                 .overlay { RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.fieldEdge, lineWidth: 1) }
                 .accessibilityLabel(title)
@@ -717,7 +723,7 @@ private struct WorkDocumentEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             if showsTitle { Text(title).font(Theme.label).foregroundStyle(Theme.secondary) }
-            TextEditor(text: $text).font(Theme.reader).lineSpacing(6).scrollContentBackground(.hidden)
+            TextEditor(text: $text).font(Theme.reader).lineSpacing(4).scrollContentBackground(.hidden)
                 .focused($focused).padding(12).frame(height: height)
                 .background(Theme.sheet, in: RoundedRectangle(cornerRadius: Theme.radius))
                 .overlay { RoundedRectangle(cornerRadius: Theme.radius).stroke(focused ? Theme.focus : Theme.fieldEdge, lineWidth: 1) }
@@ -741,21 +747,11 @@ private struct WorkDocumentButton<Content: View>: View {
 }
 
 private struct WorkDocumentButtonStyle: ButtonStyle {
-    @ObservedObject private var presentationState = PresentationPreferences.shared
     let primary: Bool
     let focused: Bool
     let hovered: Bool
-    @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        let radius = primary ? Theme.controlRadius : Theme.radius
-        let background = primary ? Theme.ink.opacity(configuration.isPressed ? 0.85 : (hovered ? 0.95 : 1)) : (configuration.isPressed ? Theme.selected : Theme.sheet)
-        return configuration.label.font(Theme.body.weight(primary ? .medium : .regular))
-            .foregroundStyle(primary ? Theme.paper : Theme.ink)
-            .padding(.horizontal, 14).frame(minWidth: 44, minHeight: 48)
-            .background(background, in: RoundedRectangle(cornerRadius: radius))
-            .overlay { RoundedRectangle(cornerRadius: radius).stroke(focused ? Theme.focus : primary ? Theme.clear : Theme.rule, lineWidth: 1) }
-            .shadow(color: Theme.shadow.opacity(hovered ? 0.10 : 0.06), radius: 2, x: 2, y: 2)
-            .contentShape(Rectangle()).opacity(enabled ? 1 : 0.55)
+        InteractiveControlBody(label: configuration.label, pressed: configuration.isPressed, kind: primary ? .primary : .quiet)
     }
 }
 
