@@ -32,6 +32,10 @@ struct ReaderBodySource: Sendable {
     var text: String
     var html: String
     var attachments: [MailAttachment]
+    var translationText: String {
+        let rendered = html.isEmpty ? "" : MIMEParser.plainText(html)
+        return MailTranslationEngine.normalizedText(rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? text : rendered)
+    }
     init(_ mail: MailMessage) throws {
         guard mail.contentAvailability == nil || mail.contentAvailability == .complete else { throw MailError.message("Complete message content is required for reading.") }
         id = mail.id; version = mail.bodyVersion; text = mail.text; html = mail.html; attachments = mail.attachments

@@ -14,7 +14,7 @@ import MorrowCore
     }
     func testToggleReusesResultAndBodyRevisionRetranslates() async throws {
         let model = ReaderTranslationModel(), count = ReaderTranslationCounter()
-        let operation: @Sendable (String, String, MailTranslationLanguage, @escaping @Sendable (Int, Int) async -> Void) async throws -> MailTranslation = { subject, text, language, progress in
+        let operation: @Sendable (String, String, MailTranslationLanguage, @escaping @Sendable (Int, Int) async -> Void, @escaping @Sendable (MailTranslation) async -> Void) async throws -> MailTranslation = { subject, text, language, progress, partial in
             await count.increment(); await progress(1, 1)
             return .init(subject: subject, text: text, language: language, source: "fixture")
         }
@@ -34,13 +34,13 @@ import MorrowCore
     }
     func testSwitchingMessageRejectsLateResponseAndProgress() async throws {
         let model = ReaderTranslationModel(), pending = ReaderTranslationPending()
-        model.translate(try source(), subject: "Subject") { subject, text, language, progress in
+        model.translate(try source(), subject: "Subject") { subject, text, language, progress, partial in
             await pending.wait(); await progress(9, 9)
             return .init(subject: subject, text: "Obsolete translation", language: language, source: "fixture")
         }
         await settle { model.isTranslating }
         await pending.waitUntilStarted()
-        model.translate(try source("second"), subject: "New subject") { subject, text, language, progress in
+        model.translate(try source("second"), subject: "New subject") { subject, text, language, progress, partial in
             await progress(1, 1)
             return .init(subject: subject, text: "Current translation", language: language, source: "fixture")
         }
@@ -51,23 +51,46 @@ import MorrowCore
     }
     func testCancelDiscardsResponseAndFailureCanRetryWithHTMLOnlyBody() async throws {
         let model = ReaderTranslationModel(), pending = ReaderTranslationPending()
-        model.translate(try source(), subject: "Subject") { subject, text, language, progress in
+        model.translate(try source(), subject: "Subject") { subject, text, language, progress, partial in
             await pending.wait(); return .init(subject: subject, text: text, language: language, source: "fixture")
         }
         await pending.waitUntilStarted(); model.reset(); await pending.resume()
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertNil(model.result); XCTAssertFalse(model.isVisible)
         let html = try source(text: "", html: "<style>hidden</style><p>Hello &amp; welcome</p><script>hidden()</script>")
-        model.translate(html, subject: "Subject") { _, _, _, _ in throw MailTranslationError.incomplete }
+        model.translate(html, subject: "Subject") { _, _, _, _, _ in throw MailTranslationError.incomplete }
         await settle { model.error != nil }
         XCTAssertFalse(model.showsTranslation)
         model.language = .japanese
-        model.translate(html, subject: "Subject") { subject, text, language, progress in
+        model.translate(html, subject: "Subject") { subject, text, language, progress, partial in
             XCTAssertEqual(text, "Hello & welcome"); XCTAssertEqual(language, .japanese)
             return .init(subject: subject, text: "こんにちは", language: language, source: "fixture")
         }
         await settle { model.result != nil }
         XCTAssertNil(model.error); XCTAssertTrue(model.showsTranslation)
+    }
+    func testTranslationUsesRenderedBodyInsteadOfOversizedAlternativeAndLayoutWhitespace() throws {
+        let mail = try source(text: String(repeating: "Unrelated alternative ", count: 5000),
+            html: "<html><head><style>ignored</style></head><body><p>Hello" + String(repeating: " ", count: 80_000) + "team</p><p>Bye</p></body></html>")
+        XCTAssertEqual(mail.translationText, "Hello team\nBye")
+    }
+    func testPartialTranslationIsVisibleWhileWaitingAndIncompleteResultIsNotReused() async throws {
+        let model = ReaderTranslationModel(), pending = ReaderTranslationPending(), count = ReaderTranslationCounter()
+        model.translate(try source(), subject: "Subject") { subject, text, language, progress, partial in
+            await partial(.init(subject: subject, text: "Translated prefix", language: language, source: "fixture", isComplete: false))
+            await progress(1, 2); await pending.wait()
+            throw MailTranslationError.incomplete
+        }
+        await pending.waitUntilStarted()
+        XCTAssertTrue(model.isTranslating); XCTAssertTrue(model.showsTranslation)
+        XCTAssertEqual(model.result?.text, "Translated prefix"); XCTAssertEqual(model.result?.isComplete, false)
+        await pending.resume(); await settle { model.error != nil }
+        model.translate(try source(), subject: "Subject") { subject, text, language, progress, partial in
+            await count.increment(); return .init(subject: subject, text: "Complete result", language: language, source: "fixture")
+        }
+        await settle { model.result?.isComplete == true }
+        let retries = await count.value
+        XCTAssertEqual(retries, 1); XCTAssertEqual(model.result?.text, "Complete result"); XCTAssertNil(model.error)
     }
 }
 private actor ReaderTranslationCounter { var value = 0; func increment() { value += 1 } }
