@@ -47,6 +47,20 @@ Automatic mail analysis uses its own Ollama configuration. IMAP, MIME processing
 attachment text extraction and EmbeddingGemma 2 indexing do not use model API
 tokens. Chat and delegated work use the partner model configuration independently.
 
+## One-click mail translation
+
+Open a message and click **Translate** in the reader toolbar. Morrow translates
+the subject and complete text body into the current interface language. The
+translation bar lets you choose Simplified Chinese, English or Japanese, cancel,
+retry, and switch between the original and translation. Translations are kept in
+memory while that reader is open; the original message and reply language remain
+unchanged. Attachments and text embedded in images are not translated.
+
+Manual translation uses the model selected in Settings → Model, including its
+configured remote endpoint, independently of automatic mail analysis. It works
+while background partner work is paused. Long messages are translated in chunks;
+sources over 256 KB and explicitly incomplete model responses produce an error.
+
 The macOS mail list shows 50 messages per page by default. The range control lets you choose 25, 50 or 100. Previous/next moves between pages, and selection applies only to the displayed page.
 
 “Mark all read” is independent of page selection. In an unfiltered IMAP folder it queries the server's current unread UID snapshot, including mail that has not yet downloaded, then marks that exact set. With a category/search or other view filter it applies to matching locally available messages across pages. Already-read messages are skipped. Undo restores the messages changed by that operation. The operation does not fetch message bodies or delete messages.

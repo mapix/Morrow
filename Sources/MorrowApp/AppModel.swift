@@ -224,6 +224,7 @@ enum Destination: String, CaseIterable, Identifiable {
     let mailDecisionReranker = MailDecisionReranker()
     let partner: PartnerEngine
     let ai = AIEngine()
+    lazy var mailTranslator = MailTranslationEngine(ai: ai)
     let credentials = AccountCredentials()
     lazy var sessionWorkspaces = AgentSessionWorkspaces(owner: store.root)
     var gatewayMediaClientOverride: GatewayMediaClient?

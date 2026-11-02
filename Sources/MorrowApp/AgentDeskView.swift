@@ -12,6 +12,7 @@ struct RootView: View {
     @State private var showDemoScenarios = false
     @State private var preferredChatWidth: CGFloat = 340
     @State private var dragOrigin: CGFloat?
+    @StateObject private var readerTranslation = ReaderTranslationModel()
     init(previewSettingsCategory: SettingsCategory? = nil, registerWindowAction: ((OpenWindowAction) -> Void)? = nil) { self.previewSettingsCategory = previewSettingsCategory; self.registerWindowAction = registerWindowAction }
     var body: some View {
         HStack(spacing: 0) {
@@ -37,6 +38,9 @@ struct RootView: View {
 
         }.font(Theme.body).foregroundStyle(Theme.ink).background(Theme.paper)
             .onAppear { registerWindowAction?(openWindow) }
+            .onChange(of: model.selectedID) { readerTranslation.reset() }
+            .onChange(of: model.destination) { readerTranslation.reset() }
+            .onDisappear { readerTranslation.reset() }
             .disclosureGroupStyle(MorrowDisclosureStyle())
             .environment(\.compactInteraction, model.compactLayout)
             .overlay(alignment: .topTrailing) {
@@ -143,10 +147,10 @@ struct RootView: View {
                     if geometry.size.width >= 620 {
                         HSplitView {
                             MailListView().frame(minWidth: 240, idealWidth: 280, maxWidth: 320)
-                            if let mail = model.selected { ReaderView(mail: mail).frame(minWidth: 300) }
+                            if let mail = model.selected { ReaderView(mail: mail, translation: readerTranslation).frame(minWidth: 300) }
                             else { EmptyRegion(icon: "envelope.open", title: L10n.t("选择一封邮件"), detail: L10n.t("原文与附件会显示在这里。"), action: nil) }
                         }
-                    } else if let mail = model.selected { ReaderView(mail: mail) }
+                    } else if let mail = model.selected { ReaderView(mail: mail, translation: readerTranslation) }
                     else { MailListView() }
                 }
             }
