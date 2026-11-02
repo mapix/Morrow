@@ -44,15 +44,24 @@ import MorrowCore
         sent.id = "sent:" + delivered.id; sent.isRead = true; _ = try await model.store.upsert(sent)
         model.drafts = [draft, queued, uncertain, delivered]
         var run = AgentRun(title: "核对项目材料并准备回复", instruction: "核对材料，保留来源，备好可审阅的回复。", phase: .waitingUser, summary: "回复草稿已准备，等待审阅。", sourceMailIDs: ["quality-source-0"], isDemo: true)
+        run.id = "quality-run-reply"; run.sessionID = "quality-session"
         run.agreement = WorkAgreement(goal: "核对材料并准备回复", doneWhen: "来源可核对，草稿可审阅", scope: "这次项目评审的示例邮件", boundaries: ["不发送邮件", "保留原始来源"], steps: ["核对材料", "整理待确认问题", "准备回复草稿"], kind: "reply")
-        let report = AgentRun(title: "整理合同中的变化", instruction: "整理变化与待核实事项。", phase: .completed, summary: "比较结果已保存。", sourceMailIDs: ["quality-source-1"], isDemo: true)
+        var report = AgentRun(title: "整理合同中的变化", instruction: "整理变化与待核实事项。", phase: .completed, summary: "比较结果已保存。", sourceMailIDs: ["quality-source-1"], isDemo: true)
+        report.id = "quality-run-report"; report.sessionID = "quality-session"
         model.agentRuns = [run, report]
         for item in model.agentRuns { try await model.store.save(item, kind: "agent-run", id: item.id) }
         var draftArtifact = AgentArtifact(runID: run.id, title: draft.subject, kind: .draft, content: draft.body, sourceMailIDs: ["quality-source-0"], linkedDraftID: draft.id)
         draftArtifact.sessionID = "quality-session"
+        draftArtifact.id = "quality-draft-artifact"
         var brief = AgentArtifact(runID: report.id, title: "[示例] 合同条款核对", kind: .brief, content: "## 核对结果\n\n交付范围已明确，验收期限仍需确认。\n\n| 项目 | 现状 | 下一步 |\n| --- | --- | --- |\n| 交付范围 | 已核对 | 保留材料 |\n| 验收期限 | 待确认 | 询问对方 |\n\n## 来源\n\n这是用于界面验收的示例简报。", sourceMailIDs: ["quality-source-1"])
         brief.sessionID = "quality-session"
-        model.agentArtifacts = [draftArtifact, brief]
+        brief.id = "quality-brief"
+        var structure = BriefDocument(); structure.summary = "交付范围已明确，验收期限仍需确认。"; structure.coverage = "已核对 2 封示例邮件与 1 份示例附件。"; structure.findings = ["交付范围与原始材料一致。"]
+        structure.actions = ["向对方确认最终验收期限。"]
+        structure.uncertainties = ["最终议程尚未收到。"]
+        structure.tables = [.init(title: "核对记录", columns: ["项目", "现状", "下一步"], rows: [["交付范围", "已核对", "保留来源"], ["验收期限", "待确认", "询问对方"]])]
+        var structured = brief; structured.id = "quality-structured-brief"; structured.title = "[示例] 项目评审核对简报"; structured.briefDocument = structure; structured.content = structure.markdown
+        model.agentArtifacts = [draftArtifact, brief, structured]
         for item in model.agentArtifacts { try await model.store.save(item, kind: "agent-artifact", id: item.id) }
         model.agentDecisions = [AgentDecision(runID: run.id, title: "审阅回复草稿", detail: "核对收件人和正文后再发送。", artifactID: draftArtifact.id)]
         var session = ChatSession(id: "quality-session", title: "项目材料与回复"); session.input = ""
@@ -85,6 +94,9 @@ import MorrowCore
         guard let context = CGContext(consumer: consumer, mediaBox: &rect, nil) else { throw MailError.message("Preview PDF unavailable") }
         context.beginPDFPage(nil); context.setFillColor(CGColor(red: 0.17, green: 0.38, blue: 0.69, alpha: 1)); context.fill(CGRect(x: 50, y: 690, width: 500, height: 50))
         context.setFillColor(CGColor(gray: 0.75, alpha: 1)); for index in 0..<8 { context.fill(CGRect(x: 50, y: 600 - index * 50, width: 430 - index * 10, height: 12)) }
+        context.endPDFPage()
+        context.beginPDFPage(nil); context.setFillColor(CGColor(red: 0.15, green: 0.5, blue: 0.38, alpha: 1)); context.fill(CGRect(x: 50, y: 690, width: 500, height: 50))
+        context.setFillColor(CGColor(gray: 0.75, alpha: 1)); for index in 0..<4 { context.fill(CGRect(x: 50, y: 600 - index * 70, width: 400 - index * 20, height: 12)) }
         context.endPDFPage(); context.closePDF(); return data as Data
     }
 }

@@ -18,6 +18,7 @@ extension AppModel {
         try? await recordChat(human); try? await recordChat(reply); await rememberExecution(user, receipt: text, context: context)
     }
     func beginSidebarChat(intent: ChatRunIntent = .newRequest, instructionOverride: String? = nil) {
+        guard !isQualityPreview else { return }
         let instruction = instructionOverride ?? chatInput
         guard !partnerBusy, sidebarTask == nil, !materialBusy, !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chatMaterials.isEmpty else { return }
         let snapshot = ChatSubmission(sessionID: activeSessionID, instruction: instruction, materials: instructionOverride == nil ? chatMaterials : [], context: resolvedChatContext, newWork: instructionOverride == nil && newChatWork, intent: intent)
@@ -30,6 +31,7 @@ extension AppModel {
         sidebarTask = Task { await ChatTaskContext.$sessionID.withValue(snapshot.sessionID) { await ChatTaskContext.$runIntent.withValue(snapshot.intent) { await submitSidebarChat(snapshot) } }; sidebarTask = nil; executingSessionID = nil; sidebarToolStatus = nil }
     }
     func submitSidebarChat(_ submission: ChatSubmission? = nil) async {
+        guard !isQualityPreview else { return }
         let instruction = (submission?.instruction ?? chatInput).trimmingCharacters(in: .whitespacesAndNewlines)
         let materials = submission?.materials ?? chatMaterials
         let context = submission?.context ?? resolvedChatContext

@@ -184,10 +184,10 @@ struct NativeAttachmentPDFView: NSViewRepresentable {
     }
     func updateNSView(_ view: PDFView, context: Context) {
         context.coordinator.onPageChanged = onPageChanged
-        if view.document !== document { view.document = document; (view as? FittingAttachmentPDFView)?.fitsWidth = true }
-        if context.coordinator.fit != fitCommand { (view as? FittingAttachmentPDFView)?.fitsWidth = true; view.needsLayout = true; context.coordinator.fit = fitCommand }
+        if view.document !== document { view.document = document; (view as? FittingAttachmentPDFView)?.fitsWindow = true }
+        if context.coordinator.fit != fitCommand { (view as? FittingAttachmentPDFView)?.fitsWindow = true; view.needsLayout = true; context.coordinator.fit = fitCommand }
         if context.coordinator.zoom != zoomCommand {
-            (view as? FittingAttachmentPDFView)?.fitsWidth = false
+            (view as? FittingAttachmentPDFView)?.fitsWindow = false
             if zoomCommand > context.coordinator.zoom { view.zoomIn(nil) } else { view.zoomOut(nil) }
             context.coordinator.zoom = zoomCommand
         }
@@ -205,13 +205,13 @@ struct NativeAttachmentPDFView: NSViewRepresentable {
 }
 
 private final class FittingAttachmentPDFView: PDFView {
-    var fitsWidth = true
+    var fitsWindow = true
     override func layout() {
         super.layout()
-        guard fitsWidth, bounds.width > 24, let page = currentPage ?? document?.page(at: 0) else { return }
-        let width = page.bounds(for: .cropBox).width
-        guard width > 0 else { return }
-        let scale = min(maxScaleFactor, max(minScaleFactor, (bounds.width - 24) / width))
+        guard fitsWindow, bounds.width > 24, bounds.height > 24, let page = currentPage ?? document?.page(at: 0) else { return }
+        let pageSize = page.bounds(for: .cropBox).size
+        guard pageSize.width > 0, pageSize.height > 0 else { return }
+        let scale = min(maxScaleFactor, max(minScaleFactor, min((bounds.width - 24) / pageSize.width, (bounds.height - 24) / pageSize.height)))
         if abs(scaleFactor - scale) > 0.001 { autoScales = false; scaleFactor = scale }
     }
 }

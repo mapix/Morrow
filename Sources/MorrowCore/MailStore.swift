@@ -21,6 +21,10 @@ public actor MailStore {
         CREATE TABLE IF NOT EXISTS objects(kind TEXT NOT NULL,id TEXT NOT NULL,json BLOB NOT NULL,PRIMARY KEY(kind,id));
         CREATE TABLE IF NOT EXISTS mail_arrival_notifications(id TEXT PRIMARY KEY,mail TEXT NOT NULL,created REAL NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0);
         CREATE INDEX IF NOT EXISTS mail_arrival_pending ON mail_arrival_notifications(state,created);
+        CREATE TABLE IF NOT EXISTS mail_arrival_intents(id TEXT PRIMARY KEY,account TEXT NOT NULL,folder TEXT NOT NULL,validity INTEGER NOT NULL,uid INTEGER NOT NULL,fingerprint TEXT NOT NULL,created REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS mail_arrival_intent_scope ON mail_arrival_intents(account,folder,validity);
+        CREATE TABLE IF NOT EXISTS pop_arrival_intents(id TEXT PRIMARY KEY,account TEXT NOT NULL,uid TEXT NOT NULL,fingerprint TEXT NOT NULL,created REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS pop_arrival_intent_account ON pop_arrival_intents(account,fingerprint);
         CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, account TEXT NOT NULL, folder TEXT NOT NULL, uid INTEGER NOT NULL, validity INTEGER NOT NULL, date REAL NOT NULL, search TEXT NOT NULL, json BLOB NOT NULL,canonical TEXT NOT NULL DEFAULT '');
         CREATE INDEX IF NOT EXISTS folder_uid ON messages(account,folder,validity,uid);
         CREATE INDEX IF NOT EXISTS message_date ON messages(date DESC);
@@ -119,6 +123,11 @@ public actor MailStore {
         return sqlite3_step(s) == SQLITE_ROW ? try decoder.decode(type, from: bytes(s, 0)) : nil
     }
     public func prepareArrivalNotification(_ mail: MailMessage, now: Date = Date()) throws -> MailArrivalNotice? {
+        try execute("BEGIN IMMEDIATE")
+        do { let result = try prepareArrivalNotificationInTransaction(mail, now: now); try finishArrivalIntent(mail); try execute("COMMIT"); return result }
+        catch { try? execute("ROLLBACK"); throw error }
+    }
+    private func prepareArrivalNotificationInTransaction(_ mail: MailMessage, now: Date) throws -> MailArrivalNotice? {
         let id = Self.hash(mail.canonicalID)
         let prior = try statement("SELECT mail,created,state FROM mail_arrival_notifications WHERE id=?", [.text(id)]); defer { sqlite3_finalize(prior) }
         let priorCode = sqlite3_step(prior)
@@ -133,6 +142,49 @@ public actor MailStore {
         guard duplicateCode == SQLITE_DONE else { throw databaseError() }
         try execute("INSERT OR IGNORE INTO mail_arrival_notifications(id,mail,created,state) VALUES(?,?,?,'pending')", [.text(id), .text(mail.id), .real(now.timeIntervalSince1970)])
         return .init(id: id, mailID: mail.id, createdAt: now)
+    }
+    public func pendingArrivalUIDs(account: MailAccount, folder: String, validity: UInt64) throws -> Set<UInt64> {
+        let cursor = try statement("SELECT uid FROM mail_arrival_intents WHERE account=? AND folder=? AND validity=? AND fingerprint=?", [.text(account.id), .text(folder), .int(Int64(validity)), .text(MailFolderSyncCursor.fingerprint(account))]); defer { sqlite3_finalize(cursor) }
+        var values = Set<UInt64>()
+        while sqlite3_step(cursor) == SQLITE_ROW { values.insert(UInt64(sqlite3_column_int64(cursor, 0))) }
+        return values
+    }
+    public func committedArrivalIntentMailIDs() throws -> [String] {
+        let cursor = try statement("SELECT id FROM (SELECT i.id,i.created FROM mail_arrival_intents i JOIN messages m ON m.id=i.id UNION ALL SELECT p.id,p.created FROM pop_arrival_intents p JOIN messages m ON m.id=p.id) ORDER BY created LIMIT 32"); defer { sqlite3_finalize(cursor) }
+        var ids: [String] = []
+        while sqlite3_step(cursor) == SQLITE_ROW { ids.append(string(cursor, 0)) }
+        return ids
+    }
+    public func finishArrivalIntent(_ mail: MailMessage) throws {
+        let id = "\(mail.accountID):\(mail.folder):\(mail.uidValidity):\(mail.uid)"
+        try execute("DELETE FROM mail_arrival_intents WHERE id=?", [.text(id)])
+        if let uid = mail.popUID { try execute("DELETE FROM pop_arrival_intents WHERE id=?", [.text(mail.accountID + ":pop:" + Self.hash(uid))]) }
+    }
+    public func commitPOPArrivalInventory(_ current: Set<String>, account: MailAccount, observedAt: Date = Date()) throws -> Set<String> {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let fingerprint = MailFolderSyncCursor.fingerprint(account)
+            let previous = try object(POPArrivalCursor.self, kind: "pop-arrival-cursor", id: account.id)
+            try execute("DELETE FROM pop_arrival_intents WHERE account=? AND fingerprint<>?", [.text(account.id), .text(fingerprint)])
+            let cursor = try statement("SELECT id,uid FROM pop_arrival_intents WHERE account=?", [.text(account.id)])
+            var stale: [String] = []
+            while sqlite3_step(cursor) == SQLITE_ROW { if !current.contains(string(cursor, 1)) { stale.append(string(cursor, 0)) } }
+            sqlite3_finalize(cursor)
+            for id in stale { try execute("DELETE FROM pop_arrival_intents WHERE id=?", [.text(id)]) }
+            for uid in previous?.newUIDs(account: account, current: current) ?? [] {
+                let id = account.id + ":pop:" + Self.hash(uid)
+                try execute("INSERT OR IGNORE INTO pop_arrival_intents(id,account,uid,fingerprint,created) VALUES(?,?,?,?,?)", [.text(id), .text(account.id), .text(uid), .text(fingerprint), .real(observedAt.timeIntervalSince1970)])
+            }
+            try save(POPArrivalCursor(account: account, knownUIDs: current), kind: "pop-arrival-cursor", id: account.id)
+            try execute("COMMIT")
+            return try pendingPOPArrivalUIDs(account: account)
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+    public func pendingPOPArrivalUIDs(account: MailAccount) throws -> Set<String> {
+        let cursor = try statement("SELECT uid FROM pop_arrival_intents WHERE account=? AND fingerprint=?", [.text(account.id), .text(MailFolderSyncCursor.fingerprint(account))]); defer { sqlite3_finalize(cursor) }
+        var values = Set<String>()
+        while sqlite3_step(cursor) == SQLITE_ROW { values.insert(string(cursor, 0)) }
+        return values
     }
     public func pendingArrivalNotifications(now: Date = Date()) throws -> [MailArrivalNotice] {
         let cursor = try statement("SELECT id,mail,created FROM mail_arrival_notifications WHERE state='pending' AND created>=? AND attempts<3 ORDER BY created LIMIT 20", [.real(now.addingTimeInterval(-300).timeIntervalSince1970)]); defer { sqlite3_finalize(cursor) }
@@ -617,11 +669,30 @@ public actor MailStore {
     /// Apply metadata and the server cursor atomically, before history bodies
     /// are downloaded. A stopped download resumes from known missing UIDs.
     public func commitMailSyncInventory(_ inventory: MailSyncInventory, account: MailAccount, folder: String,
-                                        updates: [MailRemoteFlagUpdate], inventoryStarted: Date) throws -> [String] {
+                                        updates: [MailRemoteFlagUpdate], inventoryStarted: Date, trackInboxArrivals: Bool = false) throws -> [String] {
         guard inventoryStarted.timeIntervalSinceReferenceDate.isFinite,
               updates.allSatisfy({ $0.overrideModifiedAt?.timeIntervalSinceReferenceDate.isFinite ?? true }) else { throw MailError.message("同步标记时间无效。") }
         try execute("BEGIN IMMEDIATE")
         do {
+            let previous = try mailSyncCursor(account: account, folder: folder)
+            let fingerprint = MailFolderSyncCursor.fingerprint(account)
+            try execute("DELETE FROM mail_arrival_intents WHERE account=? AND folder=? AND (validity<>? OR fingerprint<>?)", [.text(account.id), .text(folder), .int(Int64(inventory.validity)), .text(fingerprint)])
+            let intents = try statement("SELECT id,uid FROM mail_arrival_intents WHERE account=? AND folder=?", [.text(account.id), .text(folder)])
+            var staleIntents: [String] = []
+            while sqlite3_step(intents) == SQLITE_ROW {
+                let uid = UInt64(sqlite3_column_int64(intents, 1))
+                if !inventory.presentUIDs.contains(uid) || inventory.deletedUIDs.contains(uid) { staleIntents.append(string(intents, 0)) }
+            }
+            sqlite3_finalize(intents)
+            for id in staleIntents { try execute("DELETE FROM mail_arrival_intents WHERE id=?", [.text(id)]) }
+            if trackInboxArrivals, !account.isDemo, let previous, previous.validity == inventory.validity {
+                let floor = previous.uidNext ?? previous.knownUIDs.last.map({ $0 + 1 }) ?? 1
+                let known = Set(previous.knownUIDs)
+                for uid in inventory.presentUIDs where uid >= floor && !known.contains(uid) && !inventory.deletedUIDs.contains(uid) {
+                    let id = "\(account.id):\(folder):\(inventory.validity):\(uid)"
+                    try execute("INSERT OR IGNORE INTO mail_arrival_intents(id,account,folder,validity,uid,fingerprint,created) VALUES(?,?,?,?,?,?,?)", [.text(id), .text(account.id), .text(folder), .int(Int64(inventory.validity)), .int(Int64(uid)), .text(fingerprint), .real(inventoryStarted.timeIntervalSince1970)])
+                }
+            }
             var removedFiles: [URL] = []
             // Queued MIME processing reads these refreshed flags at commit.
             for var job in try queuedMailDownloads() where job.accountID == account.id && job.folder == folder {

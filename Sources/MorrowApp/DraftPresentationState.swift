@@ -32,4 +32,5 @@ enum DraftPresentationState: String {
         }
     }
     var symbol: String { self == .sent ? "paperplane" : self == .uncertain ? "exclamationmark.circle" : "doc.text" }
+    var previewReceipt: String { self == .draft ? L10n.t("发送前预览，尚未发送") : receipt }
 }

@@ -6,7 +6,7 @@ struct MarkdownOriginalSourceView: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text(L10n.t("完整原文")).font(Theme.heading); Spacer(); ChatReplyCopyButton(text: source); Button(L10n.t("关闭")) { dismiss() }.buttonStyle(CompactButtonStyle()) }.padding(16)
+            HStack { Text(L10n.t("完整原文")).font(Theme.heading); Spacer(); ChatReplyCopyButton(text: source, label: "复制原文"); Button(L10n.t("关闭")) { dismiss() }.buttonStyle(CompactButtonStyle()) }.padding(16)
             Divider().overlay(Theme.rule)
             ReadOnlySourceText(source: source)
         }.frame(minWidth: 500, idealWidth: 760, minHeight: 500, idealHeight: 680).background(Theme.sheet)

@@ -40,6 +40,7 @@ import MorrowCore
 
 extension AppModel {
     func askSDKPartner(_ instruction: String, runID: String?, uiContext: WorkspaceContext?, materials: [ChatMaterial]) async {
+        guard !isQualityPreview else { return }
         guard !partnerBusy, !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         partnerBusy = true; sdkStreamingText = ""; sdkLiveTrace = AgentExecutionTrace()
         defer { partnerBusy = false; sidebarToolStatus = nil; sdkStreamingText = ""; sdkLiveTrace = nil }

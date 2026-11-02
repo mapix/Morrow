@@ -94,7 +94,12 @@ extension AppModel {
     }
     func selectProfile(_ email: String) { dismissInlineTools(); selectedContactEmail = email.lowercased(); workspacePage = .people }
     func selectAttachment(_ id: String, additive: Bool = false) { if additive { if selectedAttachmentIDs.contains(id) { selectedAttachmentIDs.remove(id) } else { selectedAttachmentIDs.insert(id) } } else { selectedAttachmentIDs = [id] }; workspacePage = .attachments }
-    func revealMail(_ mail: MailMessage) { dismissInlineTools(); workspacePage = .mail; selectedAccount = nil; selectedFolder = nil; searchMode = false; selectedID = mail.id }
+    func revealMail(_ mail: MailMessage) {
+        let current = mailByID(mail.id) ?? mail
+        dismissInlineTools(); navigate(.inbox)
+        selectedAccount = current.accountID; selectedFolder = current.folder
+        selectedID = current.id
+    }
     func scheduleContactRefresh() {
         guard !isQualityPreview else { return }
         contactRefreshNeeded = true

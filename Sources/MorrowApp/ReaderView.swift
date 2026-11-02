@@ -245,7 +245,7 @@ struct SecureHTMLView: NSViewRepresentable {
         configuration.websiteDataStore = ReaderWebKitContext.dataStore
         configuration.processPool = ReaderWebKitContext.processPool
         configuration.setURLSchemeHandler(context.coordinator.assets, forURLScheme: "morrow-cid")
-        let view = WKWebView(frame: .zero, configuration: configuration)
+        let view = ReaderWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator; view.uiDelegate = context.coordinator
         view.setValue(false, forKey: "drawsBackground")
         context.coordinator.view = view
@@ -264,7 +264,7 @@ struct SecureHTMLView: NSViewRepresentable {
         context.coordinator.failure = $failure
         context.coordinator.allowsNavigation = allowsNavigation
         context.coordinator.pending = document
-        if document == nil { view.stopLoading(); context.coordinator.loaded = ""; context.coordinator.assets.releaseAssets() }
+        if document == nil { view.stopLoading(); (view as? ReaderWebView)?.contentReady = false; context.coordinator.loaded = ""; context.coordinator.assets.releaseAssets() }
         context.coordinator.loadPending()
     }
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
@@ -297,6 +297,7 @@ struct SecureHTMLView: NSViewRepresentable {
             view.configuration.userContentController.removeAllContentRuleLists()
             if let rule = document.allowsRemoteImages ? (rules.images ?? rules.blocked) : rules.blocked { view.configuration.userContentController.add(rule) }
             navigationStarted = ProcessInfo.processInfo.systemUptime
+            (view as? ReaderWebView)?.contentReady = false
             view.loadHTMLString(document.content, baseURL: nil)
         }
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -305,13 +306,19 @@ struct SecureHTMLView: NSViewRepresentable {
             else if scheme == "about" || scheme == "data" { decisionHandler(.allow) }
             else { decisionHandler(.cancel) }
         }
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { MailReaderMetrics.record("navigation_finished", since: navigationStarted) }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { (webView as? ReaderWebView)?.contentReady = true; MailReaderMetrics.record("navigation_finished", since: navigationStarted) }
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { MailReaderMetrics.record("navigation_committed", since: navigationStarted) }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { report(error) }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { report(error) }
-        private func report(_ error: Error) { if !disposed, (error as NSError).code != NSURLErrorCancelled { failure.wrappedValue = "navigation" } }
+        private func report(_ error: Error) { if !disposed, (error as NSError).code != NSURLErrorCancelled { (view as? ReaderWebView)?.contentReady = true; failure.wrappedValue = "navigation" } }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
     }
+}
+
+/// Native gallery export waits for navigation, including policy compilation,
+/// rather than treating an initially idle WebKit view as loaded content.
+final class ReaderWebView: WKWebView {
+    var contentReady = false
 }
 
 final class ReaderInlineAssetHandler: NSObject, WKURLSchemeHandler {

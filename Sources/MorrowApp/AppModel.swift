@@ -606,7 +606,8 @@ enum Destination: String, CaseIterable, Identifiable {
                         let seen = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted)
                         return .init(id: "\(account.id):\(folder.path):\(validity):\(uid)", read: seen?.0 ?? flag.read, starred: flag.starred, overrideModifiedAt: seen?.1)
                     }
-                    let deleted = try await store.commitMailSyncInventory(inventory, account: account, folder: folder.path, updates: updates, inventoryStarted: inventoryStarted)
+                    let deleted = try await store.commitMailSyncInventory(inventory, account: account, folder: folder.path, updates: updates, inventoryStarted: inventoryStarted, trackInboxArrivals: folder.role == "inbox")
+                    let freshArrivalUIDs = try await store.pendingArrivalUIDs(account: account, folder: folder.path, validity: validity)
                     for id in deleted { indexPending.removeValue(forKey: id) }
                     if !deleted.isEmpty { await reload() }
                     replaceCachedMails(try await store.messageSummaries(ids: Set(updates.map(\.id))).map(\.displayMessage))
@@ -643,7 +644,9 @@ enum Destination: String, CaseIterable, Identifiable {
                                     catch { MailReaderMetrics.failure("sync_gmail_reuse_fallback", error: error); reusable = [:] }
                                     if !reusable.isEmpty {
                                         reusedUIDs.formUnion(reusable.keys); linkedCount += reusable.count
-                                        await reload(incoming: Array(reusable.values)); process()
+                                        await reload(incoming: Array(reusable.values))
+                                        for (uid, mail) in reusable where freshArrivalUIDs.contains(uid) { await notifyNewArrival(mail, isNewArrival: true) }
+                                        process()
                                     }
                                     let downloads = liveBatch.filter { !reusedUIDs.contains($0) }
                                     readyBodies = downloads.isEmpty ? [:] : try await transport.fetchRawMany(account, folder: folder.path, uids: downloads, validity: validity, password: secret, attachmentLimit: max(1, min(50, settings.attachmentAutoDownloadLimitMB ?? 10)) * 1024 * 1024)
@@ -674,13 +677,13 @@ enum Destination: String, CaseIterable, Identifiable {
                                     mail.isRead = flag.read; mail.isStarred = flag.starred; mail.analysis = PartnerEngine.baseline(mail)
                                     if let override = bulkSeenValue(account: account.id, folder: folder.path, validity: validity, uid: uid, inventoryStarted: inventoryStarted) { mail.isRead = override.0; mail.localFlagModifiedAt = override.1 }
                                     let saved = try await store.upsert(mail); await reload(incoming: [saved])
-                                    await notifyNewArrival(saved, isNewArrival: MailArrivalNotificationPolicy.isNewArrival(uid: uid, inventory: inventory, previous: cursor, account: account, folder: folder))
+                                    await notifyNewArrival(saved, isNewArrival: freshArrivalUIDs.contains(uid))
                                     process(); newCount += 1
                                     continue
                                 }
                                 let job = MailDownloadJob(accountID: account.id, folder: folder.path, uid: uid, validity: validity,
                                     read: flag.read, starred: flag.starred, byteCount: raw.count, inventoryStarted: inventoryStarted,
-                                    isNewArrival: MailArrivalNotificationPolicy.isNewArrival(uid: uid, inventory: inventory, previous: cursor, account: account, folder: folder))
+                                    isNewArrival: freshArrivalUIDs.contains(uid))
                                 let staged = ProcessInfo.processInfo.systemUptime
                                 if try await enqueueDownloadedMail(raw, job: job) { newCount += 1 }
                                 MailReaderMetrics.record("sync_raw_stage", since: staged)
@@ -719,9 +722,7 @@ enum Destination: String, CaseIterable, Identifiable {
         for folder in defaults where !folders.contains(where: { $0.id == folder.id }) { folders.append(folder); try await store.save(folder, kind: "folder", id: folder.id) }
         let inventory = try await transport.popInventory(account, password: secret)
         let currentUIDs = Set(inventory.keys)
-        let arrivalCursor = try await store.object(POPArrivalCursor.self, kind: "pop-arrival-cursor", id: account.id)
-        let newArrivalUIDs = arrivalCursor?.newUIDs(account: account, current: currentUIDs) ?? []
-        try await store.save(POPArrivalCursor(account: account, knownUIDs: currentUIDs), kind: "pop-arrival-cursor", id: account.id)
+        let newArrivalUIDs = try await store.commitPOPArrivalInventory(currentUIDs, account: account)
         let known = Set(try await store.syncRecords(account: account.id).compactMap(\.popUID))
         var added = 0; var failures: [String] = []
         let pending = inventory.filter { !known.contains($0.key) }.sorted(by: { $0.value > $1.value })
@@ -1566,19 +1567,45 @@ enum Destination: String, CaseIterable, Identifiable {
         guard !isQualityPreview else { return }
         await refreshNotificationPermission()
         guard settings.notifications, notificationPermission.allowsDelivery else { error = "请先启用新邮件通知并允许系统通知权限。"; return }
-        do { try await notifications.add(id: "morrow-test-" + UUID().uuidString, title: "Morrow 通知测试", body: "新邮件通知已就绪。这是一条本机测试通知，不会发送邮件。", at: nil) }
+        do {
+            let inbox = mails.filter { mail in folders.contains { $0.accountID == mail.accountID && $0.path == mail.folder && $0.role == "inbox" } }
+            let target = inbox.filter(\.isRead).max { $0.date < $1.date } ?? inbox.max { $0.date < $1.date }
+            let id = "morrow-test-" + UUID().uuidString
+            if let target { try await notifications.addMail(id: id, title: "Morrow 通知测试", body: "这是一条本机测试通知，不会发送邮件。点击打开一封收件箱邮件。", mailID: target.id) }
+            else { try await notifications.add(id: id, title: "Morrow 通知测试", body: "新邮件通知已就绪。这是一条本机测试通知，不会发送邮件。", at: nil) }
+        }
         catch { self.error = error.localizedDescription }
     }
+    /// Notification navigation is independent of the page/filter the user last
+    /// opened. Resolve confirmed moves and hydrate a missing header cache first.
+    func openArrivalNotificationMail(id: String) async -> Bool {
+        guard !isQualityPreview, ready, !id.isEmpty else { return false }
+        let resolved = resolvedMovedMailID(id)
+        guard let mail = try? await store.readerMessage(resolved) else { return false }
+        if mailByID(mail.id) == nil { await reload(incoming: [mail]) }
+        dismissInlineTools(); navigate(.inbox)
+        selectedAccount = mail.accountID; selectedFolder = mail.folder
+        select(mail)
+        return selectedID == mail.id
+    }
     func notifyNewArrival(_ mail: MailMessage, isNewArrival: Bool) async {
-        guard !isQualityPreview, settings.notifications, let account = accounts.first(where: { $0.id == mail.accountID }),
-              MailArrivalNotificationPolicy.shouldNotify(mail, isNewArrival: isNewArrival, account: account, folders: folders, ownEmails: Set(accounts.map(\.email))) else { return }
+        guard !isQualityPreview, isNewArrival else { return }
+        guard settings.notifications, let account = accounts.first(where: { $0.id == mail.accountID }),
+              MailArrivalNotificationPolicy.shouldNotify(mail, isNewArrival: true, account: account, folders: folders, ownEmails: Set(accounts.map(\.email))) else { try? await store.finishArrivalIntent(mail); return }
         await refreshNotificationPermission()
-        guard notificationPermission.allowsDelivery else { return }
+        guard notificationPermission.allowsDelivery else { try? await store.finishArrivalIntent(mail); return }
         do { if let notice = try await store.prepareArrivalNotification(mail) { await deliverArrivalNotification(notice, mail: mail) } }
         catch { await log("新邮件通知待重试", detail: error.localizedDescription, kind: "notification") }
     }
     private func retryArrivalNotifications() async {
-        guard !isQualityPreview, settings.notifications else { return }
+        guard !isQualityPreview else { return }
+        do {
+            for id in try await store.committedArrivalIntentMailIDs() {
+                guard !Task.isCancelled else { return }
+                if let mail = try await store.readerMessage(id) { await notifyNewArrival(mail, isNewArrival: true) }
+            }
+        } catch { await log("新邮件通知待重试", detail: error.localizedDescription, kind: "notification") }
+        guard settings.notifications else { return }
         await refreshNotificationPermission(); guard notificationPermission.allowsDelivery else { return }
         do {
             for notice in try await store.pendingArrivalNotifications() {

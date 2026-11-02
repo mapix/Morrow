@@ -216,6 +216,6 @@ extension AppModel {
         if let presentation { if let i = openUIInteractions.firstIndex(where: { $0.id == presentation.id }) { openUIInteractions[i] = presentation } else { openUIInteractions.append(presentation) } }
         if let i = chatSessions.firstIndex(where: { $0.id == id }) { chatSessions[i].title = saved.title; chatSessions[i].updatedAt = saved.updatedAt } else { chatSessions.append(saved) }
         if let i = chat.firstIndex(where: { $0.id == message.id }) { chat[i] = message } else { chat.append(message) }
-        if message.role == "user" { scheduleMemoryExtraction(message) }
+        if message.role == "user" && !isQualityPreview { scheduleMemoryExtraction(message) }
     }
 }

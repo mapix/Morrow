@@ -41,6 +41,7 @@ struct ComposerView: View {
                 Button { close() } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle()).help(L10n.t(editable ? "关闭并保留草稿" : "关闭"))
             }
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                if editable {
                 GridRow { fieldTitle("发件人"); Picker(L10n.t("发件人"), selection: $draft.accountID) { ForEach(model.accounts) { a in Text((a.name.isEmpty ? "" : a.name + " ") + "<" + a.email + ">").tag(a.id) } }.labelsHidden().controlSize(.small).frame(maxWidth: .infinity, alignment: .leading) }
                 GridRow { fieldTitle("收件人"); HStack(spacing: 8) { addressField("收件人", text: $draft.to, prompt: L10n.t("多个地址用逗号分隔")); Button(showCC ? L10n.t("收起") : L10n.t("抄送/密送")) { showCC.toggle() }.buttonStyle(.plain).font(Theme.label).foregroundStyle(Theme.secondary) } }
                 if showCC {
@@ -48,7 +49,14 @@ struct ComposerView: View {
                     GridRow { fieldTitle("密送"); addressField("密送", text: $draft.bcc) }
                 }
                 GridRow { fieldTitle("主题"); addressField("主题", text: $draft.subject, prompt: L10n.t("邮件主题")) }
-            }.disabled(!editable || busy)
+                } else {
+                    GridRow { fieldTitle("发件人"); recordField(account.map { ($0.name.isEmpty ? "" : $0.name + " ") + "<" + $0.email + ">" } ?? L10n.t("尚未选择发件邮箱")) }
+                    GridRow { fieldTitle("收件人"); recordField(draft.to) }
+                    if !draft.cc.isEmpty { GridRow { fieldTitle("抄送"); recordField(draft.cc) } }
+                    if !draft.bcc.isEmpty { GridRow { fieldTitle("密送"); recordField(draft.bcc) } }
+                    GridRow { fieldTitle("主题"); recordField(draft.subject) }
+                }
+            }.disabled(editable && busy)
             Divider().overlay(Theme.rule)
             if editable {
                 HStack(spacing: 8) {
@@ -111,6 +119,7 @@ struct ComposerView: View {
     }
     private func fieldTitle(_ key: String) -> some View { Text(L10n.t(key)).font(Theme.label).foregroundStyle(Theme.secondary).frame(width: 48, alignment: .leading) }
     private func addressField(_ key: String, text: Binding<String>, prompt: String = "") -> some View { TextField(prompt, text: text).textFieldStyle(.plain).font(Theme.body).padding(.vertical, 6).overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }.accessibilityLabel(L10n.t(key)) }
+    private func recordField(_ value: String) -> some View { Text(value).font(Theme.body).foregroundStyle(Theme.ink).lineLimit(3).textSelection(.enabled).help(value).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading) }
     private func finishClose() { if inline { model.composer = nil } else { dismiss() } }
     private func saveSoon() {
         guard editable else { return }; if inline { model.composer = draft }; autosave?.cancel()

@@ -52,6 +52,7 @@ private struct MenuBarContent: View {
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     weak var model: AppModel?
     var pendingURLs: [URL] = []
+    private var pendingNotificationMailID: String?
     var openMainWindow: (() -> Void)?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular); UNUserNotificationCenter.current().delegate = self
@@ -71,6 +72,7 @@ private struct MenuBarContent: View {
     func application(_ application: NSApplication, open urls: [URL]) { pendingURLs += urls; drainPendingURLs() }
     func drainPendingURLs() {
         guard let model, model.ready else { return }; let urls = pendingURLs; pendingURLs = []
+        drainPendingNotification()
         Task { for url in urls {
             if url.scheme == "mailto", let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
                 await model.compose(); model.composer?.to = components.path.removingPercentEncoding ?? components.path
@@ -85,9 +87,16 @@ private struct MenuBarContent: View {
     }
     private func openNotificationMail(_ id: String) async {
         let model = model ?? AppState.shared
+        pendingNotificationMailID = id
         if !model.ready { await model.start() }
-        guard let mail = try? await model.store.message(id) else { return }
-        openMainWindow?(); NSApp.activate(ignoringOtherApps: true)
-        model.revealMail(mail)
+        drainPendingNotification()
+    }
+    private func drainPendingNotification() {
+        guard let model, model.ready, let id = pendingNotificationMailID else { return }
+        pendingNotificationMailID = nil
+        Task {
+            guard await model.openArrivalNotificationMail(id: id) else { return }
+            openMainWindow?(); NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }

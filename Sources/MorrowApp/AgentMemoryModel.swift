@@ -47,7 +47,7 @@ extension AppModel {
         do { try await store.save(workspacePreferences, kind: "workspace-preferences", id: "main") } catch { self.error = error.localizedDescription }
     }
     func scheduleMemoryIndex() {
-        guard memoryTask == nil, workspacePreferences.memoryEnabled else { return }
+        guard !isQualityPreview, memoryTask == nil, workspacePreferences.memoryEnabled else { return }
         memoryTask = Task { [weak self] in
             guard let self else { return }; var completed = false; defer { memoryTask = nil; if completed && !Task.isCancelled && memories.contains(where: { $0.status == "active" && $0.embedding == nil }) { scheduleMemoryIndex() } }
             do {
@@ -115,13 +115,13 @@ extension AppModel {
         } catch { try? await recordChat(PartnerChat(role: "partner", text: "这条记忆未保存：" + error.localizedDescription)) }
     }
     func scheduleMemoryExtraction(_ message: PartnerChat) {
-        guard workspacePreferences.memoryEnabled, workspacePreferences.autoMemory, settings.enabled, explicitMemoryContent(message.text) == nil, message.text.count >= 12 else { return }
+        guard !isQualityPreview, workspacePreferences.memoryEnabled, workspacePreferences.autoMemory, settings.enabled, explicitMemoryContent(message.text) == nil, message.text.count >= 12 else { return }
         memoryExtractionQueue.append(message)
         guard memoryExtractionTask == nil else { return }
         memoryExtractionTask = Task { [weak self] in
             guard let self else { return }; defer { memoryExtractionTask = nil }
             while !memoryExtractionQueue.isEmpty {
-                guard workspacePreferences.memoryEnabled, workspacePreferences.autoMemory, settings.enabled, !Task.isCancelled else { memoryExtractionQueue = []; return }
+                guard !isQualityPreview, workspacePreferences.memoryEnabled, workspacePreferences.autoMemory, settings.enabled, !Task.isCancelled else { memoryExtractionQueue = []; return }
                 while partnerBusy { try? await Task.sleep(for: .milliseconds(200)); if Task.isCancelled || !workspacePreferences.memoryEnabled || !workspacePreferences.autoMemory { memoryExtractionQueue = []; return } }
                 let input = memoryExtractionQueue.removeFirst()
                 do {

@@ -47,7 +47,7 @@ struct BriefWorkspaceView: View {
                     Button { model.selectedBriefID = nil } label: { Label(L10n.t("简报列表"), systemImage: "chevron.left") }.buttonStyle(CompactButtonStyle())
                     Spacer(minLength: 0)
                     Text(L10n.t(artifact.briefDocument.map { $0.status == .complete ? "已整理" : $0.status == .inProgress ? "整理中" : "待核实" } ?? "已保存")).font(Theme.label).foregroundStyle(Theme.secondary)
-                    ChatReplyCopyButton(text: artifact.content)
+                    ChatReplyCopyButton(text: artifact.content, label: "复制简报")
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text(artifact.title).font(Theme.title).textSelection(.enabled)

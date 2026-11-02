@@ -5,8 +5,7 @@ public enum MailArrivalNotificationPolicy {
         guard folder.role == "inbox", !account.isDemo, let previous, previous.matches(account, folder: folder.path), previous.validity == inventory.validity else { return false }
         // Cursors persist known UIDs in ascending order. Avoid constructing a
         // 50k-element set for each missing historical body in a sync plan.
-        let next = previous.uidNext ?? previous.knownUIDs.last.map { $0 + 1 }
-        guard let next else { return false }
+        let next = previous.uidNext ?? previous.knownUIDs.last.map { $0 + 1 } ?? 1
         return uid >= next && !previous.knownUIDs.contains(uid) && !inventory.deletedUIDs.contains(uid)
     }
     public static func shouldNotify(_ mail: MailMessage, isNewArrival: Bool, account: MailAccount, folders: [MailFolder], ownEmails: Set<String>) -> Bool {

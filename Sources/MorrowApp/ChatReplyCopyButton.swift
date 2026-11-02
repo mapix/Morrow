@@ -18,12 +18,13 @@ enum ChatReplyClipboard {
 
 struct ChatReplyCopyButton: View {
     let text: String
+    var label = "复制回复"
     @State private var copied = false
     var body: some View {
         Button {
             ChatReplyClipboard.copy(text); copied = true
         } label: {
-            Label(L10n.t(copied ? "已复制" : "复制回复"), systemImage: copied ? "checkmark" : "doc.on.doc")
+            Label(L10n.t(copied ? "已复制" : label), systemImage: copied ? "checkmark" : "doc.on.doc")
         }.buttonStyle(CompactButtonStyle()).accessibilityIdentifier("chat.copy-reply")
             .contextMenu { Button(L10n.t("复制 Markdown")) { ChatReplyClipboard.copy(text, markdown: true); copied = true } }
             .task(id: copied) { if copied { do { try await Task.sleep(for: .seconds(2)); copied = false } catch {} } }
