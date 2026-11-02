@@ -22,17 +22,24 @@ struct ReaderView: View {
     @State private var related: [RelatedMail] = []
     @State private var relatedLimit = 50
     @State private var attachmentSelection: String?
-    init(mail: MailMessage, onClose: (() -> Void)? = nil) {
+    @StateObject private var translation = ReaderTranslationModel()
+    private let retainsTranslation: Bool
+    init(mail: MailMessage, onClose: (() -> Void)? = nil, translation: ReaderTranslationModel? = nil) {
         self.mail = mail
         self.onClose = onClose
+        self.retainsTranslation = translation != nil
+        _translation = StateObject(wrappedValue: translation ?? ReaderTranslationModel())
         _remoteImages = State(initialValue: MailReadingPreferences.loadsExternalImages())
     }
     private struct RelatedMail: Identifiable { var id: String; var sender: String; var date: Date }
     private struct Preparation: Equatable {
-        var id: String; var version: String; var ready: Bool; var plain: Bool; var remote: Bool; var theme: String; var language: String
+        var id: String; var version: String; var ready: Bool; var plain: Bool; var remote: Bool; var theme: String; var language: String; var translated: String?
     }
     private var bodyRequest: ReaderBodyRequest { .init(id: mail.id, version: mail.bodyVersion, retry: bodyRetry) }
-    private var preparation: Preparation { .init(id: mail.id, version: bodySource?.version ?? mail.bodyVersion, ready: bodySource != nil, plain: plainText, remote: remoteImages, theme: Theme.current.rawValue, language: L10n.languageCode) }
+    private var displayedTranslation: MailTranslation? {
+        translation.showsTranslation && translation.matches(id: mail.id, version: mail.bodyVersion, subject: mail.subject) ? translation.result : nil
+    }
+    private var preparation: Preparation { .init(id: mail.id, version: bodySource?.version ?? mail.bodyVersion, ready: bodySource != nil, plain: plainText, remote: remoteImages, theme: Theme.current.rawValue, language: L10n.languageCode, translated: displayedTranslation?.text) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,7 +47,7 @@ struct ReaderView: View {
             Divider().overlay(Theme.rule)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 8) {
-                    Text(mail.subject).font(Theme.heading).lineLimit(3).textSelection(.enabled).help(mail.subject)
+                    Text(displayedTranslation?.subject ?? mail.subject).font(Theme.heading).lineLimit(3).textSelection(.enabled).help(mail.subject)
                     Spacer(minLength: 4)
                     Button { showingDetails.toggle() } label: { Image(systemName: "info.circle") }.buttonStyle(IconButtonStyle()).help(L10n.t("邮件详情"))
                         .popover(isPresented: $showingDetails) { details.frame(width: 440, height: 480) }
@@ -56,7 +63,7 @@ struct ReaderView: View {
                     Spacer(minLength: 4)
                     if isSent { Text(L10n.t("已发送")).font(Theme.small).foregroundStyle(Theme.secondary) }
                     else { MailReadState(read: mail.isRead) }
-                    if bodySource?.html.isEmpty == false {
+                    if bodySource?.html.isEmpty == false && displayedTranslation == nil {
                         Picker(L10n.t("正文显示方式"), selection: $plainText) { Text(L10n.t("原始排版")).tag(false); Text(L10n.t("纯文本")).tag(true) }.pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
                     }
                 }
@@ -70,6 +77,10 @@ struct ReaderView: View {
                 }.padding(.horizontal, 16).padding(.vertical, 8).background(Theme.paper)
             }
             Divider().overlay(Theme.rule)
+            if translation.isVisible {
+                translationBar
+                Divider().overlay(Theme.rule)
+            }
             ZStack {
                 SecureHTMLView(document: document, failure: $failure, allowsNavigation: !model.isQualityPreview).frame(maxWidth: .infinity, maxHeight: .infinity).opacity(document == nil ? 0 : 1).accessibilityHidden(document == nil)
                 if loading && document == nil { ProgressView(L10n.t("正在准备正文…")).font(Theme.label) }
@@ -88,7 +99,7 @@ struct ReaderView: View {
                 Divider().overlay(Theme.rule)
                 ReaderAttachmentsView(attachments: bodySource?.attachments ?? mail.attachments, selection: $attachmentSelection).id(mail.id)
             }
-            if document?.hasRemoteImages == true && !plainText && !model.isQualityPreview {
+            if document?.hasRemoteImages == true && !plainText && displayedTranslation == nil && !model.isQualityPreview {
                 HStack(spacing: 8) {
                     Image(systemName: "photo").accessibilityHidden(true)
                     Text(L10n.t(remoteImages ? "外部图片已加载" : "外部图片未加载"))
@@ -109,9 +120,21 @@ struct ReaderView: View {
         }.background(Theme.sheet)
         .onAppear { note = mail.note }
         .onChange(of: mail.id) {
+            translation.reset()
             bodySelection.cancel(); bodySource = nil; document = nil; related = []
             plainText = false; remoteImages = !model.isQualityPreview && MailReadingPreferences.loadsExternalImages()
             loading = true; failure = nil; note = mail.note; showingDetails = false; attachmentSelection = nil
+        }
+        .onChange(of: mail.bodyVersion) { translation.reset() }
+        .onChange(of: mail.subject) { translation.reset() }
+        .onChange(of: presentationState.language) {
+            translation.reset()
+            translation.language = MailTranslationLanguage(rawValue: L10n.languageCode) ?? .english
+        }
+        .onChange(of: translation.language) {
+            let active = translation.isVisible
+            translation.reset()
+            if active { translate() }
         }
         .onChange(of: mail.note) { if !showingDetails { note = mail.note } }
         .onChange(of: presentationState.loadExternalImagesByDefault) { remoteImages = !model.isQualityPreview && presentationState.loadExternalImagesByDefault }
@@ -123,6 +146,7 @@ struct ReaderView: View {
             do {
                 let source = try await ReaderBodySource.load(id: request.id, store: model.store)
                 guard !Task.isCancelled, bodySelection.accepts(ticket), source.id == request.id else { return }
+                if let previous = bodySource, previous.version != source.version { translation.reset() }
                 bodySource = source; failure = nil
                 MailReaderMetrics.record("body_loaded", since: bodyStarted)
             } catch { if !Task.isCancelled, bodySelection.accepts(ticket) { bodySource = nil; loading = false; failure = "body_unavailable" } }
@@ -133,8 +157,9 @@ struct ReaderView: View {
         .task(id: preparation) {
             guard let source = bodySource else { return }
             let preparationStarted = ProcessInfo.processInfo.systemUptime
-            let input = ReaderDocumentInput(mailID: source.id, body: plainText || source.html.isEmpty ? source.text : source.html,
-                usesHTML: !plainText && !source.html.isEmpty, allowsRemoteImages: remoteImages && !model.isQualityPreview,
+            let translated = displayedTranslation
+            let input = ReaderDocumentInput(mailID: source.id, body: translated?.text ?? (plainText || source.html.isEmpty ? source.text : source.html),
+                usesHTML: translated == nil && !plainText && !source.html.isEmpty, allowsRemoteImages: translated == nil && remoteImages && !model.isQualityPreview,
                 themeCSS: Theme.htmlTokens, emptyMessage: L10n.t("此邮件没有可显示的纯文本正文。"), blockedImageLabel: L10n.t("外部图片已阻止"), attachments: source.attachments)
             loading = true
             do {
@@ -145,7 +170,7 @@ struct ReaderView: View {
                 MailReaderMetrics.record("document_prepared", since: preparationStarted)
             } catch { if !Task.isCancelled { loading = false; failure = "preparation" } }
         }
-        .onDisappear { bodySelection.cancel(); bodySource = nil; document = nil }
+        .onDisappear { if !retainsTranslation { translation.reset() }; bodySelection.cancel(); bodySource = nil; document = nil }
 
     }
     private var isSent: Bool { model.folders.contains { $0.accountID == mail.accountID && $0.path == mail.folder && $0.role == "sent" } || mail.id.hasPrefix("sent:") }
@@ -153,6 +178,10 @@ struct ReaderView: View {
         HStack(spacing: 6) {
             Button { if let onClose { onClose() } else { model.selectedID = nil } } label: { Image(systemName: "xmark") }.buttonStyle(IconButtonStyle()).help(L10n.t("关闭阅读"))
             Spacer()
+            Button { translate() } label: { Label(L10n.t("翻译"), systemImage: "translate") }
+                .buttonStyle(CompactButtonStyle()).disabled(bodySource?.id != mail.id || bodySource?.version != mail.bodyVersion || translation.isTranslating || model.isQualityPreview)
+                .help(L10n.format("使用已配置的模型翻译为{0}", translation.language.nativeName))
+                .accessibilityIdentifier("reader.translate")
             Button { Task { await model.star(mail) } } label: { Image(systemName: mail.isStarred ? "star.fill" : "star") }.buttonStyle(IconButtonStyle()).help(L10n.t("星标邮件"))
             Menu {
                 Button(L10n.t("今天晚些时候")) { Task { await model.snooze(mail, hours: 3) } }
@@ -168,6 +197,37 @@ struct ReaderView: View {
                 Menu(L10n.t("移动到")) { ForEach(model.folders.filter { $0.accountID == mail.accountID }) { folder in Button(folder.name) { Task { await model.move(mail, folder: folder) } } } }
             } label: { Image(systemName: "ellipsis").frame(width: 28, height: 28) }.menuStyle(.borderlessButton).frame(width: 28, height: 28).help(L10n.t("更多邮件操作"))
         }.padding(.horizontal, 12).frame(height: 36)
+    }
+    private func translate() {
+        guard let source = bodySource, source.id == mail.id, source.version == mail.bodyVersion, !model.isQualityPreview else { return }
+        let engine = model.mailTranslator, configuration = model.settings
+        translation.translate(source, subject: mail.subject) { subject, text, language, progress in
+            try await engine.translate(subject: subject, text: text, language: language, settings: configuration, progress: progress)
+        }
+    }
+    private var translationBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if translation.isTranslating { ProgressView().controlSize(.small) }
+                Text(L10n.t(translation.isTranslating ? "正在翻译…" : translation.error != nil ? "翻译失败" : "译文"))
+                    .font(Theme.label.weight(.medium))
+                Picker(L10n.t("翻译语言"), selection: $translation.language) {
+                    ForEach(MailTranslationLanguage.allCases) { Text($0.nativeName).tag($0) }
+                }.labelsHidden().pickerStyle(.menu).controlSize(.small).fixedSize().accessibilityIdentifier("reader.translation.language")
+                Spacer(minLength: 0)
+                if translation.isTranslating {
+                    if translation.total > 1 { Text("\(translation.completed)/\(translation.total)").font(Theme.small).foregroundStyle(Theme.secondary).monospacedDigit() }
+                    Button(L10n.t("取消")) { translation.reset() }.buttonStyle(.link)
+                } else if translation.result != nil {
+                    Button(L10n.t(translation.showsTranslation ? "查看原文" : "查看译文")) { translation.showsTranslation.toggle() }
+                        .buttonStyle(.link).accessibilityIdentifier("reader.translation.toggle")
+                } else {
+                    Button(L10n.t("重试")) { translate() }.buttonStyle(.link)
+                    Button { translation.reset() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help(L10n.t("关闭"))
+                }
+            }
+            if let error = translation.error { Text(L10n.status(error)).font(Theme.small).foregroundStyle(Theme.error).textSelection(.enabled) }
+        }.padding(.horizontal, 16).padding(.vertical, 8).background(Theme.paper)
     }
     private var details: some View {
         ScrollView {

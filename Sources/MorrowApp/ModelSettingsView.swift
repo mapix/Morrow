@@ -78,7 +78,7 @@ struct ModelSettingsView: View {
                     }
                 }.buttonStyle(QuietButtonStyle()).disabled(model.isQualityPreview)
             } else {
-                Text(draft.provider == "openai" ? L10n.t("聊天与委托内容会发给此服务。自动邮件分析使用单独的模型设置。") : L10n.t("本机模型在这台Mac上处理邮件；远程地址会把内容发送给该服务。")).font(Theme.label).foregroundStyle(Theme.secondary)
+                Text(draft.provider == "openai" ? L10n.t("聊天、委托与手动翻译内容会发给此服务。自动邮件分析使用单独的模型设置。") : L10n.t("本机模型在这台Mac上处理邮件；远程地址会把内容发送给该服务。")).font(Theme.label).foregroundStyle(Theme.secondary)
             }
             Text(L10n.t("保存后应用；连接测试只使用当前填写的配置。")).font(Theme.small).foregroundStyle(Theme.secondary)
             RetrievalDecisionSettingsView(draft: $draft)
