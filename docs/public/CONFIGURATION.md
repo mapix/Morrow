@@ -58,8 +58,14 @@ unchanged. Attachments and text embedded in images are not translated.
 
 Manual translation uses the model selected in Settings → Model, including its
 configured remote endpoint, independently of automatic mail analysis. It works
-while background partner work is paused. Long messages are translated in chunks;
-sources over 256 KB and explicitly incomplete model responses produce an error.
+while background partner work is paused. The subject and full body normally use
+one request. Batching is used only when a
+model explicitly rejects the input length or reaches its output limit; Apple's
+smaller local model window uses bounded batches. Completed prefixes appear while
+the rest is translated, with progress based on the amount of source text covered.
+Partial results remain marked incomplete if a later request fails. Translation
+uses the rendered HTML body when available and removes redundant layout whitespace.
+Sources over 256 KB produce an error.
 
 The macOS mail list shows 50 messages per page by default. The range control lets you choose 25, 50 or 100. Previous/next moves between pages, and selection applies only to the displayed page.
 

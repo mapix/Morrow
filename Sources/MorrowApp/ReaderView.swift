@@ -201,28 +201,31 @@ struct ReaderView: View {
     private func translate() {
         guard let source = bodySource, source.id == mail.id, source.version == mail.bodyVersion, !model.isQualityPreview else { return }
         let engine = model.mailTranslator, configuration = model.settings
-        translation.translate(source, subject: mail.subject) { subject, text, language, progress in
-            try await engine.translate(subject: subject, text: text, language: language, settings: configuration, progress: progress)
+        translation.translate(source, subject: mail.subject) { subject, text, language, progress, partial in
+            try await engine.translate(subject: subject, text: text, language: language, settings: configuration, progress: progress, partial: partial)
         }
     }
     private var translationBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 if translation.isTranslating { ProgressView().controlSize(.small) }
-                Text(L10n.t(translation.isTranslating ? "正在翻译…" : translation.error != nil ? "翻译失败" : "译文"))
+                Text(L10n.t(translation.isTranslating ? "正在翻译…" : translation.error != nil ? translation.result != nil ? "翻译未完成" : "翻译失败" : "译文"))
                     .font(Theme.label.weight(.medium))
                 Picker(L10n.t("翻译语言"), selection: $translation.language) {
                     ForEach(MailTranslationLanguage.allCases) { Text($0.nativeName).tag($0) }
                 }.labelsHidden().pickerStyle(.menu).controlSize(.small).fixedSize().accessibilityIdentifier("reader.translation.language")
                 Spacer(minLength: 0)
                 if translation.isTranslating {
-                    if translation.total > 1 { Text("\(translation.completed)/\(translation.total)").font(Theme.small).foregroundStyle(Theme.secondary).monospacedDigit() }
+                    if translation.completed > 0, translation.total > 0 { Text(L10n.format("已翻译 {0}%", "\(min(99, translation.completed * 100 / translation.total))")).font(Theme.small).foregroundStyle(Theme.secondary).monospacedDigit() }
                     Button(L10n.t("取消")) { translation.reset() }.buttonStyle(.link)
-                } else if translation.result != nil {
+                } else if translation.error == nil, translation.result != nil {
                     Button(L10n.t(translation.showsTranslation ? "查看原文" : "查看译文")) { translation.showsTranslation.toggle() }
                         .buttonStyle(.link).accessibilityIdentifier("reader.translation.toggle")
                 } else {
                     Button(L10n.t("重试")) { translate() }.buttonStyle(.link)
+                    if translation.result != nil {
+                        Button(L10n.t(translation.showsTranslation ? "查看原文" : "查看译文")) { translation.showsTranslation.toggle() }.buttonStyle(.link)
+                    }
                     Button { translation.reset() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help(L10n.t("关闭"))
                 }
             }

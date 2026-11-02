@@ -91,6 +91,8 @@ enum L10n {
         "译文": ("Translation", "翻訳文"),
         "正在翻译…": ("Translating…", "翻訳中…"),
         "翻译失败": ("Translation failed", "翻訳に失敗しました"),
+        "翻译未完成": ("Translation incomplete", "翻訳が未完了です"),
+        "已翻译 {0}%": ("{0}% translated", "{0}% 翻訳済み"),
         "翻译语言": ("Translation language", "翻訳先の言語"),
         "查看原文": ("Show original", "原文を表示"),
         "查看译文": ("Show translation", "翻訳文を表示"),

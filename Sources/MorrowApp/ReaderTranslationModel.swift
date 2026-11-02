@@ -18,18 +18,18 @@ import MorrowCore
     }
 
     func translate(_ source: ReaderBodySource, subject: String,
-        using operation: @escaping @Sendable (String, String, MailTranslationLanguage, @escaping @Sendable (Int, Int) async -> Void) async throws -> MailTranslation) {
+        using operation: @escaping @Sendable (String, String, MailTranslationLanguage, @escaping @Sendable (Int, Int) async -> Void, @escaping @Sendable (MailTranslation) async -> Void) async throws -> MailTranslation) {
         let key = source.id + "|" + source.version + "|" + subject + "|" + language.rawValue
-        if sourceKey == key, result != nil { showsTranslation = true; return }
+        if sourceKey == key, result?.isComplete == true { showsTranslation = true; return }
         reset(); sourceKey = key
         let ticket = generation, target = language
         isTranslating = true
         task = Task {
             do {
-                let text = source.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? MIMEParser.plainText(source.html) : source.text
-                let translated = try await operation(subject, text, target) { [weak self] completed, total in
+                let text = source.translationText
+                let translated = try await operation(subject, text, target, { [weak self] completed, total in
                     await self?.updateProgress(completed, total, ticket: ticket)
-                }
+                }, { [weak self] partial in await self?.updatePartial(partial, ticket: ticket) })
                 guard !Task.isCancelled, generation == ticket else { return }
                 result = translated; showsTranslation = true; isTranslating = false; task = nil
             } catch {
@@ -41,6 +41,12 @@ import MorrowCore
     private func updateProgress(_ completed: Int, _ total: Int, ticket: UUID) {
         guard generation == ticket else { return }
         self.completed = completed; self.total = total
+    }
+    private func updatePartial(_ partial: MailTranslation, ticket: UUID) {
+        guard generation == ticket, isTranslating else { return }
+        let first = result == nil
+        result = partial
+        if first { showsTranslation = true }
     }
     func reset() {
         generation = UUID(); task?.cancel(); task = nil; sourceKey = nil
