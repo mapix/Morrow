@@ -59,9 +59,10 @@
   "reviewed_assets": {
     "website/assets/hero.webp": "0ffbdda15e70ec5f20cbf23aedc9042ea8a6c9bf1a73127f897a06a0d76f6bb9",
     "website/assets/hero.png": "2109a4265d2546c2cafaac990cc092ee74d323905f6803f9c21d6e49a76233e8",
-    "website/assets/morrow-icon.png": "e86321d73585618f918cf055ca0113edda1c7bd7f404c00ff8bd949e9075333e",
-    "website/assets/morrow-icon-128.webp": "009d9c3a1b969f2b5813e7c3f014ea29c6aab613616eaadf548fdeaa505765fe",
-    "website/assets/favicon.png": "fc0decedb51b9dd813dd517709640cd28bea55025d69c1c181108481423a3dd5"
+    "website/assets/morrow-icon.png": "143e3e5bc7b7333a3198d393fae852dbae14261d73eecedeb98865beb247af8c",
+    "website/assets/morrow-icon-128.webp": "4d086938575b413c65f5abd754ea10c38bbf8a1780beaa67a75c063e989e44a7",
+    "website/assets/favicon.png": "443f6939f09a4ac97186125deb057fe792511a117f79e1812a3a011d6a4a8145",
+    "website/assets/morrow-workbench-20261102.webp": "0c8a713f467166ffcf838ad1466f176c41720a6ce418668021aa95931c779b9b"
   },
   "public_service_emails": [
     "notifications@github.com",
