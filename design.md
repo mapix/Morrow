@@ -21,6 +21,12 @@ Every screen uses a compact page header, a functional toolbar, one main object a
 
 Appearance choices are system/light/dark. Legacy Coral and Forest IDs migrate to the new light style without changing stored mail, task identities or input.
 
+## App icon
+
+The November 2 icon uses an open white inbox and one four-point spark on a cobalt-to-cyan tile. The broad tray silhouette recalls the clarity of Google Inbox; the spark expresses AI assistance. The mark has no lettering and retains its two main shapes at 16–128 pixels. Transparent outer corners and inset tile geometry suit macOS presentation.
+
+`scripts/make-icon.swift` owns the editable geometry and sRGB palette (#2858E6, #347FF0, #38C5D0, white). Run `swift scripts/make-icon.swift website/assets/morrow-icon.png` to render the 1024-pixel master; an optional final argument selects the output pixel size. App packaging reads this PNG. The website masthead and favicon use matching smaller exports. After changing exports, visually review them and update their hashes in `configuration/publication-allowlist.json`.
+
 ## Behavioral quality
 
 A sent/queued/unverified delivery cannot appear editable. Current output links show actual state while historical message text retains its original timestamped facts. New chat requests, explicit task continuation and answers to a particular question have separate identities and permission boundaries.

@@ -1,6 +1,8 @@
 # Smail generated asset specifications
 
-Exact model: gpt-image-2.5-flare. Project-bound outputs must be retained in output/imagegen/ and production-selected assets copied to app resources/landing assets. Generate after current Gmail acceptance in the user's requested order. Do not substitute another model or a code-drawn icon for the requested raster generation.
+Archived October 31 generation brief. The November 2 request for a Google Inbox inspired AI icon supersedes this icon direction; current geometry and exports are documented in `design.md`.
+
+Exact model for the historical generation: gpt-image-2.5-flare. Project-bound outputs must be retained in output/imagegen/ and production-selected assets copied to app resources/landing assets. Generate after current Gmail acceptance in the user's requested order. Do not substitute another model or a code-drawn icon for the requested raster generation.
 
 ## Icon
 

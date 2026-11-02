@@ -1,5 +1,7 @@
 # Generated Smail assets
 
+Historical receipt: the October 31 raster icon was superseded on November 2 by the inbox-and-spark redesign in `scripts/make-icon.swift` and `website/assets/morrow-icon.png`. The current icon is drawn with native Core Graphics; the receipt below describes the earlier assets.
+
 Generated on 2026-10-31 with the requested `gpt-image-2.5-flare` model, using the unmodified imagegen skill CLI and the configured API endpoint. Both requests completed.
 
 | Asset | Size | Quality | Source |

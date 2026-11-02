@@ -6,7 +6,7 @@ A static Chinese/English product page for the macOS mail workspace. The page has
 
 The site follows the native workbench direction: neutral gray canvas, white content, a restrained blue action color and system sans typography. Semantic colors, typography and spacing live in `tokens.css`; `base.css` contains shared defaults and `styles.css` supplies page composition. Paper textures, artificial window chrome, oversized slogans, decorative shadows and generated app mockups are not used.
 
-The masthead uses the existing `assets/morrow-icon-128.webp` and `assets/favicon.png`. They remain unchanged. The existing envelope brand artwork and its originals remain in `assets/` for the brand pipeline, but are not presented as screenshots or current interface evidence. New native UI screenshots should only be added after the rendered build is verified and private data is excluded.
+The masthead uses `assets/morrow-icon-128.webp` and `assets/favicon.png`, exported from the November 2 inbox-and-spark icon. The app packaging source is `assets/morrow-icon.png`; its editable geometry lives in `../scripts/make-icon.swift`. Earlier landing artwork remains historical brand material. New native UI screenshots should only be added after the rendered build is verified and private data is excluded.
 
 ## Public release boundary
 
@@ -33,4 +33,4 @@ Syntax and static DOM checks prove only source consistency. Actual browser captu
 
 2026-11-02: an isolated local headless Chrome/CDP instance inspected this page through browser-harness. Widths 320, 375, 1280 and 1920 had no horizontal overflow; the 1920 layout kept the 1180px container. Chinese/English switching, scene click and keyboard navigation, conversation selection, automatic-response example selection, visible keyboard focus, valid public-manifest metadata, unavailable-manifest fallback/retry, and no-JS source content were checked. Resource requests stayed on the local origin; no release download was started and no mail action or deployment was executed.
 
-This confirms the locally served source only. It does not prove a deployed page, a new public app release, or native interface behavior. The existing red brand icon remains unchanged and should be reviewed alongside any future approved brand-asset update.
+This confirms the locally served source only. It does not prove a deployed page, a new public app release, or native interface behavior.
