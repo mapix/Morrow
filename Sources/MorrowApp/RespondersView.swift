@@ -60,7 +60,7 @@ struct RespondersView: View {
         }.padding(.vertical, 16).accessibilityIdentifier("responder.rule")
     }
     @ViewBuilder private func receiptActions(_ receipt: ResponderReceipt, rule: MailResponder) -> some View {
-        if ["failed", "cancelled"].contains(receipt.state), (receipt.attempts ?? 1) < 3 { Button(L10n.t("重新处理")) { Task { await model.runResponders(retryReceiptID: receipt.id) } }.buttonStyle(CompactButtonStyle()).disabled(model.responderBusy || !rule.enabled) }
+        if ["failed", "cancelled", "skipped"].contains(receipt.state), (receipt.attempts ?? 1) < 3 { Button(L10n.t("重新处理")) { Task { await model.runResponders(retryReceiptID: receipt.id) } }.buttonStyle(CompactButtonStyle()).disabled(model.responderBusy || !rule.enabled) }
         if let id = receipt.runID, let run = model.agentRuns.first(where: { $0.id == id }) { Button(L10n.t("查看执行过程")) { model.selectRun(run) }.buttonStyle(CompactButtonStyle()) }
         if let id = receipt.draftID, let draft = model.drafts.first(where: { $0.id == id }) { Button(L10n.t(draft.state == "sent" ? "查看回复" : "打开草稿")) { model.openDraft(draft) }.buttonStyle(CompactButtonStyle()) }
     }
@@ -110,12 +110,29 @@ struct ResponderEditor: View {
                         if addresses.isEmpty { Text(L10n.t("尚未允许任何来源，不能启用。")).foregroundStyle(Theme.muted) }
                         ForEach(Array(Set(addresses)).sorted(), id: \.self) { address in Label(address, systemImage: MailResponder.validSender(address) ? "checkmark.circle" : "exclamationmark.circle").foregroundStyle(MailResponder.validSender(address) ? Theme.ink : Theme.error) }
                     }.font(Theme.body).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Theme.sheet).accessibilityIdentifier("responder.source-allowlist")
-                    Picker(L10n.t("发件身份验证"), selection: Binding(get: { rule.requireAuthentication != false }, set: { rule.requireAuthentication = $0 })) { Text(L10n.t("服务商 DMARC 验证")).tag(true); Text(L10n.t("仅地址白名单")).tag(false) }
-                    if rule.requireAuthentication != false { field(L10n.t("可信认证服务"), text: Binding(get: { rule.trustedAuthService ?? "" }, set: { rule.trustedAuthService = $0 }), placeholder: "mx.google.com") }
-                    else { Text(L10n.t("地址白名单只校验 From 地址，不验证发件身份。")).font(Theme.label).foregroundStyle(Theme.secondary) }
+                    Picker(L10n.t("发件身份验证"), selection: Binding(get: { rule.requireAuthentication == true }, set: { rule.requireAuthentication = $0 })) { Text(L10n.t("服务商 DMARC 验证（可选）")).tag(true); Text(L10n.t("按来源条件匹配")).tag(false) }
+                    if rule.requireAuthentication == true { field(L10n.t("可信认证服务"), text: Binding(get: { rule.trustedAuthService ?? "" }, set: { rule.trustedAuthService = $0 }), placeholder: "mx.google.com") }
+                    else { Text(L10n.t("按绑定邮箱、发件地址和关键词匹配来信。")).font(Theme.label).foregroundStyle(Theme.secondary) }
                     field(L10n.t("主题包含"), text: $rule.subjectContains, placeholder: L10n.t("项目评审"))
                     field(L10n.t("正文包含"), text: $rule.bodyContains, placeholder: L10n.t("可不填"))
                     Picker(L10n.t("回复内容"), selection: $rule.useAI) { Text(L10n.t("固定正文")).tag(false); Text(L10n.t("让 AI 按要求起草")).tag(true) }.pickerStyle(.segmented)
+                    Toggle(L10n.t("生成一张图片并作为回复附件"), isOn: Binding(get: { rule.imageReply != nil }, set: { enabled in
+                        rule.imageReply = enabled ? .init() : nil
+                        var policy = rule.policy; policy.allowedTools.removeAll { $0 == "generateImage" }
+                        if enabled { policy.allowedTools.append("generateImage"); policy.maximumSeconds = max(360, policy.maximumSeconds); rule.useAI = true; rule.dailyLimit = min(3, rule.dailyLimit) }
+                        rule.executionPolicy = policy
+                    })).accessibilityIdentifier("responder.image-reply")
+                    if rule.imageReply != nil {
+                        field(L10n.t("图片模型（留空使用默认模型）"), text: Binding(get: { rule.imageReply?.model ?? "" }, set: { rule.imageReply?.model = $0.isEmpty ? nil : $0 }), placeholder: L10n.t("使用已配置的默认生图模型"))
+                        Picker(L10n.t("图片尺寸"), selection: Binding(get: { rule.imageReply?.size ?? "1024x1024" }, set: { rule.imageReply?.size = $0 })) {
+                            Text(L10n.t("自动")).tag("auto"); ForEach(["1024x1024", "1536x1024", "1024x1536"], id: \.self) { Text($0).tag($0) }
+                        }
+                        Picker(L10n.t("图片质量"), selection: Binding(get: { rule.imageReply?.quality ?? "auto" }, set: { rule.imageReply?.quality = $0 })) {
+                            Text(L10n.t("自动")).tag("auto"); Text(L10n.t("低")).tag("low"); Text(L10n.t("中")).tag("medium"); Text(L10n.t("高")).tag("high")
+                            Text(L10n.t("极高")).tag("xhigh"); Text(L10n.t("最高")).tag("max")
+                        }
+                        Text(L10n.t("每封匹配来信最多生成一张图片，生图有费用。试跑也会生成图片；重试复用成功结果，结果不确定时停止。")).font(Theme.label).foregroundStyle(Theme.secondary)
+                    }
                     Text(L10n.t("保存后只处理符合来源条件的新邮件。")).font(Theme.label).foregroundStyle(Theme.secondary)
                     VStack(alignment: .leading, spacing: 8) {
                         Text(rule.useAI ? L10n.t("AI 回复要求") : L10n.t("回复正文")).font(Theme.label)
@@ -147,6 +164,7 @@ struct ResponderEditor: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Text(L10n.t("试跑结果")).font(Theme.heading); Text(L10n.t("匹配邮件：") + source.subject).font(Theme.label)
                             Text(L10n.t("收件人：") + preview.to).font(Theme.label); Text(preview.body).font(Theme.reader).textSelection(.enabled)
+                            ForEach(preview.attachments) { attachment in Text(L10n.t("附件：") + attachment.name + " · " + attachment.size).font(Theme.label) }
                             Text(L10n.t("试跑没有发送邮件，也没有启用响应器。")).font(Theme.label).foregroundStyle(Theme.secondary)
                         }.padding(20).background(Theme.sheet)
                     }
@@ -163,7 +181,7 @@ struct ResponderEditor: View {
             Spacer(minLength: 8)
             Button(saving ? L10n.t("正在保存…") : rule.enabled ? L10n.t("保存并启用响应器") : L10n.t("保存为暂停")) {
                 let snapshot = rule
-                saving = true; message = nil; messageIsError = false; Task { defer { saving = false }; do { try await model.saveResponder(snapshot); dismiss() } catch { message = error.localizedDescription; messageIsError = true } }
+                saving = true; message = nil; messageIsError = false; Task { defer { saving = false }; do { try await model.saveResponder(snapshot, expectedFingerprint: initial.boundAccountFingerprint == nil ? nil : initial.configurationFingerprint, expectNew: initial.boundAccountFingerprint == nil); dismiss() } catch { message = error.localizedDescription; messageIsError = true } }
             }.buttonStyle(PrimaryButtonStyle()).disabled(busy || saving).keyboardShortcut(.defaultAction)
         }
     }

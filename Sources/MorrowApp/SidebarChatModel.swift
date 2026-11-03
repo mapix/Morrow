@@ -72,7 +72,9 @@ extension AppModel {
             do { let result = try await performSidebarOperation(.init(type: "navigate", text: target)); await appendSidebarReceipt(result, context: context, user: instruction) } catch { self.error = error.localizedDescription }; return
         }
         if materials.isEmpty, ["同步邮箱", "同步所有邮箱"].contains(normalized) { await sync(); await appendSidebarReceipt(syncStatus, context: context, user: instruction); return }
-        await askPartner(instruction.isEmpty ? "分析我带来的资料，说明可核验的内容和仍需补充的部分。" : instruction, runID: context.runID, uiContext: context, materials: materials)
+        // The selected report/work is a referent. Continuing an accepted work
+        // has its own explicit entry point; normal Chat keeps its own budget.
+        await askPartner(instruction.isEmpty ? "分析我带来的资料，说明可核验的内容和仍需补充的部分。" : instruction, runID: nil, uiContext: context, materials: materials)
     }
     func navigateFromPartner(_ text: String) throws {
         dismissInlineTools()

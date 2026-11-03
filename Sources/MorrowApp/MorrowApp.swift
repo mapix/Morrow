@@ -80,7 +80,7 @@ private struct MenuBarContent: View {
             } else { await model.importFile(url) }
         }; await model.reload(); model.process() }
     }
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions { [.banner, .sound] }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions { [.banner, .list, .sound] }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         guard let mailID = response.notification.request.content.userInfo["mailID"] as? String else { return }
         await openNotificationMail(mailID)

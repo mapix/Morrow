@@ -3,6 +3,24 @@ import MorrowCore
 @testable import MorrowApp
 
 final class ResponderTests: XCTestCase {
+    @MainActor func testSkippedMailCanBeExplicitlyRetriedAfterDisablingHeaderAuthentication() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer { try? FileManager.default.removeItem(at: root) }
+        let model = responderFixtureModel(root); model.isDemo = true
+        var account = MailAccount(); account.id = "demo"; account.email = "owner@example.com"; account.isDemo = true
+        model.accounts = [account]; try await model.store.save(account, kind: "account", id: account.id)
+        var rule = MailResponder(); rule.title = "Source matching"; rule.accountID = account.id; rule.sender = "team@example.com"; rule.response = "收到。"; rule.useAI = false; rule.enabled = true
+        rule.requireAuthentication = true; rule.trustedAuthService = "mx.google.com"
+        try await model.saveResponder(rule)
+        var incoming = MailMessage(accountID: account.id, from: .init(email: "team@example.com"), subject: "Test", text: "Source")
+        incoming.messageID = "<simple-source@example.com>"; incoming.raw = responderSourceRaw(incoming)
+        try await model.store.upsert(incoming); await model.reload(); await model.runResponders()
+        let skipped = try XCTUnwrap(model.responderReceipts.first); XCTAssertEqual(skipped.state, "skipped")
+        rule = try XCTUnwrap(model.responders.first); rule.requireAuthentication = false; try await model.saveResponder(rule)
+        await model.runResponders(); XCTAssertEqual(model.responderReceipts.first?.state, "skipped")
+        await model.runResponders(retryReceiptID: skipped.id)
+        XCTAssertEqual(model.responderReceipts.first?.state, "simulated", model.responderReceipts.first?.detail ?? "")
+        XCTAssertEqual(model.responderReceipts.first?.attempts, 2)
+    }
     @MainActor func testNewMailAutomaticallyRespondsOnceAndDoesNotReplyToAutomaticMailOrCopies() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer { try? FileManager.default.removeItem(at:root) }
         let model = responderFixtureModel(root); model.isDemo = true

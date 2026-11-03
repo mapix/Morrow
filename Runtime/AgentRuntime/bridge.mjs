@@ -158,7 +158,8 @@ class NativeModel {
   async getResponse(request) {
     if (this.turns >= this.turnBudget) throw new ModelBudgetExceededError('本轮模型调用次数达到运行预算');
     const step = ++this.turns;
-    let answerNow = this.answerBudget && (step >= Math.min(this.turnBudget, this.answerBudget.modelTurns) || this.toolCount() >= this.answerBudget.toolCalls || Date.now() - this.startedAt >= this.answerBudget.seconds * 1000);
+    const finishForReview = !!this.responderReview;
+    let answerNow = !finishForReview && this.answerBudget && (step >= Math.min(this.turnBudget, this.answerBudget.modelTurns) || this.toolCount() >= this.answerBudget.toolCalls || Date.now() - this.startedAt >= this.answerBudget.seconds * 1000);
     const startedAt = Date.now(); emit({ type: 'phase', stage: 'model', step, startedAt });
     const messages = request.systemInstructions ? [{ role: 'system', content: request.systemInstructions }] : [];
     const items = typeof request.input === 'string' ? [{ role: 'user', content: request.input }] : request.input;
@@ -183,18 +184,22 @@ class NativeModel {
     const latestUser=messages.findLastIndex(message=>message.role==='user');
     const activeMessages=messages.slice(Math.max(0,latestUser));
     const activeBodies=activeMessages.filter(message=>message.role==='tool').reduce((n,message)=>n+toolBodyCharacters(message.content),0);
-    if(this.answerBudget && this.toolCount()>0 && (activeBodies>this.contextWindow || modelBytes(activeMessages)>128*1024 || activeMessages.length>120))answerNow=true;
+    if(!finishForReview && this.answerBudget && this.toolCount()>0 && (activeBodies>this.contextWindow || modelBytes(activeMessages)>128*1024 || activeMessages.length>120))answerNow=true;
+    if (finishForReview) messages.push({role:'system',content:'setup_responder原生回执要求用户在设置界面核对并保存。现在结束本轮工具调用，说明配置变更尚未保存、原生回执中的启用状态，以及用户需要核对的内容。不要再次查询列表或打开设置，未执行的生成、发送和测试不得说成完成。'});
     if (answerNow) { this.answerLimited=true; messages.push({role:'system',content:'本轮交互式查询已达到阶段预算或资料上下文预算。现在停止调用工具，依据已经取得且本次上下文保留的事实直接给用户有用的结果，引用实际已知来源ID。明确哪些内容已核验、哪些只来自元数据、哪些尚未覆盖；证据不足就直接说明，禁止猜测或宣称已完成全面审计。需要后续深入核验时说明剩余范围。本轮尚未执行的修改不能称为完成。'}); }
-    const tools = answerNow ? [] : [...request.tools.filter(x => x.type === 'function' && (!this.nativeNames?.has(x.name) || this.visibleNames?.has(x.name))).map(x => ({ type: 'function', function: { name: x.name, description: x.description, parameters: x.parameters, strict: false } })),
+    const tools = answerNow || finishForReview ? [] : [...request.tools.filter(x => x.type === 'function' && (!this.nativeNames?.has(x.name) || this.visibleNames?.has(x.name))).map(x => ({ type: 'function', function: { name: x.name, description: x.description, parameters: x.parameters, strict: false } })),
       ...request.handoffs.map(x => ({ type: 'function', function: { name: x.toolName, description: x.toolDescription, parameters: x.inputJsonSchema, strict: false } }))];
     const maxTokens=request.modelSettings.maxTokens??1800;
     const prepared=prepareModelContext(messages,tools,{contextWindow:this.contextWindow,maxTokens,resuming:this.resuming,conversationIndices});
     if(prepared.shortened)emit({type:'context_budget',step,bytes:prepared.bytes,estimatedTokens:prepared.estimatedTokens,omittedMessages:prepared.omittedMessages});
-    const response = await rpc('model', { messages:prepared.messages, tools, maxTokens, toolChoice: answerNow ? 'none' : 'auto' }, chunk => emit({ type: 'text_delta', text: chunk }));
+    const response = await rpc('model', { messages:prepared.messages, tools, maxTokens, toolChoice: answerNow || finishForReview ? 'none' : 'auto' }, chunk => emit({ type: 'text_delta', text: chunk }));
     emit({ type: 'model_timing', step, elapsedMs: Date.now() - startedAt, ...(response.timing ?? {}), model: response.model });
-    const output = (response.toolCalls ?? []).map(call => ({ type: 'function_call', id: call.id, callId: call.id, name: call.name, arguments: JSON.stringify(call.args), status: 'completed' }));
-    if (response.content) output.push({ type: 'message', role: 'assistant', id: randomUUID(), status: 'completed', content: [{ type: 'output_text', text: response.content }] });
-    if (response.replay && output.length) { const group = randomUUID(); output.forEach(x => { x.providerData = { morrowGroup: group }; }); output[0].providerData.morrowReplay = response.replay; }
+    // Review is a native execution boundary, even if a provider ignores the
+    // tool-free request. Discard such calls and their authenticated replay.
+    const output = (finishForReview ? [] : response.toolCalls ?? []).map(call => ({ type: 'function_call', id: call.id, callId: call.id, name: call.name, arguments: JSON.stringify(call.args), status: 'completed' }));
+    const content = response.content || (finishForReview ? this.responderReview.message : '');
+    if (content) output.push({ type: 'message', role: 'assistant', id: randomUUID(), status: 'completed', content: [{ type: 'output_text', text: content }] });
+    if (response.replay && output.length && !finishForReview) { const group = randomUUID(); output.forEach(x => { x.providerData = { morrowGroup: group }; }); output[0].providerData.morrowReplay = response.replay; }
     return { usage: new Usage(response.usage ?? {}), output };
   }
   async *getStreamedResponse(request) { yield { type: 'response_started' }; const response = await this.getResponse(request); yield { type: 'response_done', response }; }
@@ -237,14 +242,18 @@ export async function runAgent(request) {
   model.toolCount = () => toolCalls;
   const readCache = new Map();
   const cachedTools = new Set(['search_mail','read_mail','read_mails','list_contacts','get_contact_profile','read_attachment','read_material']);
-  const readTools = new Set([...cachedTools,'scan_mail','mail_statistics','list_accounts','list_folders','workspace_state','get_settings','list_models','list_sessions','list_attachments','list_materials','list_drafts','read_draft','list_reports','read_report','list_memories','list_responders','cite_sources','render_ui']);
+  const readTools = new Set([...cachedTools,'scan_mail','mail_statistics','list_accounts','list_folders','workspace_state','get_settings','list_models','list_sessions','list_attachments','list_materials','list_drafts','read_draft','list_reports','read_report','list_memories','list_responders','read_responder','responder_status','cite_sources','render_ui']);
   const native = async (description, args, id) => {
     const key = description.name + ':' + stableJSON(args);
     if (cachedTools.has(description.name) && readCache.has(key)) return readCache.get(key);
     if (!readTools.has(description.name)) readCache.clear();
     const pendingRead = rpc('tool', { name: description.name, args, callId: id });
     if (cachedTools.has(description.name)) readCache.set(key, pendingRead);
-    try { return await pendingRead; }
+    try {
+      const result = await pendingRead;
+      if (description.name === 'setup_responder' && result?.reviewRequired === true) model.responderReview = result;
+      return result;
+    }
     catch (error) { if (readCache.get(key) === pendingRead) readCache.delete(key); throw error; }
   };
   const tools = request.tools.map(description => tool({
@@ -261,7 +270,7 @@ export async function runAgent(request) {
   tools.push(tool({ name: 'find_tools', description: '按中文或英文目的查找并加载更多邮件、草稿、联系人、附件、设置、会话、响应器工具；offset继续查看。',
     parameters: z.object({ query: z.string(), offset: z.number().int().min(0).optional() }),
     execute: async ({ query, offset = 0 }) => {
-      const groups = [[/草稿|回复|draft|reply|compose/i, /draft|reply|compose|forward/], [/联系人|画像|contact/i, /contact/], [/附件|文件|分析|attachment|material|report|code/i, /attachment|material|report|code/], [/记忆|memory/i, /memor|remember/], [/设置|模型|主题|语言|布局|settings|model|theme|language|density/i, /settings|model|theme|language|density/], [/会话|session/i, /session/], [/响应|委托|responder|delegate/i, /responder|delegation/], [/邮件|邮箱|批量|标记|mail|folder/i, /mail|folder|account|search/]];
+      const groups = [[/草稿|回复|draft|reply|compose/i, /draft|reply|compose|forward/], [/联系人|画像|contact/i, /contact/], [/附件|文件|分析|attachment|material|report|code/i, /attachment|material|report|code/], [/记忆|memory/i, /memor|remember/], [/设置|模型|主题|语言|布局|settings|model|theme|language|density/i, /settings|model|theme|language|density/], [/会话|session/i, /session/], [/响应|触发|委托|responder|trigger|delegate/i, /responder|delegation/], [/邮件|邮箱|批量|标记|mail|folder/i, /mail|folder|account|search/]];
       const patterns = groups.filter(([test]) => test.test(query)).map(([, test]) => test);
       let found = request.tools.filter(x => patterns.some(test => test.test(x.name)) || x.name.includes(query) || x.description.includes(query));
       if (!found.length) found = request.tools;

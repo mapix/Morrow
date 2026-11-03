@@ -237,6 +237,7 @@ public struct OpenUIActionEvent: Codable, Sendable {
 }
 public struct OpenUIFieldState: Codable, Sendable { public var value: OpenUIJSON; public var componentType: String?; public init(value: OpenUIJSON, componentType: String? = "input") { self.value = value; self.componentType = componentType } }
 public struct OpenUIInteraction: Codable, Identifiable, Sendable {
+    public var responderDraft: MailResponder?
     public var sessionID: String?
     public var chatID: String?
     public var sourceMailIDs: [String]?

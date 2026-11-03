@@ -304,12 +304,34 @@ public actor MailStore {
             try remove(kind: "draft", id: id); try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
+    public func saveResponderConfiguration(_ rule: MailResponder, expectedFingerprint: String? = nil, expectNew: Bool = false) throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let current = try object(MailResponder.self, kind: "responder", id: rule.id)
+            if expectNew && current != nil { throw MailError.message("该响应器已保存，请读取当前配置后再修改。") }
+            if let expectedFingerprint, current?.configurationFingerprint != expectedFingerprint { throw MailError.message("响应器已变化，请重新核对当前配置。") }
+            try save(rule, kind: "responder", id: rule.id); try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+    /// Atomic claim shared by app instances; pending paid requests are never retried.
+    public func claimResponderImage(_ receipt: ResponderImageReceipt, dailyLimit: Int) throws -> Bool {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            if try object(ResponderImageReceipt.self, kind: "responder-image", id: receipt.id) != nil {
+                try execute("COMMIT"); return false
+            }
+            let today = try load(ResponderImageReceipt.self, kind: "responder-image").filter { $0.responderID == receipt.responderID && Calendar.current.isDateInToday($0.createdAt ?? Date()) }.count
+            guard today < dailyLimit else { throw MailError.message("已达到该响应器当天的图片生成次数上限，未生成或发送；失败及结果待确认的请求也计入额度。") }
+            try save(receipt, kind: "responder-image", id: receipt.id)
+            try execute("COMMIT"); return true
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
     public func claimResponder(_ receipt: ResponderReceipt, retry: Bool = false) throws -> Bool {
         try execute("BEGIN IMMEDIATE")
         do {
             var receipt = receipt
             if let prior = try object(ResponderReceipt.self, kind: "responder-receipt", id: receipt.id) {
-                guard retry, ["failed", "cancelled"].contains(prior.state), (prior.attempts ?? 1) < 3,
+                guard retry, ["failed", "cancelled", "skipped"].contains(prior.state), (prior.attempts ?? 1) < 3,
                       prior.draftID.flatMap({ try? object(ComposeDraft.self, kind: "draft", id: $0) }).map({ !["queued", "sending", "sent", "uncertain"].contains($0.state) }) ?? true else { try execute("COMMIT"); return false }
                 receipt.attempts = (prior.attempts ?? 1) + 1
             }
@@ -339,10 +361,22 @@ public actor MailStore {
               receipt.draftFingerprint == ResponderPolicy.draftFingerprint(draft),
               let mail = try message(sourceID), receipt.canonicalID == mail.canonicalID,
               receipt.sourceBodyVersion == mail.bodyVersion,
+              try responderImageMatches(draft, rule: rule, mail: mail),
               ResponderPolicy.canSend(draft, rule: rule, mail: mail, allowLocalSource: account.isDemo),
               ResponderPolicy.sourceFailure(rule, mail: mail, raw: try rawHeader(mail), allowLocalSource: account.isDemo) == nil else {
             throw MailError.message("自动回复的来源、规则或正文已变化，投递已阻止。请重新核对响应器。")
         }
+    }
+    private func responderImageMatches(_ draft: ComposeDraft, rule: MailResponder, mail: MailMessage) throws -> Bool {
+        guard let image = rule.imageReply else { return draft.attachments.isEmpty }
+        let id = ResponderImageReceipt(rule: rule, mail: mail, model: image.model ?? "").id
+        guard draft.attachments.count == 1, let attachment = draft.attachments.first,
+              let receipt = try object(ResponderImageReceipt.self, kind: "responder-image", id: id), receipt.state == "complete",
+              receipt.ruleFingerprint == rule.configurationFingerprint, receipt.sourceBodyVersion == mail.bodyVersion,
+              attachment.id == "responder-image:" + id, receipt.contentHash == MailStore.hash(attachment.data), receipt.bytes == attachment.data.count,
+              receipt.mimeType == attachment.mimeType, receipt.model == image.model,
+              (try? GatewayMediaClient.imageMIME(attachment.data)) == attachment.mimeType else { return false }
+        return true
     }
     public func updateOpenUIState(_ values: [String: OpenUIJSON], id: String, revision: Int) throws {
         try execute("BEGIN IMMEDIATE")

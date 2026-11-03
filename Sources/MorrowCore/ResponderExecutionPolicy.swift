@@ -11,7 +11,7 @@ public struct ResponderExecutionPolicy: Codable, Sendable, Equatable {
     public init() {}
     public func validate() throws {
         guard allowedTools.contains("read"), !allowedTools.isEmpty, Set(allowedTools).count == allowedTools.count,
-              Set(allowedTools).isSubset(of: ["read", "attachments", "readAttachment", "sandbox"]),
+              Set(allowedTools).isSubset(of: ["read", "attachments", "readAttachment", "sandbox", "generateImage"]),
               (2...8).contains(maximumTurns), (1...20).contains(maximumTools), (1...600).contains(maximumSeconds),
               (1...60).contains(commandSeconds), commandSeconds <= maximumSeconds, failureAction == "stop" else {
             throw MailError.message("响应器策略无效：读取必须保留，工具和执行预算须在允许范围内；失败后必须停止投递。")

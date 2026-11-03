@@ -26,6 +26,16 @@ final class ResponderAgentLoopTests: XCTestCase {
         XCTAssertFalse(ResponderPolicy.authenticated(mail(), raw: raw("Authentication-Results: mx.google.com; dmarc=fail header.from=example.com\r\nAuthentication-Results: mx.google.com; dmarc=pass header.from=example.com"), service: "mx.google.com"))
         XCTAssertFalse(ResponderPolicy.authenticated(mail(), raw: raw("From: other@example.com\r\nAuthentication-Results: mx.google.com; dmarc=pass header.from=example.com"), service: "mx.google.com"))
     }
+    func testDefaultSourceMatchingDoesNotRequireAuthenticationHeaders() {
+        let raw = Data("From: team@example.com\r\nMessage-ID: <source@example.com>\r\nAuthentication-Results: mx.google.com; spf=pass smtp.mailfrom=team@example.com\r\n\r\nBody".utf8)
+        var r = rule()
+        XCTAssertEqual(r.requireAuthentication, false)
+        XCTAssertNil(ResponderPolicy.sourceFailure(r, mail: mail(), raw: raw))
+        r.requireAuthentication = true
+        XCTAssertNotNil(ResponderPolicy.sourceFailure(r, mail: mail(), raw: raw))
+        r.requireAuthentication = nil
+        XCTAssertNil(ResponderPolicy.sourceFailure(r, mail: mail(), raw: raw))
+    }
     func testUIDWatermarkRejectsHistoricalImportAndValidityChanges() {
         var r = rule(); r.activatedAt = Date(); r.afterUID = 90; r.activationUIDValidity = 7
         var m = mail(); m.uid = 89; m.uidValidity = 7; XCTAssertFalse(r.isNew(m))

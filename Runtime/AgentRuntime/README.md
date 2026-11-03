@@ -40,6 +40,14 @@ available evidence and explicit coverage gaps. This is not a guaranteed
 Accepted ongoing work retains its configured hard execution budgets. The hard
 model allowance is also shared by delegated runs.
 
+Sidebar workspace run IDs remain UI hints. Only an explicit accepted work
+agreement selects ongoing execution budgets; report containers keep the
+ordinary Chat checkpoint. A review-required responder setup ends tool use for
+that turn and presents the actual configuration state for native review in Chat.
+The user clicks the native save action to persist and enable a rule. Image
+responders use separately authorized generation and persistent native receipts;
+Chat can inspect configurations, request a preview test, and read delivery state.
+
 Model requests use a bounded sending view: at most 196 KiB and 224 messages,
 with headroom below the Swift transport limits. The configured context window
 also limits total tool-body text and drives a conservative token estimate.

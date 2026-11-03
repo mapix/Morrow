@@ -49,13 +49,27 @@ extension AppModel {
         case "SaveResponder":
             guard buttonLabel.contains("响应器") && (buttonLabel.contains("保存") || buttonLabel.contains("启用")), let name = event.formName, let fields = event.formState?[name] else { throw OpenUIError.message("请通过明确的响应器保存按钮提交完整表单。") }
             func text(_ name: String) -> String { fields[name]?.value.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
-            var rule = MailResponder(); rule.title = text("title"); rule.accountID = text("accountID"); rule.sender = text("sender"); rule.subjectContains = text("subject"); rule.bodyContains = text("body"); rule.response = text("response"); rule.delivery = text("delivery").isEmpty ? "send" : text("delivery"); rule.useAI = text("contentMode") == "ai"; rule.enabled = true
+            if page.chatID != nil, !chatSessions.contains(where: { $0.id == page.sessionID && !$0.archived }) { throw OpenUIError.message("会话已归档，不能通过旧交互启用响应器。") }
+            var rule = page.responderDraft ?? MailResponder(); rule.title = text("title"); rule.accountID = text("accountID"); rule.sender = text("sender"); rule.subjectContains = text("subject"); rule.bodyContains = text("body"); rule.response = text("response"); rule.delivery = text("delivery").isEmpty ? "send" : text("delivery"); rule.useAI = text("contentMode") == "ai"; rule.enabled = true
             rule.folderPath = text("folder").isEmpty ? "INBOX" : text("folder")
-            rule.requireAuthentication = text("authentication") != "address"
+            rule.requireAuthentication = text("authentication") == "dmarc"
             rule.trustedAuthService = text("authService").isEmpty && accounts.first(where: { $0.id == rule.accountID })?.imapHost == "imap.gmail.com" ? "mx.google.com" : text("authService")
             rule.sessionID = page.sessionID
-            try await saveResponder(rule)
+            if !text("dailyLimit").isEmpty { guard let limit = Int(text("dailyLimit")), (1...100).contains(limit) else { throw OpenUIError.message("每天响应上限须为1到100。") }; rule.dailyLimit = limit }
+            if text("imageReply") == "image" {
+                rule.imageReply = ResponderImageReply(model: text("imageModel").isEmpty ? nil : text("imageModel"), size: text("imageSize").isEmpty ? "1024x1024" : text("imageSize"), quality: text("imageQuality").isEmpty ? "auto" : text("imageQuality"))
+                var policy = rule.policy; if !policy.allowedTools.contains("generateImage") { policy.allowedTools.append("generateImage") }; policy.maximumSeconds = max(360, policy.maximumSeconds); rule.executionPolicy = policy
+            } else {
+                rule.imageReply = nil; var policy = rule.policy; policy.allowedTools.removeAll { $0 == "generateImage" }; rule.executionPolicy = policy
+            }
+            let snapshot = page.responderDraft
+            try await saveResponder(rule, expectedFingerprint: snapshot?.boundAccountFingerprint == nil ? nil : snapshot?.configurationFingerprint, expectNew: snapshot != nil && snapshot?.boundAccountFingerprint == nil)
             page.completedAt = Date(); page.receipt = "“\(rule.title)”已启用，只响应之后到来的匹配邮件。"; await saveOpenUIInteraction(page)
+            if let session = page.sessionID, page.chatID != nil {
+                var receipt = PartnerChat(role: "partner", text: page.receipt ?? "响应器已保存并启用。")
+                receipt.id = page.id + ":saved"; receipt.sessionID = session; receipt.memoryIDs = []
+                try await recordChat(receipt)
+            }
             if let id = page.runID {
                 if var run = agentRuns.first(where: { $0.id == id }) { run.responderID = rule.id; await saveRun(run) }
                 await updateRun(id, phase: .monitoring, summary: page.receipt); await addStep(id, title: "响应器已启用", tool: "响应器", detail: "来自\(rule.sender)，主题包含\(rule.subjectContains)，\(rule.delivery == "send" ? "自动回复" : "准备草稿")。")

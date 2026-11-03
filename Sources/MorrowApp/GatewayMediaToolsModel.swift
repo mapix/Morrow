@@ -3,7 +3,7 @@ import MorrowCore
 import UniformTypeIdentifiers
 
 extension AppModel {
-    private func mediaClient() throws -> GatewayMediaClient {
+    func mediaClient() throws -> GatewayMediaClient {
         if let gatewayMediaClientOverride { return gatewayMediaClientOverride }
         let config = try GatewayMediaConfiguration.load(path: store.root.appendingPathComponent("media-models.json"))
         let key = try SecretStore.read(accountID: ModelEndpoint.credentialID(config.baseURL))

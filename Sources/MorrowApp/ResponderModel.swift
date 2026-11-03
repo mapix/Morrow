@@ -2,7 +2,7 @@ import Foundation
 import MorrowCore
 
 extension AppModel {
-    func saveResponder(_ value: MailResponder) async throws {
+    func saveResponder(_ value: MailResponder, expectedFingerprint: String? = nil, expectNew: Bool = false) async throws {
         var rule = value
         rule.sender = rule.sender.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         rule.senderAllowlist = Array(Set(rule.sender.isEmpty ? (rule.senderAllowlist ?? []) : MailResponder.parseAllowlist(rule.sender))).sorted()
@@ -12,7 +12,12 @@ extension AppModel {
         rule.boundAccountFingerprint = ResponderPolicy.accountFingerprint(account)
         rule.boundAccountEmail = account.email
         try rule.validate()
-        if account.imapHost == "imap.gmail.com", rule.requireAuthentication != false, rule.trustedAuthService != "mx.google.com" { throw MailError.message("Gmail 的来源验证必须使用接收服务 mx.google.com。") }
+        if let image = rule.imageReply {
+            let config = try gatewayMediaClientOverride?.configuration ?? GatewayMediaConfiguration.load(path: store.root.appendingPathComponent("media-models.json"))
+            _ = try config.require(image.model ?? config.defaultImageModel, capability: "image_generation")
+            rule.imageReply?.model = image.model ?? config.defaultImageModel
+        }
+        if account.imapHost == "imap.gmail.com", rule.requireAuthentication == true, rule.trustedAuthService != "mx.google.com" { throw MailError.message("Gmail 的来源验证必须使用接收服务 mx.google.com。") }
         guard folders.contains(where: { $0.accountID == account.id && $0.path == rule.folderPath && !["trash", "junk", "sent"].contains($0.role) }) || (account.isDemo && rule.folderPath == "INBOX") else { throw MailError.message("来源文件夹必须属于绑定邮箱，且不是已发送、垃圾箱或废纸篓。") }
         let existing = responders.first { $0.id == rule.id }
         if existing == nil || existing?.accountID != rule.accountID || existing?.folderPath != rule.folderPath || existing?.allowedSenders != rule.allowedSenders || existing?.boundAccountFingerprint != rule.boundAccountFingerprint || rule.activatedAt == nil {
@@ -23,7 +28,7 @@ extension AppModel {
             rule.processedIDs = inventory.filter(matcher.contains).map(\.canonicalID)
         }
         rule.updatedAt = Date(); rule.status = rule.enabled ? "已启用，等待绑定来源的新邮件" : "已暂停"
-        try await store.save(rule, kind: "responder", id: rule.id)
+        try await store.saveResponderConfiguration(rule, expectedFingerprint: expectedFingerprint, expectNew: expectNew)
         if activeResponderID == rule.id { responderExecutionTask?.cancel() }
         if let i = responders.firstIndex(where: { $0.id == rule.id }) { responders[i] = rule } else { responders.append(rule) }
         // Editing any authority cancels queued automatic deliveries. An SMTP
@@ -58,6 +63,7 @@ extension AppModel {
         let fixed = rule.useAI ? nil : rule.body(for: mail, account: account)
         let sandbox = try ResponderSandboxRuntime()
         let policy = rule.policy
+        var generatedImage: MailAttachment?
         func readInSandbox(_ text: String, name: String) async throws -> String {
             try sandbox.stageText(text, name: name)
             let output = try await sandbox.run("cat input/" + name, policy: policy)
@@ -83,10 +89,16 @@ extension AppModel {
                     let output = try await sandbox.run(operation.text ?? "", policy: policy)
                     guard output.exitCode == 0, !output.timedOut, !output.truncated, output.violations == 0 else { throw MailError.message("沙箱工具失败或越界，已停止回复：" + String(output.stderr.prefix(500))) }
                     return "Anthropic Sandbox Runtime 执行回执（exit=0）：\n" + output.stdout
+                case "generateImage":
+                    guard rule.imageReply != nil, policy.allowedTools.contains("generateImage") else { throw MailError.message("该响应器没有生图授权。") }
+                    let (attachment, receipt) = try await self.responderImage(rule, mail: mail, prompt: operation.text ?? "")
+                    generatedImage = attachment
+                    return "图片已生成，应用将把实际图片附到回复。图片回执：\(receipt.id)；附件ID：\(attachment.id)；字节数：\(attachment.data.count)；模型：\(receipt.model)。不要再次生成；可以起草回复，尚未发送。"
                 default: throw MailError.message("响应器工具未获授权。")
                 }
             }, verify: { body, history in
-                if rule.useAI && ReplySuggestionPolicy.containsUnverifiedConfirmation(body) { return .init(approved: false, issues: ["回复包含尚未核验的完成确认，请只陈述实际读取或完成的事实。"] ) }
+                if rule.imageReply != nil && generatedImage == nil { return .init(approved: false, issues: ["尚未生成用户要求的图片，必须先调用generateImage并取得成功回执。"]) }
+                if rule.useAI && ReplySuggestionPolicy.containsUnverifiedConfirmation(body, hasVerifiedAttachments: generatedImage != nil) { return .init(approved: false, issues: ["回复包含尚未核验的完成确认，请只陈述实际读取或完成的事实。"] ) }
                 return try await self.partner.verifyResponder(body: body, rule: rule, history: history, settings: self.settings)
             }, checkpoint: {
                 try Task.checkCancellation()
@@ -105,6 +117,7 @@ extension AppModel {
         var draft = ComposeDraft(); draft.accountID = account.id; draft.to = mail.from.email; draft.subject = "Re: " + mail.normalizedSubject
         draft.inReplyTo = mail.messageID; draft.references = (mail.references + " " + mail.messageID).trimmingCharacters(in: .whitespaces)
         draft.automaticResponse = true; draft.responderID = rule.id; draft.responderSourceMailID = mail.id; draft.body = result.body
+        if let generatedImage { draft.attachments = [generatedImage] }
         if let runID {
             if var run = agentRuns.first(where: { $0.id == runID }), let i = run.steps.lastIndex(where: { $0.state == .active }) { run.steps[i].state = .completed; await saveRun(run) }
             await addStep(runID, title: "回复已通过核对", tool: "verify", detail: result.analysis, sourceIDs: [mail.id])

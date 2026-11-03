@@ -7,7 +7,7 @@ public struct MailResponder: Codable, Identifiable, Sendable {
     public var boundAccountFingerprint: String?
     public var boundAccountEmail: String?
     public var folderPath: String? = "INBOX"
-    public var requireAuthentication: Bool? = true
+    public var requireAuthentication: Bool? = false
     public var trustedAuthService: String?
     public var sessionID: String?
     public var activatedAt: Date?
@@ -16,6 +16,7 @@ public struct MailResponder: Codable, Identifiable, Sendable {
     public var sender = ""
     public var senderAllowlist: [String]?
     public var executionPolicy: ResponderExecutionPolicy? = .init()
+    public var imageReply: ResponderImageReply?
     public var policy: ResponderExecutionPolicy { executionPolicy ?? .init() }
     public var subjectContains = ""
     public var bodyContains = ""
@@ -34,10 +35,14 @@ public struct MailResponder: Codable, Identifiable, Sendable {
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MailError.message("为响应器起个名字。") }
         guard !accountID.isEmpty, let folderPath, !folderPath.isEmpty else { throw MailError.message("必须绑定一个邮箱和来源文件夹。") }
         guard (1...50).contains(allowedSenders.count), allowedSenders.allSatisfy(Self.validSender) else { throw MailError.message("必须填写发件邮箱白名单，每项一个完整邮箱地址；不支持空白、域名或通配符。最多50个地址。") }
-        if requireAuthentication != false {
+        if requireAuthentication == true {
             guard let service = trustedAuthService, Self.validAuthService(service) else { throw MailError.message("填写接收服务商的可信邮件认证服务名，Gmail 使用 mx.google.com。") }
         }
         try policy.validate()
+        if let imageReply {
+            try imageReply.validate()
+            guard useAI, policy.allowedTools.contains("generateImage") else { throw MailError.message("图片回复需要 AI 模式及独立的生图授权。") }
+        } else if policy.allowedTools.contains("generateImage") { throw MailError.message("生图工具需要配置图片回复。") }
         guard !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MailError.message(useAI ? "填写 AI 回复要求。" : "填写回复正文。") }
         guard title.utf8.count <= 1024, response.utf8.count <= 32768, subjectContains.utf8.count <= 4096, bodyContains.utf8.count <= 4096 else { throw MailError.message("响应器名称、筛选条件或处理要求超过长度预算。") }
         guard ["draft", "send"].contains(delivery) else { throw MailError.message("响应方式无效。") }
@@ -54,11 +59,12 @@ public struct MailResponder: Codable, Identifiable, Sendable {
     public static func validAuthService(_ value: String) -> Bool {
         value.count <= 253 && value.range(of: #"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"#, options: .regularExpression) != nil
     }
-    public var hasBoundSource: Bool { !accountID.isEmpty && folderPath?.isEmpty == false && (1...50).contains(allowedSenders.count) && allowedSenders.allSatisfy(Self.validSender) && (requireAuthentication == false || trustedAuthService.map(Self.validAuthService) == true) }
+    public var hasBoundSource: Bool { !accountID.isEmpty && folderPath?.isEmpty == false && (1...50).contains(allowedSenders.count) && allowedSenders.allSatisfy(Self.validSender) && (requireAuthentication != true || trustedAuthService.map(Self.validAuthService) == true) }
     public var configurationFingerprint: String {
-        let fields = [id, accountID, boundAccountFingerprint ?? "", folderPath ?? "", allowedSenders.sorted().joined(separator: ","), subjectContains, bodyContains, response, String(useAI), delivery, String(dailyLimit), String(requireAuthentication != false), trustedAuthService?.lowercased() ?? "", String(updatedAt.timeIntervalSince1970), String(activationUIDValidity ?? 0), String(afterUID ?? 0)]
+        let fields = [id, accountID, boundAccountFingerprint ?? "", folderPath ?? "", allowedSenders.sorted().joined(separator: ","), subjectContains, bodyContains, response, String(useAI), delivery, String(dailyLimit), String(requireAuthentication == true), trustedAuthService?.lowercased() ?? "", String(updatedAt.timeIntervalSince1970), String(activationUIDValidity ?? 0), String(afterUID ?? 0)]
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return MailStore.hash(String(decoding: (try? encoder.encode(fields)) ?? Data(), as: UTF8.self) + String(decoding: (try? encoder.encode(policy)) ?? Data(), as: UTF8.self))
+        let media = imageReply.map { String(decoding: (try? encoder.encode($0)) ?? Data(), as: UTF8.self) } ?? ""
+        return MailStore.hash(String(decoding: (try? encoder.encode(fields)) ?? Data(), as: UTF8.self) + String(decoding: (try? encoder.encode(policy)) ?? Data(), as: UTF8.self) + media)
     }
     public func matches(_ mail: MailMessage) -> Bool {
         matchesSource(mail) && (subjectContains.isEmpty || mail.subject.localizedCaseInsensitiveContains(subjectContains)) && (bodyContains.isEmpty || mail.text.localizedCaseInsensitiveContains(bodyContains))
@@ -114,7 +120,12 @@ public enum ResponderPolicy {
     }
     public static func canSend(_ draft: ComposeDraft, rule: MailResponder, mail: MailMessage, allowLocalSource: Bool = false) -> Bool {
         let recipients = draft.addresses(draft.to) + draft.addresses(draft.cc) + draft.addresses(draft.bcc)
-        return rule.enabled && !rule.archived && (allowLocalSource || isProviderMail(mail)) && rule.delivery == "send" && rule.matches(mail) && draft.accountID == mail.accountID && draft.inReplyTo == mail.messageID && !mail.messageID.isEmpty && MailAddress.isValid(mail.from.email) && recipients.count == 1 && recipients[0].email.caseInsensitiveCompare(mail.from.email) == .orderedSame && draft.cc.isEmpty && draft.bcc.isEmpty && draft.attachments.isEmpty && (draft.htmlBody ?? "").isEmpty
+        let attachmentsAllowed: Bool
+        if rule.imageReply != nil {
+            let receiptID = ResponderImageReceipt(rule: rule, mail: mail, model: rule.imageReply?.model ?? "").id
+            attachmentsAllowed = draft.attachments.count == 1 && draft.attachments[0].id == "responder-image:" + receiptID && !draft.attachments[0].data.isEmpty && draft.attachments[0].data.count <= 32 * 1024 * 1024
+        } else { attachmentsAllowed = draft.attachments.isEmpty }
+        return rule.enabled && !rule.archived && (allowLocalSource || isProviderMail(mail)) && rule.delivery == "send" && rule.matches(mail) && draft.accountID == mail.accountID && draft.inReplyTo == mail.messageID && !mail.messageID.isEmpty && MailAddress.isValid(mail.from.email) && recipients.count == 1 && recipients[0].email.caseInsensitiveCompare(mail.from.email) == .orderedSame && draft.cc.isEmpty && draft.bcc.isEmpty && attachmentsAllowed && (draft.htmlBody ?? "").isEmpty
     }
     public static func accountFingerprint(_ account: MailAccount) -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
@@ -124,7 +135,7 @@ public enum ResponderPolicy {
         !mail.id.hasPrefix("import:") && ((mail.uid > 0 && mail.uidValidity > 0) || mail.popUID?.isEmpty == false)
     }
     public static func draftFingerprint(_ draft: ComposeDraft) -> String {
-        let fields = [draft.accountID, draft.to, draft.cc, draft.bcc, draft.subject, draft.body, draft.htmlBody ?? "", draft.inReplyTo, draft.references, String(draft.automaticResponse == true)] + draft.attachments.map(\.id)
+        let fields = [draft.accountID, draft.to, draft.cc, draft.bcc, draft.subject, draft.body, draft.htmlBody ?? "", draft.inReplyTo, draft.references, String(draft.automaticResponse == true)] + draft.attachments.flatMap { [$0.id, $0.name, $0.mimeType, MailStore.hash($0.data)] }
         return MailStore.hash(String(decoding: (try? JSONEncoder().encode(fields)) ?? Data(), as: UTF8.self))
     }
     public static func sourceFailure(_ rule: MailResponder, mail: MailMessage, raw: Data, allowLocalSource: Bool = false) -> String? {
@@ -132,8 +143,10 @@ public enum ResponderPolicy {
         guard allowLocalSource || isProviderMail(mail) else { return "导入资料或缺少服务商来源标识的邮件不能触发自动回复。" }
         guard MailAddress.isValid(mail.from.email), !mail.messageID.isEmpty else { return "来源邮件缺少有效发件地址或 Message-ID。" }
         if isAutomatic(mail, raw: raw) { return "自动通知、邮件列表或自动回复，已跳过以避免互相响应。" }
-        guard unambiguousSender(mail, raw: raw) else { return "来源邮件的 From 不唯一或与白名单地址不一致，未启动响应。" }
-        if rule.requireAuthentication != false && !authenticated(mail, raw: raw, service: rule.trustedAuthService ?? "") { return "服务商未确认发件域名通过 DMARC，未启动响应。" }
+        if rule.requireAuthentication == true {
+            guard unambiguousSender(mail, raw: raw) else { return "来源邮件的 From 不唯一或与白名单地址不一致，未启动响应。" }
+            if !authenticated(mail, raw: raw, service: rule.trustedAuthService ?? "") { return "服务商未确认发件域名通过 DMARC，未启动响应。" }
+        }
         return nil
     }
     public static func authenticated(_ mail: MailMessage, raw: Data, service: String) -> Bool {

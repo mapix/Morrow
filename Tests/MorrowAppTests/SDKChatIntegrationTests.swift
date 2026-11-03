@@ -3,6 +3,56 @@ import MorrowCore
 @testable import MorrowApp
 
 final class SDKChatIntegrationTests: XCTestCase {
+    @MainActor func testResponderReviewEndsToolLoopEvenWhenModelRepeatsSetup() async throws {
+        let (model, _, _) = try await fixture(mode: "responder-repeat")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        await model.askPartner("为trusted@example.invalid创建响应器，先让我审阅策略", uiContext: model.currentContext)
+        let reply = try XCTUnwrap(model.visibleChat.last)
+        XCTAssertEqual(SDKChatHTTPFixture.count, 3)
+        XCTAssertEqual(reply.executionTrace?.tools.filter { $0.tool == "setup_responder" }.count, 1)
+        XCTAssertTrue(reply.text.contains("尚未保存或启用"))
+        XCTAssertNil(reply.sdkResumeKind)
+        XCTAssertEqual(model.openUIInteractions.last?.responderDraft?.senderAllowlist, ["trusted@example.invalid"])
+        XCTAssertTrue(model.responders.isEmpty)
+        let receipts = try await model.store.load(OpenUIJSON.self, kind: "agent-sdk-receipt")
+        XCTAssertEqual(receipts.count, 1)
+        XCTAssertEqual(receipts.first?.object["saved"], .bool(false))
+    }
+    @MainActor func testReportHintDoesNotDisableOrdinaryChatAnswerBudget() async throws {
+        let (model, _, _) = try await fixture(mode: "stage-budget")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        let report = AgentRun(title: "Unrelated domain report", instruction: "UNRELATED_WORK_INSTRUCTION")
+        model.agentRuns = [report]
+        var context = model.currentContext; context.runID = report.id
+        await model.askPartner("查一下当前邮箱账户", runID: report.id, uiContext: context)
+        XCTAssertEqual(SDKChatHTTPFixture.count, AgentAnswerBudget.modelTurns)
+        XCTAssertEqual(model.visibleChat.last?.sdkResumeKind, "continuation")
+        let messages = SDKChatHTTPFixture.lastBody?["messages"] as? [[String: Any]] ?? []
+        XCTAssertFalse(messages.compactMap { $0["content"] as? String }.joined().contains("UNRELATED_WORK_INSTRUCTION"))
+    }
+    @MainActor func testSidebarWorkHintDoesNotAttachAnotherAcceptedAgreement() async throws {
+        let (model, _, _) = try await fixture(mode: "stage-budget")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        var work = AgentRun(title: "Another work", instruction: "UNRELATED_WORK_INSTRUCTION")
+        work.agreement = WorkAgreement(goal: "Another goal", doneWhen: "Done", scope: "Other scope", boundaries: [], steps: [])
+        model.agentRuns = [work]
+        var context = model.currentContext; context.runID = work.id
+        await model.submitSidebarChat(ChatSubmission(sessionID: model.activeSessionID, instruction: "查一下当前邮箱账户", materials: [], context: context, newWork: false))
+        XCTAssertEqual(SDKChatHTTPFixture.count, AgentAnswerBudget.modelTurns)
+        let messages = SDKChatHTTPFixture.lastBody?["messages"] as? [[String: Any]] ?? []
+        XCTAssertFalse(messages.compactMap { $0["content"] as? String }.joined().contains("UNRELATED_WORK_INSTRUCTION"))
+    }
+    @MainActor func testExplicitAcceptedWorkRetainsOngoingExecutionBudget() async throws {
+        let (model, _, _) = try await fixture(mode: "stage-budget")
+        defer { try? FileManager.default.removeItem(at: model.store.root) }
+        var work = AgentRun(title: "Accepted work", instruction: "Continue accepted work")
+        work.agreement = WorkAgreement(goal: "Accepted goal", doneWhen: "Done", scope: "Accepted scope", boundaries: [], steps: [])
+        model.agentRuns = [work]
+        await model.askPartner("继续已接受的工作", runID: work.id)
+        XCTAssertEqual(SDKChatHTTPFixture.count, 25)
+        XCTAssertEqual(model.visibleChat.last?.text, "SDK stage answer")
+        XCTAssertNil(model.visibleChat.last?.sdkResumeKind)
+    }
     @MainActor func testBudgetShorteningDoesNotForgetRecentDialogueAfterToolCalls() async throws {
         let (model, _, _) = try await fixture(mode: "history-after-tools")
         defer { try? FileManager.default.removeItem(at: model.store.root) }
@@ -26,8 +76,8 @@ final class SDKChatIntegrationTests: XCTestCase {
         try await model.recordChat(PartnerChat(role: "user", text: "来源地址使用 trusted@example.invalid"))
         try await model.recordChat(PartnerChat(role: "partner", text: "已收到来源信息，请继续。"))
         await model.askPartner("按此前来源创建响应器，先让我审阅策略", uiContext: model.currentContext)
-        XCTAssertEqual(model.responderEditor?.senderAllowlist, ["trusted@example.invalid"])
-        XCTAssertEqual(model.responderEditor?.enabled, false)
+        XCTAssertEqual(model.openUIInteractions.last?.responderDraft?.senderAllowlist, ["trusted@example.invalid"])
+        XCTAssertEqual(model.openUIInteractions.last?.responderDraft?.enabled, false)
     }
     @MainActor func testAssistantSuggestedAddressDoesNotGrantResponderSenderScope() async throws {
         let (model, _, _) = try await fixture(mode: "responder")
@@ -278,9 +328,9 @@ final class SDKChatIntegrationTests: XCTestCase {
         let (model, _, _) = try await fixture(mode: "responder"); defer { try? FileManager.default.removeItem(at: model.store.root) }
         await model.askPartner("为trusted@example.invalid创建响应器，先让我审阅策略", uiContext: model.currentContext)
         XCTAssertEqual(model.visibleChat.last?.text, "SDK responder prepared")
-        XCTAssertEqual(model.responderEditor?.senderAllowlist, ["trusted@example.invalid"])
-        XCTAssertEqual(model.responderEditor?.enabled, false)
-        XCTAssertEqual(model.workspacePage, .responders)
+        XCTAssertEqual(model.openUIInteractions.last?.responderDraft?.senderAllowlist, ["trusted@example.invalid"])
+        XCTAssertEqual(model.openUIInteractions.last?.responderDraft?.enabled, false)
+        XCTAssertEqual(model.workspacePage, .mail)
     }
     @MainActor func testSDKSmallRequestedPageDoesNotCauseTinyRepeatedReads() async throws {
         let (model, selected, original) = try await fixture(mode: "page-size"); defer { try? FileManager.default.removeItem(at: model.store.root) }
@@ -367,7 +417,11 @@ private final class SDKChatHTTPFixture: URLProtocol {
         } else if mode == "page-size" {
             operation = call == 1 ? ("read_mail", ["messageID": "target", "limit": 256]) : nil
             answer = "SDK efficient page"
-        } else if mode == "responder" {
+        } else if mode == "stage-budget" {
+            let tools = Self.lastBody?["tools"] as? [[String: Any]] ?? []
+            operation = !tools.isEmpty && call <= 24 ? ("list_accounts", [:]) : nil
+            answer = "SDK stage answer"
+        } else if mode == "responder" || mode == "responder-repeat" {
             operation = call == 1 ? ("find_tools", ["query": "responder"]) : call == 2 ? ("setup_responder", ["instruction": "只响应trusted@example.invalid", "title": "Synthetic rule", "accountID": "a", "senderAllowlist": ["trusted@example.invalid"]]) : nil
             answer = "SDK responder prepared"
         } else if mode == "form" {
@@ -378,8 +432,9 @@ private final class SDKChatHTTPFixture: URLProtocol {
             answer = "SDK draft saved"
         } else if mode == "restricted" { operation = call == 1 ? ("read_mail", ["messageID": "target"]) : nil; answer = "SDK outside source refused" }
         else { operation = call == 1 ? ("search_mail", ["query": "game monetization"]) : nil; answer = "SDK verified source result" }
-        var delta: [String: Any] = ["content": operation == nil ? answer : ""]
-        if let operation {
+        let repeatedSetup: (String, [String: Any])? = mode == "responder-repeat" && (3...5).contains(call) ? ("setup_responder", ["instruction": "只响应trusted@example.invalid", "accountID": "a", "senderAllowlist": ["trusted@example.invalid"]]) : operation
+        var delta: [String: Any] = ["content": repeatedSetup == nil ? answer : ""]
+        if let operation = repeatedSetup {
             let arguments = String(decoding: try! JSONSerialization.data(withJSONObject: operation.1), as: UTF8.self)
             delta["tool_calls"] = [["index": 0, "id": "fixture-call-\(call)", "type": "function", "function": ["name": operation.0, "arguments": arguments]]]
         }

@@ -28,6 +28,7 @@ import MorrowCore
     var sandboxDataTask: Task<Void, Error>?
     var materials: [ChatMaterial] = []
     var draftSnapshots: [String: ComposeDraft] = [:]
+    var responderSnapshots: [String: MailResponder] = [:]
     var workspaceLease: AgentWorkspaceLease?
     var generatedMedia: [AgentWorkspaceMedia] = []
     var mediaJobs: [AgentWorkspaceVideoJob] = []
@@ -115,12 +116,14 @@ extension AppModel {
             """
             let directory = String(decoding: try JSONEncoder().encode(contactSnapshot), as: UTF8.self)
             var task = "用户本轮要求：\(instruction)\n当前时间：\(Date().ISO8601Format())\n本机时区：\(TimeZone.current.identifier)\n<workspace-hint>\(hints)</workspace-hint>\n<contact-directory-data>\(directory)</contact-directory-data>\n<selected-mail-data>\(evidence)</selected-mail-data>\n<user-material-data>\(String(uploads.prefix(24000)))</user-material-data>\n联系人简表已直接带入，仅显示按直接往来排序的前20项；更多联系人可用list_contacts分页，或在run_code通过contacts表整体分析。这里只带入有限正文片段，完整上传资料请用list_materials/read_material分页读取。需要更多功能时，用find_tools按目的查找并加载工具。"
-            if let work { task += "\n已接受的工作：\(work.instruction)\n约定：\(work.agreement?.scope ?? "")；\(work.agreement?.doneWhen ?? "")" }
+            if let work, let agreement = work.agreement { task += "\n已接受的工作：\(work.instruction)\n约定：\(agreement.scope)；\(agreement.doneWhen)" }
             let history = ChatConversationHistory.messages(taskChatHistory, before: human.id, scope: capturedUI, executionID: executionID, resuming: waiting != nil, materialIDs: Set(context.materials.map(\.id)))
             var requestFields: [String: OpenUIJSON] = ["type": .string("start"), "sessionID": .string(executionID), "instruction": .string(task), "systemPrompt": .string(system), "history": .array(history), "tools": .array(SDKMailTools.descriptions), "contextWindow": .number(16384)]
             let budget = (settings.runBudget ?? AgentRunBudget()).bounded
             requestFields["budget"] = .object(["modelTurns": .number(Double(budget.modelTurns)), "toolCalls": .number(Double(budget.toolCalls))])
-            if work == nil {
+            // Report containers also have run IDs. Only an accepted agreement
+            // grants ongoing execution budgets; a UI hint cannot grant them.
+            if work?.agreement == nil {
                 requestFields["answerBudget"] = .object(["modelTurns": .number(Double(AgentAnswerBudget.modelTurns)), "toolCalls": .number(Double(AgentAnswerBudget.toolCalls)), "seconds": .number(Double(AgentAnswerBudget.seconds))])
             }
             if waiting != nil { requestFields["resume"] = .string(instruction) }
@@ -218,7 +221,7 @@ extension AppModel {
         let fields = request.object, name = fields["name"]?.text ?? "", args = fields["args"]?.object ?? [:]
         guard chatSessions.contains(where: { $0.id == context.sessionID && !$0.archived }) else { throw CancellationError() }
         guard SDKMailTools.names.contains(name), try JSONEncoder().encode(request).count <= 256 * 1024 else { throw MailError.message("Agent 工具请求无效。") }
-        let readTools: Set<String> = ["search_mail", "scan_mail", "read_mail", "read_mails", "mail_statistics", "list_accounts", "list_folders", "list_contacts", "get_contact_profile", "list_attachments", "read_attachment", "list_materials", "read_material", "list_drafts", "read_draft", "list_reports", "read_report", "list_memories", "list_responders", "workspace_state", "list_sessions", "list_models", "get_settings", "cite_sources", "render_ui", "run_code", "save_report", "list_media_models", "list_workspace", "check_media_job", "stage_material"]
+        let readTools: Set<String> = ["search_mail", "scan_mail", "read_mail", "read_mails", "mail_statistics", "list_accounts", "list_folders", "list_contacts", "get_contact_profile", "list_attachments", "read_attachment", "list_materials", "read_material", "list_drafts", "read_draft", "list_reports", "read_report", "list_memories", "list_responders", "read_responder", "responder_status", "workspace_state", "list_sessions", "list_models", "get_settings", "cite_sources", "render_ui", "run_code", "save_report", "list_media_models", "list_workspace", "check_media_job", "stage_material"]
         let mediaTools: Set<String> = ["list_media_models", "generate_image", "generate_video", "check_media_job", "analyze_video", "list_workspace", "stage_material", "attach_workspace_file"]
         if context.awaitingInput && mediaTools.contains(name) && name != "list_media_models" { throw MailError.message("正在等待用户输入，未执行媒体操作。") }
         if context.ui?.enforcesMailScope == true && context.ui?.page == "materials", !["list_materials", "read_material", "render_ui", "run_code", "save_report", "list_memories"].contains(name) && !mediaTools.contains(name) { throw MailError.message("本轮明确只使用带入资料，未读取邮箱。") }
@@ -349,18 +352,8 @@ extension AppModel {
             if name == "review_send" { openDraft(draft); context.draftIDs.append(draft.id) }
             reply = .object(["draftID": .string(draft.id), "subject": .string(draft.subject), "to": .string(draft.to), "body": .string(String(draft.body.prefix(16000))), "sent": .bool(false), "reviewRequired": .bool(name == "review_send")])
         case "list_memories": reply = .array(memories.filter { $0.status == "active" && $0.eligible(sessionID: context.sessionID, contactEmail: context.ui?.contactEmail) }.prefix(60).map { .object(["id": .string($0.id), "content": .string($0.content), "confirmed": .bool($0.confirmed), "source": .string($0.source)]) })
-        case "list_responders": reply = .array(responders.map { .object(["id": .string($0.id), "title": .string($0.title), "enabled": .bool($0.enabled)]) })
-        case "setup_responder":
-            let text = args["instruction"]?.text ?? ""
-            guard !text.isEmpty else { throw MailError.message("请明确响应器目的和来源白名单。") }
-            var rule = MailResponder(); rule.title = args["title"]?.text ?? "新的响应器"; rule.response = args["response"]?.text ?? text; rule.accountID = args["accountID"]?.text ?? ""
-            if case .array(let senders) = args["senderAllowlist"] {
-                let values = senders.map(\.text)
-                guard values.allSatisfy({ MailAddress.isValid($0) && (context.userProvidedSenderAddresses.contains($0.lowercased()) || context.instruction.localizedCaseInsensitiveContains($0)) }) else { throw MailError.message("来源白名单必须是用户明确给出的精确邮箱地址；请在响应器界面填写。") }
-                rule.senderAllowlist = values; rule.sender = values.joined(separator: ", ")
-            }
-            rule.enabled = false; responderEditor = rule; workspacePage = .responders
-            reply = .object(["reviewRequired": .bool(true), "enabled": .bool(false), "message": .string("响应器设置已在界面准备，需要核对精确邮箱来源白名单、账户和策略后启用。")])
+        case "list_responders", "read_responder", "responder_status", "setup_responder", "test_responder":
+            reply = try await performResponderChatTool(name, args: args, context: context, receiptID: receiptID)
         case "remember":
             let content = args["content"]?.text ?? ""; guard !content.isEmpty, content.count <= 2000 else { throw MailError.message("记忆内容为空或超过限制。") }
             var memory = AgentMemory(content: content, kind: .fact, scope: .session, scopeID: context.sessionID)
@@ -587,7 +580,10 @@ private enum SDKMailTools {
             tool("review_send", "打开真实草稿的编辑和渲染预览供用户审阅发送；不会自动投递。", ["draftID": string], required: ["draftID"]),
             tool("list_memories", "读取当前会话可用的受管理记忆和确认状态。"),
             tool("list_responders", "读取响应器名称、ID和启用状态。"),
-            tool("setup_responder", "打开响应器设置，必须单独核对用户明确提供的精确来源邮箱白名单、绑定账户及策略；不会自动启用。", ["instruction": string, "title": string, "response": string, "accountID": string, "senderAllowlist": .object(["type": .string("array"), "items": string])], required: ["instruction"]),
+            tool("read_responder", "读取响应器完整配置和版本；修改前必须读取，不猜测来源或条件。", ["responderID": string], required: ["responderID"]),
+            tool("responder_status", "读取已保存响应器与最近执行回执，区分匹配、草稿、排队、已发送、失败和结果不确定。没有回执不能称为测试通过。", ["responderID": string], required: ["responderID"]),
+            tool("test_responder", "按用户明确的试跑要求，用匹配的真实邮件只准备回复预览，不发送或启用；图片响应器会生成一张有费用的图片，相同来信复用成功回执。", ["responderID": string, "messageID": string], required: ["responderID", "messageID"]),
+            tool("setup_responder", "准备可核对的完整响应器条件及Chat保存按钮；用户点击后才保存启用，准备后结束本轮调用。正文关键词写bodyContains。imageReply=true授权每封匹配来信生成一张图片作为回复附件；可设置模型、尺寸、质量、回复方式及每日上限。修改已有规则先read_responder。", ["instruction": string, "responderID": string, "title": string, "response": string, "accountID": string, "folderPath": string, "subjectContains": string, "bodyContains": string, "delivery": string, "dailyLimit": integer, "imageReply": .object(["type": .string("boolean")]), "imageModel": string, "imageSize": string, "imageQuality": string, "senderAllowlist": .object(["type": .string("array"), "items": string])], required: ["instruction"]),
             tool("remember", "把本轮有来源的事实保存为会话记忆，未经用户确认的归纳保留未确认状态。", ["content": string], required: ["content"]),
             tool("list_reports", "查找已保存简报，返回实际artifactID、摘要和所属会话；不把全部简报正文加入上下文。"),
             tool("read_report", "读取真实简报正文和来源，修改前先读取；界面中的artifactID只是提示。", ["artifactID": string], required: ["artifactID"]),
